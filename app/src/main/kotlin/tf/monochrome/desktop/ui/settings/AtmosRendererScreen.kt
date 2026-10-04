@@ -7,7 +7,10 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import tf.monochrome.desktop.ui.input.ColumnScrollbar
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -339,262 +343,282 @@ fun AtmosRendererScreen(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = LocalBottomChromeInset.current)
-                .padding(horizontal = 20.dp),
-        ) {
-            // ── Channel map ────────────────────────────────────────────────
-            SectionHeader(stringResource(R.string.atmos_channel_map))
-            val d = detected
-            Text(
-                if (d != null) {
-                    val rate = if (d.sampleRate % 1000 == 0) "${d.sampleRate / 1000} kHz"
-                    else "${d.sampleRate} Hz"
-                    stringResource(R.string.atmos_live_levels, d.layoutName, d.channelCount, rate)
-                } else {
-                    stringResource(R.string.atmos_speakers_idle)
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-            SpeakerLayoutMap(
-                layout = if (profile.speakerRender) profile.layout else ChannelLayout.STEREO,
-                detected = d,
-                accent = MaterialTheme.colorScheme.primary,
+        Box(Modifier.fillMaxSize()) {
+            val scroll = rememberScrollState()
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1.15f),
-            )
-            Spacer(Modifier.height(20.dp))
-
-            // ── Built-in test track ────────────────────────────────────────
-            SectionHeader(stringResource(R.string.atmos_test_track))
-            val testStatus by viewModel.testTrackStatus.collectAsStateWithLifecycle()
-            Text(
-                stringResource(R.string.atmos_a_bundled_e_ac_3_joc_channel_check_a_voice),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            TextButton(onClick = { viewModel.installTestTrack() }) {
-                Text(stringResource(R.string.atmos_add_atmos_test_track_to_library))
-            }
-            testStatus?.let {
+                    .fillMaxSize()
+                    .verticalScroll(scroll)
+                    .padding(bottom = LocalBottomChromeInset.current)
+                    .padding(horizontal = 20.dp),
+            ) {
+                // ── Channel map ────────────────────────────────────────────────
+                SectionHeader(stringResource(R.string.atmos_channel_map))
+                val d = detected
                 Text(
-                    it.resolve(androidx.compose.ui.platform.LocalContext.current),
+                    if (d != null) {
+                        val rate = if (d.sampleRate % 1000 == 0) "${d.sampleRate / 1000} kHz"
+                        else "${d.sampleRate} Hz"
+                        stringResource(R.string.atmos_live_levels, d.layoutName, d.channelCount, rate)
+                    } else {
+                        stringResource(R.string.atmos_speakers_idle)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            Spacer(Modifier.height(20.dp))
-
-            // ── Multichannel downmix ───────────────────────────────────────
-            // Replaces the old read-only "Output Layout" (binaural pipeline)
-            // blurb: the setting that actually governs multichannel output —
-            // the fixed-matrix fold to stereo — lives here now. Same
-            // preference as the toggle in Settings › Audio › Output, which now
-            // sits directly under the row that opens this screen.
-            SectionHeader(stringResource(R.string.atmos_downmix))
-            val downmixEnabled by viewModel.multichannelDownmixEnabled.collectAsStateWithLifecycle()
-            SettingSwitchItem(
-                title = stringResource(R.string.settings_downmix_multichannel_to_stereo),
-                subtitle = if (downmixEnabled) {
-                    stringResource(R.string.settings_downmix_on)
-                } else {
-                    stringResource(R.string.settings_downmix_off)
-                },
-                checked = downmixEnabled,
-                onCheckedChange = { viewModel.setMultichannelDownmix(it) },
-            )
-            // Master trim inside the fold (the peqdb Downmix Renderer's
-            // --master-gain-db): the verbatim matrix runs hot, this pulls it
-            // below clipping. Applies to both matrices and the Atmos fallback.
-            LabeledSlider(
-                title = stringResource(R.string.atmos_downmix_preamp),
-                valueText = "%+.1f dB".format(profile.downmixPreampDb),
-                value = profile.downmixPreampDb,
-                range = -24f..6f,
-                enabled = downmixEnabled,
-                onValueChange = { viewModel.update(profile.copy(downmixPreampDb = it)) },
-            )
-            SettingSwitchItem(
-                title = stringResource(R.string.atmos_lfe_low_pass_125_hz),
-                subtitle = stringResource(R.string.atmos_butterworth_4th_order_on_the_lfe_feed_the_dry),
-                checked = profile.lfeLowpass,
-                onCheckedChange = { viewModel.update(profile.copy(lfeLowpass = it)) },
-            )
-            Spacer(Modifier.height(20.dp))
-
-            // ── Sources ────────────────────────────────────────────────────
-            SectionHeader(stringResource(R.string.atmos_sources))
-            val tidalAtmos by viewModel.tidalAtmosPreferred.collectAsStateWithLifecycle()
-            SettingSwitchItem(
-                title = stringResource(R.string.atmos_tidal_dolby_atmos),
-                subtitle = if (tidalAtmos) {
-                    stringResource(R.string.atmos_tidal_on)
-                } else {
-                    stringResource(R.string.atmos_tidal_off)
-                },
-                checked = tidalAtmos,
-                onCheckedChange = { viewModel.setTidalAtmosPreferred(it) },
-            )
-            Spacer(Modifier.height(20.dp))
-
-            // ── Speakers — render objects to a physical layout ───────────
-            // Off (default) leaves every stereo path above and below exactly as
-            // it was. On: Atmos objects render to the layout (auto-detected
-            // from the connected HDMI/USB output, or picked here), the fold is
-            // bypassed, and the track carries the layout's real channel mask.
-            SectionHeader(stringResource(R.string.atmos_speakers))
-            SettingSwitchItem(
-                title = stringResource(R.string.atmos_render_atmos_to_speakers),
-                subtitle = if (profile.speakerRender) {
-                    stringResource(R.string.atmos_speakers_on)
-                } else {
-                    stringResource(R.string.atmos_speakers_off)
-                },
-                checked = profile.speakerRender,
-                onCheckedChange = { viewModel.update(profile.copy(speakerRender = it)) },
-            )
-            if (profile.speakerRender) {
-                SettingSwitchItem(
-                    title = stringResource(R.string.atmos_detect_layout_from_the_output),
-                    subtitle = stringResource(R.string.atmos_uses_the_channel_count_the_hdmi_usb_device),
-                    checked = profile.autoDetectLayout,
-                    onCheckedChange = { viewModel.update(profile.copy(autoDetectLayout = it)) },
+                Spacer(Modifier.height(12.dp))
+                SpeakerLayoutMap(
+                    layout = if (profile.speakerRender) profile.layout else ChannelLayout.STEREO,
+                    detected = d,
+                    accent = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1.15f),
                 )
-                if (!profile.autoDetectLayout) {
-                    ChannelLayout.entries.filter { it.isMultichannel }.forEach { layout ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.update(profile.copy(layout = layout)) },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = profile.layout == layout,
-                                onClick = { viewModel.update(profile.copy(layout = layout)) },
-                            )
-                            Text(
-                                stringResource(R.string.atmos_layout_option, layout.label, layout.channelCount),
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(20.dp))
 
-            // ── Spatial render — the ONE option beyond the fold ───────────
-            // Off (default): every Atmos track goes through the coefficient
-            // downmix renderer above. On: objects are binauralized via the
-            // built-in KEMAR or a SOFA HRTF. Renderer mode follows the switch
-            // (PASSTHROUGH ↔ OBJECT_RENDER) — no separate mode setting.
-            SectionHeader(stringResource(R.string.atmos_spatial_render))
-            val sofaPicker = rememberLauncherForActivityResult(
-                ActivityResultContracts.OpenDocument()
-            ) { uri: Uri? -> if (uri != null) viewModel.importSofa(uri) }
-            // .sofa has no registered MIME type, so accept any file and let the
-            // native loader reject non-SOFA input.
-            // Desktop: the file dialog filters by extension, and the picker
-            // shim maps this type to *.sofa.
-            val sofaMimes = arrayOf("application/x-sofa")
-            SettingSwitchItem(
-                title = stringResource(R.string.atmos_binaural_render_sofa_hrtf),
-                subtitle = if (profile.hrtfEnabled) {
-                    stringResource(R.string.atmos_binaural_on)
-                } else {
-                    stringResource(R.string.atmos_binaural_off)
-                },
-                checked = profile.hrtfEnabled,
-                onCheckedChange = { viewModel.setSpatial(it) },
-            )
-            if (profile.hrtfEnabled) {
-                if (profile.hrtfProfileId == null) Text(
-                    stringResource(R.string.atmos_using_the_built_in_mit_kemar_set_pick_a_sofa),
+                // ── Built-in test track ────────────────────────────────────────
+                SectionHeader(stringResource(R.string.atmos_test_track))
+                val testStatus by viewModel.testTrackStatus.collectAsStateWithLifecycle()
+                Text(
+                    stringResource(R.string.atmos_a_bundled_e_ac_3_joc_channel_check_a_voice),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                ) else {
-                    val sofaStatus by viewModel.sofaStatus.collectAsStateWithLifecycle()
-                    val selectedName = java.io.File(profile.hrtfProfileId!!).name
-                    val status = sofaStatus?.takeIf {
-                        java.io.File(it.first).name == selectedName
-                    }
-                    when {
-                        status?.second == false -> Text(
-                            stringResource(R.string.atmos_sofa_rejected, selectedName),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        status?.second == true -> Text(
-                            stringResource(R.string.atmos_sofa_loaded, selectedName),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        else -> Text(
-                            stringResource(R.string.atmos_sofa_selected, selectedName),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                )
+                TextButton(onClick = { viewModel.installTestTrack() }) {
+                    Text(stringResource(R.string.atmos_add_atmos_test_track_to_library))
                 }
-                // Every imported/downloaded .sofa stays on hand as a preset —
-                // tap to switch HRTFs without re-downloading or re-picking.
-                if (sofaPresets.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
+                testStatus?.let {
                     Text(
-                        stringResource(R.string.atmos_sofa_presets),
-                        style = MaterialTheme.typography.labelMedium,
+                        it.resolve(androidx.compose.ui.platform.LocalContext.current),
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
                     )
-                    sofaPresets.forEach { file ->
-                        val isSelected =
-                            profile.hrtfEnabled && profile.hrtfProfileId == file.absolutePath
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.selectSofa(file) },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = isSelected,
-                                onClick = { viewModel.selectSofa(file) },
-                            )
-                            Text(
-                                file.name.removeSuffix(".sofa"),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            IconButton(onClick = { viewModel.deleteSofa(file) }) {
-                                Icon(
-                                    Icons.Filled.Delete,
-                                    contentDescription = stringResource(R.string.settings_delete_preset),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                }
+                Spacer(Modifier.height(20.dp))
+
+                // ── Multichannel downmix ───────────────────────────────────────
+                // Replaces the old read-only "Output Layout" (binaural pipeline)
+                // blurb: the setting that actually governs multichannel output —
+                // the fixed-matrix fold to stereo — lives here now. Same
+                // preference as the toggle in Settings › Audio › Output, which now
+                // sits directly under the row that opens this screen.
+                SectionHeader(stringResource(R.string.atmos_downmix))
+                val downmixEnabled by viewModel.multichannelDownmixEnabled.collectAsStateWithLifecycle()
+                SettingSwitchItem(
+                    title = stringResource(R.string.settings_downmix_multichannel_to_stereo),
+                    subtitle = if (downmixEnabled) {
+                        stringResource(R.string.settings_downmix_on)
+                    } else {
+                        stringResource(R.string.settings_downmix_off)
+                    },
+                    checked = downmixEnabled,
+                    onCheckedChange = { viewModel.setMultichannelDownmix(it) },
+                )
+                // Master trim inside the fold (the peqdb Downmix Renderer's
+                // --master-gain-db): the verbatim matrix runs hot, this pulls it
+                // below clipping. Applies to both matrices and the Atmos fallback.
+                LabeledSlider(
+                    title = stringResource(R.string.atmos_downmix_preamp),
+                    valueText = "%+.1f dB".format(profile.downmixPreampDb),
+                    value = profile.downmixPreampDb,
+                    range = -24f..6f,
+                    enabled = downmixEnabled,
+                    onValueChange = { viewModel.update(profile.copy(downmixPreampDb = it)) },
+                )
+                SettingSwitchItem(
+                    title = stringResource(R.string.atmos_lfe_low_pass_125_hz),
+                    subtitle = stringResource(R.string.atmos_butterworth_4th_order_on_the_lfe_feed_the_dry),
+                    checked = profile.lfeLowpass,
+                    onCheckedChange = { viewModel.update(profile.copy(lfeLowpass = it)) },
+                )
+                Spacer(Modifier.height(20.dp))
+
+                // ── Sources ────────────────────────────────────────────────────
+                SectionHeader(stringResource(R.string.atmos_sources))
+                val tidalAtmos by viewModel.tidalAtmosPreferred.collectAsStateWithLifecycle()
+                SettingSwitchItem(
+                    title = stringResource(R.string.atmos_tidal_dolby_atmos),
+                    subtitle = if (tidalAtmos) {
+                        stringResource(R.string.atmos_tidal_on)
+                    } else {
+                        stringResource(R.string.atmos_tidal_off)
+                    },
+                    checked = tidalAtmos,
+                    onCheckedChange = { viewModel.setTidalAtmosPreferred(it) },
+                )
+                Spacer(Modifier.height(20.dp))
+
+                // ── Speakers — render objects to a physical layout ───────────
+                // Off (default) leaves every stereo path above and below exactly as
+                // it was. On: Atmos objects render to the layout (auto-detected
+                // from the connected HDMI/USB output, or picked here), the fold is
+                // bypassed, and the track carries the layout's real channel mask.
+                SectionHeader(stringResource(R.string.atmos_speakers))
+                SettingSwitchItem(
+                    title = stringResource(R.string.atmos_render_atmos_to_speakers),
+                    subtitle = if (profile.speakerRender) {
+                        stringResource(R.string.atmos_speakers_on)
+                    } else {
+                        stringResource(R.string.atmos_speakers_off)
+                    },
+                    checked = profile.speakerRender,
+                    onCheckedChange = { viewModel.update(profile.copy(speakerRender = it)) },
+                )
+                if (profile.speakerRender) {
+                    SettingSwitchItem(
+                        title = stringResource(R.string.atmos_detect_layout_from_the_output),
+                        subtitle = stringResource(R.string.atmos_uses_the_channel_count_the_hdmi_usb_device),
+                        checked = profile.autoDetectLayout,
+                        onCheckedChange = { viewModel.update(profile.copy(autoDetectLayout = it)) },
+                    )
+                    if (!profile.autoDetectLayout) {
+                        // One Tab stop per option: the row is the radio button, and
+                        // the drawn one only shows its state.
+                        Column(Modifier.selectableGroup()) {
+                            ChannelLayout.entries.filter { it.isMultichannel }.forEach { layout ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .selectable(
+                                            selected = profile.layout == layout,
+                                            role = Role.RadioButton,
+                                            onClick = { viewModel.update(profile.copy(layout = layout)) },
+                                        ),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = profile.layout == layout,
+                                        onClick = null,
+                                        modifier = Modifier.minimumInteractiveComponentSize(),
+                                    )
+                                    Text(
+                                        stringResource(R.string.atmos_layout_option, layout.label, layout.channelCount),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
                             }
                         }
                     }
                 }
-                Row {
-                    TextButton(onClick = {
-                        navController.navigateTool(Screen.HrtfDatabase)
-                    }) { Text(stringResource(R.string.atmos_browse_hrtf_database)) }
-                    TextButton(onClick = { sofaPicker.launch(sofaMimes) }) {
-                        Text(stringResource(R.string.atmos_load_sofa_file))
+                Spacer(Modifier.height(20.dp))
+
+                // ── Spatial render — the ONE option beyond the fold ───────────
+                // Off (default): every Atmos track goes through the coefficient
+                // downmix renderer above. On: objects are binauralized via the
+                // built-in KEMAR or a SOFA HRTF. Renderer mode follows the switch
+                // (PASSTHROUGH ↔ OBJECT_RENDER) — no separate mode setting.
+                SectionHeader(stringResource(R.string.atmos_spatial_render))
+                val sofaPicker = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument()
+                ) { uri: Uri? -> if (uri != null) viewModel.importSofa(uri) }
+                // .sofa has no registered MIME type, so accept any file and let the
+                // native loader reject non-SOFA input.
+                // Desktop: the file dialog filters by extension, and the picker
+                // shim maps this type to *.sofa.
+                val sofaMimes = arrayOf("application/x-sofa")
+                SettingSwitchItem(
+                    title = stringResource(R.string.atmos_binaural_render_sofa_hrtf),
+                    subtitle = if (profile.hrtfEnabled) {
+                        stringResource(R.string.atmos_binaural_on)
+                    } else {
+                        stringResource(R.string.atmos_binaural_off)
+                    },
+                    checked = profile.hrtfEnabled,
+                    onCheckedChange = { viewModel.setSpatial(it) },
+                )
+                if (profile.hrtfEnabled) {
+                    if (profile.hrtfProfileId == null) Text(
+                        stringResource(R.string.atmos_using_the_built_in_mit_kemar_set_pick_a_sofa),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ) else {
+                        val sofaStatus by viewModel.sofaStatus.collectAsStateWithLifecycle()
+                        val selectedName = java.io.File(profile.hrtfProfileId!!).name
+                        val status = sofaStatus?.takeIf {
+                            java.io.File(it.first).name == selectedName
+                        }
+                        when {
+                            status?.second == false -> Text(
+                                stringResource(R.string.atmos_sofa_rejected, selectedName),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            status?.second == true -> Text(
+                                stringResource(R.string.atmos_sofa_loaded, selectedName),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            else -> Text(
+                                stringResource(R.string.atmos_sofa_selected, selectedName),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    // Every imported/downloaded .sofa stays on hand as a preset —
+                    // tap to switch HRTFs without re-downloading or re-picking.
+                    if (sofaPresets.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            stringResource(R.string.atmos_sofa_presets),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Column(Modifier.selectableGroup()) {
+                            sofaPresets.forEach { file ->
+                                val isSelected =
+                                    profile.hrtfEnabled && profile.hrtfProfileId == file.absolutePath
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .selectable(
+                                            selected = isSelected,
+                                            role = Role.RadioButton,
+                                            onClick = { viewModel.selectSofa(file) },
+                                        ),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = null,
+                                        modifier = Modifier.minimumInteractiveComponentSize(),
+                                    )
+                                    Text(
+                                        file.name.removeSuffix(".sofa"),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IconButton(onClick = { viewModel.deleteSofa(file) }) {
+                                        Icon(
+                                            Icons.Filled.Delete,
+                                            contentDescription = stringResource(R.string.settings_delete_preset),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Row {
+                        TextButton(onClick = {
+                            navController.navigateTool(Screen.HrtfDatabase)
+                        }) { Text(stringResource(R.string.atmos_browse_hrtf_database)) }
+                        TextButton(onClick = { sofaPicker.launch(sofaMimes) }) {
+                            Text(stringResource(R.string.atmos_load_sofa_file))
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
 
-            TextButton(onClick = { viewModel.reset() }) { Text(stringResource(R.string.fx_reset_to_defaults)) }
-            Spacer(Modifier.height(32.dp))
+                TextButton(onClick = { viewModel.reset() }) { Text(stringResource(R.string.fx_reset_to_defaults)) }
+                Spacer(Modifier.height(32.dp))
+            }
+            ColumnScrollbar(scroll, Modifier.padding(bottom = LocalBottomChromeInset.current))
         }
     }
 }
@@ -642,7 +666,9 @@ private fun LabeledSlider(
         valueRange = range,
         steps = steps,
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .sliderWheel(value = value, range = range, steps = steps, enabled = enabled, onValueChange = onValueChange),
     )
 }
 

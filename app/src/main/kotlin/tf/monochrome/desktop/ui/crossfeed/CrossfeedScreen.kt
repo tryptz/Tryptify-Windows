@@ -53,6 +53,7 @@ import tf.monochrome.desktop.audio.dsp.crossfeed.CrossfeedState
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import tf.monochrome.desktop.ui.input.HoverScrollRow
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -134,23 +135,28 @@ fun CrossfeedScreen(
                         style = MaterialTheme.typography.labelLarge,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        CrossfeedAlgorithm.entries.forEach { algo ->
-                            FilterChip(
-                                selected = state.algorithm == algo,
-                                onClick = { effect.setAlgorithm(algo) },
-                                label = {
-                                    Text(
-                                        text = algo.label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
-                                },
-                            )
+                    // Desktop: in a narrow window the last chips slide out of
+                    // sight, and the plain wheel scrolls the page, not the row.
+                    val algoScroll = rememberScrollState()
+                    HoverScrollRow(state = algoScroll, modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(algoScroll),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            CrossfeedAlgorithm.entries.forEach { algo ->
+                                FilterChip(
+                                    selected = state.algorithm == algo,
+                                    onClick = { effect.setAlgorithm(algo) },
+                                    label = {
+                                        Text(
+                                            text = algo.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(4.dp))

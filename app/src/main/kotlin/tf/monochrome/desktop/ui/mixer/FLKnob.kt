@@ -1,11 +1,16 @@
 package tf.monochrome.desktop.ui.mixer
 
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.input.wheelAdjust
 import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -39,8 +44,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,6 +91,11 @@ private fun snapValue(raw: Float, min: Float, max: Float, steps: Int?): Float {
 //   - Rotary gesture: drag around the knob in a circle for natural rotation
 //   - Double-tap: reset to default value
 //   - Haptic feedback at min, max, default, and center detent points
+//
+// Desktop: Shift- or Ctrl-drag is the fine mode (the far-from-knob landing
+// spot is outside a 64 dp knob), the wheel turns it (Ctrl for fine), the
+// arrows and Page Up/Down turn it once Tab reaches it, Delete resets it, and a
+// double-click resets it as the double tap does.
 //
 // When [steps] is non-null the emitted value snaps to discrete stops (for
 // enum-like params such as Type / Mode / On), while the internal accumulator
@@ -120,6 +139,16 @@ internal fun FLKnobControl(
     val zeroFraction = if (bipolar) (-min / (max - min)) else 0f
     val defaultFraction = default?.let { ((it - min) / (max - min)).coerceIn(0f, 1f) }
     var typing by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val windowInfo = LocalWindowInfo.current
+    // A stepped knob moves a whole stop at a time on every input, or the snap
+    // would round a fine nudge straight back to where it was.
+    val stops = steps?.takeIf { it > 0 }
+    val span = max - min
+    val step = if (stops != null) span / stops else span / 50f
+    val fineStep = if (stops != null) step else span / 500f
+    val bigStep = if (stops != null) step * kotlin.math.max(1, stops / 10) else span / 10f
 
     val cs = MaterialTheme.colorScheme
     val bodyLight = lerp(cs.surfaceContainerHighest, Color.White, 0.12f)
@@ -151,6 +180,8 @@ internal fun FLKnobControl(
         Canvas(
             modifier = Modifier
                 .size(64.dp)
+                .focusRing(focused, CircleShape)
+                .pointerHoverIcon(PointerIcon.Hand)
                 .adjustableSemantics(
                     label = label,
                     value = value,
@@ -159,10 +190,27 @@ internal fun FLKnobControl(
                     onValueChange = { onValueChange(snapValue(it, min, max, steps)) },
                 )
                 // Desktop: the wheel turns it, a stop per notch when stepped.
+                // Only with the pointer on the knob itself; a list still gliding from the last notch keeps the wheel.
                 .wheelAdjust(
                     value = value,
                     range = min..max,
-                    step = if (steps != null && steps > 0) (max - min) / steps else (max - min) / 50f,
+                    step = step,
+                    fineStep = fineStep,
+                    onValueChange = { onValueChange(snapValue(it, min, max, steps)) },
+                )
+                .onKeyEvent { event ->
+                    if (event.key != Key.Delete) return@onKeyEvent false
+                    val d = latestDefault ?: return@onKeyEvent false
+                    if (event.type == KeyEventType.KeyDown) latestOnValueChange(snapValue(d, min, max, steps))
+                    true
+                }
+                .adjustKeys(
+                    value = value,
+                    range = min..max,
+                    step = step,
+                    bigStep = bigStep,
+                    fineStep = fineStep,
+                    interactionSource = interaction,
                     onValueChange = { onValueChange(snapValue(it, min, max, steps)) },
                 )
                 // Double-tap resets to the parameter default. Kept in its own
@@ -185,6 +233,10 @@ internal fun FLKnobControl(
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // A mouse drag never scrolls the list on the desktop, so
+                        // there is nothing to wait for; 18 dp of dead travel
+                        // reads as a knob that does not follow the mouse.
+                        val slop = if (down.type == PointerType.Mouse) touchSlop / 9f else touchSlop
                         val downPos = down.position
                         var lastPos = downPos
                         var lastAngle: Float? = null
@@ -216,7 +268,7 @@ internal fun FLKnobControl(
                                     (pos.x - downPos.x) * (pos.x - downPos.x) +
                                         (pos.y - downPos.y) * (pos.y - downPos.y)
                                 )
-                                if (distFromDown < touchSlop) continue
+                                if (distFromDown < slop) continue
                                 dragging = true
                                 isTouching = true
                                 val distFromCenter = kotlin.math.sqrt(
@@ -236,8 +288,10 @@ internal fun FLKnobControl(
                                 continue
                             }
 
-                            val dx = pos.x - lastPos.x
-                            val dy = pos.y - lastPos.y
+                            // Shift or Ctrl held: a quarter of the travel, in every mode.
+                            val scale = windowInfo.dragScale()
+                            val dx = (pos.x - lastPos.x) * scale
+                            val dy = (pos.y - lastPos.y) * scale
                             val oldFrac = ((current - min) / range).coerceIn(0f, 1f)
 
                             when (mode) {
@@ -256,7 +310,7 @@ internal fun FLKnobControl(
                                         if (delta > Math.PI.toFloat()) delta -= 2f * Math.PI.toFloat()
                                         if (delta < -Math.PI.toFloat()) delta += 2f * Math.PI.toFloat()
                                         // Map rotation to value change (full circle = full range)
-                                        current = (current + delta / (1.5f * Math.PI.toFloat()) * range)
+                                        current = (current + delta * scale / (1.5f * Math.PI.toFloat()) * range)
                                             .coerceIn(min, max)
                                     }
                                     lastAngle = angle
@@ -415,6 +469,7 @@ internal fun FLKnobControl(
             maxLines = 1,
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
+                .pointerHoverIcon(PointerIcon.Hand)
                 .clickable(onClickLabel = stringResource(R.string.mixer_type_a_value)) { typing = true }
                 .padding(horizontal = 4.dp, vertical = 1.dp)
         )

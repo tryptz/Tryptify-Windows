@@ -3,6 +3,9 @@ package tf.monochrome.desktop.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -14,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -25,12 +29,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -41,7 +51,8 @@ import kotlin.math.roundToInt
  *
  * Call it inside the same [Box] as the list and hand it the list's state. The
  * thumb appears while the list moves, lingers a moment so it can be caught, and
- * fades out.
+ * fades out. With a mouse it also appears while the pointer rests on the list's
+ * right edge, where a scrollbar is looked for, and drags like one.
  *
  * With a paged list the Pager wants `enablePlaceholders = true`, or
  * `totalItemsCount` is only the rows loaded so far and the thumb sizes itself
@@ -213,8 +224,13 @@ private fun BoxScope.FastScrollerThumb(
     // to reach for. An always-on scrollbar would be back to covering the right
     // edge of an idle list.
     var lingering by remember(key) { mutableStateOf(false) }
+    // A mouse has no flick to summon the thumb with, so resting the pointer on
+    // the edge (or on the thumb itself) holds it up the way scrolling does.
+    val edgeHovered = remember(key) { mutableStateOf(false) }
+    val thumbHover = remember(key) { MutableInteractionSource() }
+    val thumbHovered by thumbHover.collectIsHoveredAsState()
     LaunchedEffect(key) {
-        snapshotFlow { isScrolling() }.collectLatest { scrolling ->
+        snapshotFlow { isScrolling() || edgeHovered.value || thumbHovered }.collectLatest { scrolling ->
             if (scrolling) {
                 lingering = true
             } else {
@@ -240,6 +256,18 @@ private fun BoxScope.FastScrollerThumb(
 
     fun thumbPx(track: Float) = (track * extent()).coerceIn(thumbMinPx.coerceAtMost(track), track)
     fun thumbTopPx(track: Float) = (track - thumbPx(track)) * progress().coerceIn(0f, 1f)
+
+    // The hover sensor is a sibling under the track, not part of it: it shares
+    // every event with the list below and consumes none, so a flick or a wheel
+    // that starts on the edge still reaches the list. The track itself still
+    // takes nothing, and the thumb above it still keeps its drags to itself.
+    Box(
+        modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .width(touchWidth)
+            .then(EdgeHoverElement(edgeHovered))
+    )
 
     Box(
         // No pointer input on the track. It spans the full height of the list,
@@ -267,6 +295,7 @@ private fun BoxScope.FastScrollerThumb(
                     layout(placeable.width, height) { placeable.place(0, 0) }
                 }
                 .width(touchWidth)
+                .hoverable(thumbHover)
                 .pointerInput(Unit) {
                     detectVerticalDragGestures(
                         onDragStart = { dragTopPx = thumbTopPx(trackPx) },
@@ -299,3 +328,38 @@ private fun BoxScope.FastScrollerThumb(
 
 /** How long the thumb stays up after the list stops, in milliseconds. */
 private const val LINGER_MS = 1200L
+
+/**
+ * Tracks whether a hovering pointer is over this node without taking anything
+ * from what lies under it. [hoverable][androidx.compose.foundation.hoverable]
+ * would do the tracking, but the node it is on hides its siblings from the
+ * pointer, and the sibling here is the list.
+ */
+private data class EdgeHoverElement(val hovered: MutableState<Boolean>) :
+    ModifierNodeElement<EdgeHoverNode>() {
+    override fun create() = EdgeHoverNode(hovered)
+    override fun update(node: EdgeHoverNode) {
+        node.hovered = hovered
+    }
+}
+
+private class EdgeHoverNode(var hovered: MutableState<Boolean>) :
+    Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(pointerEvent: PointerEvent, pass: PointerEventPass, bounds: IntSize) {
+        if (pass != PointerEventPass.Main) return
+        when (pointerEvent.type) {
+            PointerEventType.Enter -> hovered.value = true
+            PointerEventType.Exit -> hovered.value = false
+        }
+    }
+
+    override fun onCancelPointerInput() {
+        hovered.value = false
+    }
+
+    override fun sharePointerInputWithSiblings() = true
+
+    override fun onDetach() {
+        hovered.value = false
+    }
+}

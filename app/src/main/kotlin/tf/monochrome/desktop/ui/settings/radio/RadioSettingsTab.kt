@@ -2,6 +2,7 @@ package tf.monochrome.desktop.ui.settings.radio
 
 import androidx.compose.foundation.layout.Box
 import tf.monochrome.desktop.ui.settings.settingsAnchor
+import tf.monochrome.desktop.ui.settings.sliderWheel
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.settings.LocalSettingsSearchInset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -39,8 +44,11 @@ import tf.monochrome.desktop.R
 @Composable
 fun RadioSettingsTab(viewModel: RadioSettingsViewModel = hiltViewModel()) {
     val weights by viewModel.weights.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
 
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp)
     ) {
@@ -104,6 +112,13 @@ fun RadioSettingsTab(viewModel: RadioSettingsViewModel = hiltViewModel()) {
             }
         }
     }
+    // Desktop: a scrollbar, as every other settings tab has, clear of the
+    // floating search bar and the bottom chrome.
+    ListScrollbar(
+        listState,
+        Modifier.padding(top = LocalSettingsSearchInset.current, bottom = LocalBottomChromeInset.current),
+    )
+    }
 }
 
 @Composable
@@ -149,6 +164,12 @@ private fun WeightSlider(
             onValueChange = { onValueChange(it.coerceIn(PLANNER_WEIGHT_MIN, PLANNER_WEIGHT_MAX)) },
             valueRange = PLANNER_WEIGHT_MIN..PLANNER_WEIGHT_MAX,
             steps = 11,
+            modifier = Modifier.sliderWheel(
+                value = value,
+                range = PLANNER_WEIGHT_MIN..PLANNER_WEIGHT_MAX,
+                steps = 11,
+                onValueChange = onValueChange,
+            ),
         )
     }
 }

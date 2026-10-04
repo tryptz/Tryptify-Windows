@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.audio.dsp.model.PluginInstance
 import tf.monochrome.desktop.ui.mixer.GlassChoiceChip
 import tf.monochrome.desktop.ui.mixer.getParamDefs
+import tf.monochrome.desktop.ui.input.HoverScrollRow
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
 
@@ -44,30 +46,35 @@ internal fun FxPresetRow(
     val defs = remember(type) { getParamDefs(type) }
     val cs = MaterialTheme.colorScheme
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        presets.forEachIndexed { i, preset ->
-            if (i > 0 && presets[i - 1].mastering && !preset.mastering) {
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 2.dp)
-                        .width(1.dp)
-                        .height(18.dp)
-                        .background(cs.outline.copy(alpha = 0.35f))
+    val scroll = rememberScrollState()
+    HoverScrollRow(state = scroll, modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                // As tall as the scroll arrows, so the card does not grow when they appear.
+                .heightIn(min = 36.dp)
+                .horizontalScroll(scroll),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            presets.forEachIndexed { i, preset ->
+                if (i > 0 && presets[i - 1].mastering && !preset.mastering) {
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 2.dp)
+                            .width(1.dp)
+                            .height(18.dp)
+                            .background(cs.outline.copy(alpha = 0.35f))
+                    )
+                }
+                GlassChoiceChip(
+                    label = preset.name,
+                    selected = preset.matches(defs, plugin.parameters, plugin.dryWet),
+                    accent = accent,
+                    onClick = { onApply(preset) },
+                    description = if (preset.mastering) stringResource(R.string.mixer_preset_desc, preset.name) else stringResource(R.string.mixer_preset_desc_creative, preset.name),
                 )
             }
-            GlassChoiceChip(
-                label = preset.name,
-                selected = preset.matches(defs, plugin.parameters, plugin.dryWet),
-                accent = accent,
-                onClick = { onApply(preset) },
-                description = if (preset.mastering) stringResource(R.string.mixer_preset_desc, preset.name) else stringResource(R.string.mixer_preset_desc_creative, preset.name),
-            )
         }
     }
 }

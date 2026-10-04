@@ -5,7 +5,12 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,7 +36,19 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -41,6 +58,9 @@ import kotlin.math.abs
 import kotlin.math.sign
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.wheelAdjust
+import java.awt.Cursor
 
 /**
  * A spring-loaded BPM nudge — a DJ's pitch bend, laid out like the stepper
@@ -76,6 +96,23 @@ fun BpmNudge(
     // Where the grip ridges are, scrolled by the bend the way a platter's
     // edge moves under the hand.
     var ridgePhase by remember { mutableFloatStateOf(0f) }
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // The push a held arrow key is giving, 0 when no key is bending.
+    var keyPush by remember { mutableFloatStateOf(0f) }
+    fun release() {
+        held = false
+        scope.launch { thumb.animateTo(0f, spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessMedium)) }
+    }
+    // A key-up that goes to another control or window never reaches the
+    // handler below, and a bend nobody lets go of runs to the end of the range.
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(focused, windowFocused) {
+        if ((!focused || !windowFocused) && keyPush != 0f) {
+            keyPush = 0f
+            release()
+        }
+    }
 
     LaunchedEffect(held) {
         if (!held) return@LaunchedEffect
@@ -119,9 +156,45 @@ fun BpmNudge(
         modifier = modifier
             .fillMaxWidth()
             .height(48.dp)
+            .focusRing(focused, shape)
             .clip(shape)
             .border(1.dp, Color.White.copy(alpha = 0.18f), shape)
             .semantics { contentDescription = nudgeDescription }
+            .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR)))
+            // Desktop: each wheel notch nudges the tempo by a tenth of a BPM.
+            .wheelAdjust(liveBpm, MIN_BPM..MAX_BPM, step = WHEEL_STEP_BPM) { apply(it) }
+            // Desktop: a held arrow pushes the thumb as a held finger does, and
+            // letting the key go springs it back; Shift pushes it all the way.
+            // The key-up is handled too, because it is what ends the push.
+            // Ctrl and Alt arrows are left to the app (skip, back, forward).
+            .onKeyEvent { event ->
+                val direction = when (event.key) {
+                    Key.DirectionLeft -> -1f
+                    Key.DirectionRight -> 1f
+                    else -> return@onKeyEvent false
+                }
+                when (event.type) {
+                    KeyEventType.KeyDown -> {
+                        if (event.isCtrlPressed || event.isAltPressed) return@onKeyEvent false
+                        val push = direction * if (event.isShiftPressed) 1f else KEY_PUSH
+                        // Auto-repeat sends the same press again; only a new push moves the thumb.
+                        if (push != keyPush) {
+                            keyPush = push
+                            held = true
+                            scope.launch { thumb.animateTo(push) }
+                        }
+                        true
+                    }
+                    KeyEventType.KeyUp -> {
+                        if (keyPush == 0f || sign(keyPush) != direction) return@onKeyEvent false
+                        keyPush = 0f
+                        release()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable(interactionSource = interaction)
             .pointerInput(Unit) {
                 widthPx = size.width.toFloat()
                 detectHorizontalDragGestures(
@@ -138,6 +211,42 @@ fun BpmNudge(
                     change.consume()
                     val travel = (widthPx / 2f - TRAVEL_INSET_PX).coerceAtLeast(1f)
                     scope.launch { thumb.snapTo((thumb.value + dx / travel).coerceIn(-1f, 1f)) }
+                }
+            }
+            // Desktop: a mouse held still on the strip bends toward where it
+            // is held, harder the further from centre, and the thumb then
+            // follows it. One that moves at once is the drag above. After it in
+            // the chain, so it sees the press first and, once holding, consumes
+            // the moves that would start that drag.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (down.type != PointerType.Mouse) return@awaitEachGesture
+                    val letGoOrMoved = withTimeoutOrNull(MOUSE_HOLD_MS) {
+                        var gone = false
+                        while (!gone) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            gone = change == null || !change.pressed || change.isConsumed ||
+                                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                        }
+                    }
+                    if (letGoOrMoved != null) return@awaitEachGesture
+                    val travel = (size.width / 2f - TRAVEL_INSET_PX).coerceAtLeast(1f)
+                    fun pushAt(x: Float) = ((x - size.width / 2f) / travel).coerceIn(-1f, 1f)
+                    held = true
+                    scope.launch { thumb.animateTo(pushAt(down.position.x)) }
+                    try {
+                        do {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change != null && change.pressed && change.position != change.previousPosition) {
+                                scope.launch { thumb.snapTo(pushAt(change.position.x)) }
+                            }
+                            event.changes.forEach { it.consume() }
+                        } while (change != null && change.pressed)
+                    } finally {
+                        release()
+                    }
                 }
             },
         contentAlignment = Alignment.Center,
@@ -193,6 +302,12 @@ private const val TRAVEL_INSET_PX = 60f
 private const val PLATTER_RESPONSE = 6f
 /** Ridges scrolled per BPM bent. */
 private const val RIDGES_PER_BPM = 3f
+/** Desktop: the push a held arrow key gives, of a full one. */
+private const val KEY_PUSH = 0.6f
+/** Desktop: how long a mouse press stays put before it counts as a hold. */
+private const val MOUSE_HOLD_MS = 180L
+/** Desktop: BPM per wheel notch; Ctrl+wheel moves a tenth of it. */
+private const val WHEEL_STEP_BPM = 0.1f
 
 /**
  * Type the song's own tempo: opened by long-pressing the BPM number, for when

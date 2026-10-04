@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -57,6 +58,8 @@ import tf.monochrome.desktop.domain.model.Headphone
 import tf.monochrome.desktop.domain.model.MeasurementRig
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import tf.monochrome.desktop.ui.components.SearchOverlay
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.contextClick
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
 import androidx.compose.ui.res.pluralStringResource
@@ -180,10 +183,16 @@ fun HeadphoneSelectScreen(
 
         // ─── Rig filter (horizontally scrollable chips) ───
         if (availableRigs.isNotEmpty()) {
-            LazyRow(
+            val rigRowState = rememberLazyListState()
+            HoverScrollRow(
+                state = rigRowState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp),
+            ) {
+            LazyRow(
+                state = rigRowState,
+                modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -228,6 +237,7 @@ fun HeadphoneSelectScreen(
                         colors = FilterChipDefaults.filterChipColors(),
                     )
                 }
+            }
             }
         }
 
@@ -376,7 +386,8 @@ fun HeadphoneSelectScreen(
     }
 
     // Long-press confirmation for uploaded measurements. Tap-and-hold the
-    // row → this dialog → Delete wipes the upload from prefs.
+    // row, right-click it or use its delete button → this dialog → Delete
+    // wipes the upload from prefs.
     val toDelete = pendingDelete
     if (toDelete != null) {
         AlertDialog(
@@ -411,6 +422,7 @@ private fun MeasurementRowItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .contextClick(enabled = onLongClick != null) { onLongClick?.invoke() }
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -437,6 +449,18 @@ private fun MeasurementRowItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        // Nobody holds a mouse button down to look for a delete, so an upload
+        // carries its own in sight. It still asks first.
+        if (onLongClick != null) {
+            IconButton(onClick = onLongClick, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = stringResource(R.string.action_delete),
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Text(
             ">",

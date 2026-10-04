@@ -52,6 +52,8 @@ import tf.monochrome.desktop.audio.dsp.model.BusConfig
 import tf.monochrome.desktop.audio.dsp.model.FxTapFrame
 import tf.monochrome.desktop.audio.dsp.model.PluginInstance
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -119,6 +121,16 @@ fun FxChainPage(
         expandedUids = expandedUids.intersect(visualChain.map { it.uid }.toSet())
     }
 
+    // A one-place move from a card's menu or Alt+Up/Down. The snapshot moves
+    // first, as a drag's does, so the uids follow the cards and the reconcile
+    // that the engine's emission starts keeps focus and expansion on the card.
+    val moveCard = { from: Int, to: Int ->
+        if (!dragState.isDragging && from in visualChain.indices && to in visualChain.indices) {
+            visualChain.add(to, visualChain.removeAt(from))
+            onMove(selectedBusIndex, from, to)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -126,101 +138,109 @@ fun FxChainPage(
     ) {
         BusSelectorRow(buses, selectedBusIndex, busAccent, onSelectBus)
 
-        LazyColumn(
-            state = listState,
+        // The scrollbar is a way down the chain that never lands the wheel on a knob.
+        Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(MonoDimens.spacingSm),
-            verticalArrangement = Arrangement.spacedBy(MonoDimens.spacingSm)
+                .fillMaxWidth()
         ) {
-            item(key = "in") {
-                ChainEndCap(
-                    label = "IN — ${bus?.name ?: "Bus"}",
-                    accent = accent,
-                    modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
-                )
-            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(MonoDimens.spacingSm),
+                verticalArrangement = Arrangement.spacedBy(MonoDimens.spacingSm)
+            ) {
+                item(key = "in") {
+                    ChainEndCap(
+                        label = "IN — ${bus?.name ?: "Bus"}",
+                        accent = accent,
+                        modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
+                    )
+                }
 
-            itemsIndexed(visualChain, key = { _, it -> it.uid }) { index, item ->
-                val isDragged = dragState.draggingKey == item.uid
-                val cardAccent = item.plugin.type?.category
-                    ?.let { FxChainColors.categoryColor(it) }
-                    ?: MaterialTheme.colorScheme.primary
-                FxCard(
-                    position = index + 1,
-                    plugin = item.plugin,
-                    accent = cardAccent,
-                    expanded = item.uid in expandedUids,
-                    dragging = isDragged,
-                    // Only expanded cards draw the tap, so collapsed cards
-                    // keep a stable (null) input and skip the 60 Hz recompose.
-                    live = if (item.uid in expandedUids && fxTap?.busIndex == selectedBusIndex)
-                        fxTap else null,
-                    dragHandle = Modifier.pointerInput(item.uid) {
-                        detectDragGestures(
-                            onDragStart = {
-                                expandedUids = emptySet()
-                                dragState.onDragStart(item.uid)
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                dragState.onDrag(dragAmount.y)
-                            },
-                            onDragEnd = { dragState.onDragEnd() },
-                            onDragCancel = { dragState.onDragEnd() },
-                        )
-                    },
-                    onToggleExpand = {
-                        expandedUids = if (item.uid in expandedUids) expandedUids - item.uid
-                                       else expandedUids + item.uid
-                    },
-                    onBypass = { onBypass(selectedBusIndex, index) },
-                    onRemove = { onRemove(selectedBusIndex, index) },
-                    onDryWet = { dw -> onDryWet(selectedBusIndex, index, dw) },
-                    onParam = { pi, v -> onParam(selectedBusIndex, index, pi, v) },
-                    onOversample = { f -> onOversample(selectedBusIndex, index, f) },
-                    onPreset = { p -> onPreset(selectedBusIndex, index, p) },
-                    modifier = Modifier
-                        .zIndex(if (isDragged) 1f else 0f)
-                        .graphicsLayer {
-                            translationY = dragState.translationFor(item.uid)
-                            val s = if (isDragged) 1.02f else 1f
-                            scaleX = s
-                            scaleY = s
-                        }
-                        .then(if (!isDragged) Modifier.animateItem() else Modifier)
-                )
-            }
+                itemsIndexed(visualChain, key = { _, it -> it.uid }) { index, item ->
+                    val isDragged = dragState.draggingKey == item.uid
+                    val cardAccent = item.plugin.type?.category
+                        ?.let { FxChainColors.categoryColor(it) }
+                        ?: MaterialTheme.colorScheme.primary
+                    FxCard(
+                        position = index + 1,
+                        plugin = item.plugin,
+                        accent = cardAccent,
+                        expanded = item.uid in expandedUids,
+                        dragging = isDragged,
+                        // Only expanded cards draw the tap, so collapsed cards
+                        // keep a stable (null) input and skip the 60 Hz recompose.
+                        live = if (item.uid in expandedUids && fxTap?.busIndex == selectedBusIndex)
+                            fxTap else null,
+                        dragHandle = Modifier.pointerInput(item.uid) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    expandedUids = emptySet()
+                                    dragState.onDragStart(item.uid)
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragState.onDrag(dragAmount.y)
+                                },
+                                onDragEnd = { dragState.onDragEnd() },
+                                onDragCancel = { dragState.onDragEnd() },
+                            )
+                        },
+                        onToggleExpand = {
+                            expandedUids = if (item.uid in expandedUids) expandedUids - item.uid
+                                           else expandedUids + item.uid
+                        },
+                        onBypass = { onBypass(selectedBusIndex, index) },
+                        onRemove = { onRemove(selectedBusIndex, index) },
+                        onDryWet = { dw -> onDryWet(selectedBusIndex, index, dw) },
+                        onParam = { pi, v -> onParam(selectedBusIndex, index, pi, v) },
+                        onOversample = { f -> onOversample(selectedBusIndex, index, f) },
+                        onPreset = { p -> onPreset(selectedBusIndex, index, p) },
+                        onMoveUp = if (index > 0) ({ moveCard(index, index - 1) }) else null,
+                        onMoveDown = if (index < visualChain.lastIndex) ({ moveCard(index, index + 1) }) else null,
+                        modifier = Modifier
+                            .zIndex(if (isDragged) 1f else 0f)
+                            .graphicsLayer {
+                                translationY = dragState.translationFor(item.uid)
+                                val s = if (isDragged) 1.02f else 1f
+                                scaleX = s
+                                scaleY = s
+                            }
+                            .then(if (!isDragged) Modifier.animateItem() else Modifier)
+                    )
+                }
 
-            item(key = "out") {
-                ChainEndCap(
-                    // Where the chain's output goes: the device from the master,
-                    // else every bus this one is routed to.
-                    label = when {
-                        bus == null -> "OUT"
-                        bus.isMaster -> stringResource(R.string.mixer_out_device)
-                        else -> bus.sends.filterValues { it > 0f }.keys
-                            .sortedBy { if (it == BusConfig.MASTER_INDEX) Int.MAX_VALUE else BusConfig.numberFor(it) }
-                            .joinToString(", ") { dst -> buses.firstOrNull { it.index == dst }?.name ?: BusConfig.nameFor(dst) }
-                            .ifEmpty { nowhere }
-                            .let { "OUT — $it" }
-                    },
-                    accent = accent,
-                    isOutput = true,
-                    modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
-                )
-            }
+                item(key = "out") {
+                    ChainEndCap(
+                        // Where the chain's output goes: the device from the master,
+                        // else every bus this one is routed to.
+                        label = when {
+                            bus == null -> "OUT"
+                            bus.isMaster -> stringResource(R.string.mixer_out_device)
+                            else -> bus.sends.filterValues { it > 0f }.keys
+                                .sortedBy { if (it == BusConfig.MASTER_INDEX) Int.MAX_VALUE else BusConfig.numberFor(it) }
+                                .joinToString(", ") { dst -> buses.firstOrNull { it.index == dst }?.name ?: BusConfig.nameFor(dst) }
+                                .ifEmpty { nowhere }
+                                .let { "OUT — $it" }
+                        },
+                        accent = accent,
+                        isOutput = true,
+                        modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
+                    )
+                }
 
-            item(key = "add") {
-                AddEffectBar(
-                    count = plugins.size,
-                    max = DspEngineManager.MAX_PLUGINS_PER_BUS,
-                    accent = accent,
-                    onClick = onAddEffect,
-                    modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
-                )
+                item(key = "add") {
+                    AddEffectBar(
+                        count = plugins.size,
+                        max = DspEngineManager.MAX_PLUGINS_PER_BUS,
+                        accent = accent,
+                        onClick = onAddEffect,
+                        modifier = Modifier.then(if (!dragState.isDragging) Modifier.animateItem() else Modifier)
+                    )
+                }
             }
+            ListScrollbar(listState)
         }
     }
 }
@@ -234,48 +254,51 @@ private fun BusSelectorRow(
 ) {
     // Up to 17 tabs, so they scroll rather than share the width; in the
     // strips' order (master last), selected by the bus's real index.
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingXs),
-        horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingXs)
-    ) {
-        BusConfig.displayOrder(buses).forEach { bus ->
-            val index = bus.index
-            val selected = index == selectedBusIndex
-            val accent = busAccent(index)
-            Box(
-                modifier = Modifier
-                    .widthIn(min = 64.dp)
-                    .clip(MonoDimens.shapePill)
-                    .liquidGlass(
-                        shape = MonoDimens.shapePill,
-                        tintAlpha = if (selected) 0.22f else 0.08f
-                    )
-                    .clickable { onSelectBus(index) }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+    val scroll = rememberScrollState()
+    HoverScrollRow(state = scroll, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scroll)
+                .padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingXs),
+            horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingXs)
+        ) {
+            BusConfig.displayOrder(buses).forEach { bus ->
+                val index = bus.index
+                val selected = index == selectedBusIndex
+                val accent = busAccent(index)
+                Box(
+                    modifier = Modifier
+                        .widthIn(min = 64.dp)
+                        .clip(MonoDimens.shapePill)
+                        .liquidGlass(
+                            shape = MonoDimens.shapePill,
+                            tintAlpha = if (selected) 0.22f else 0.08f
+                        )
+                        .clickable { onSelectBus(index) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(accent.copy(alpha = if (selected) 1f else 0.5f))
-                    )
-                    Text(
-                        text = bus.name,
-                        fontSize = 10.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (selected) MaterialTheme.colorScheme.onSurface
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(accent.copy(alpha = if (selected) 1f else 0.5f))
+                        )
+                        Text(
+                            text = bus.name,
+                            fontSize = 10.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }

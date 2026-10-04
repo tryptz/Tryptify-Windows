@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.State
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithCache
@@ -46,6 +47,8 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -62,6 +65,7 @@ import coil3.compose.LocalPlatformContext
 import coil3.compose.SubcomposeAsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import tf.monochrome.desktop.domain.model.LyricLine
 import tf.monochrome.desktop.domain.model.Lyrics
@@ -351,6 +355,7 @@ internal fun LyricsHeroBox(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun SyncedLyricsView(
     lines: List<LyricLine>,
@@ -372,6 +377,10 @@ internal fun SyncedLyricsView(
     }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialLine)
     val lastCentredLine = remember { mutableIntStateOf(initialLine) }
+    // When the wheel last scrolled the list. A wheel turn is someone reading
+    // ahead, so the re-centring waits until they stop before gliding back. A
+    // drag on a touch screen keeps its old behaviour.
+    val lastWheelMs = remember { longArrayOf(0L) }
 
     // Active line = the most recent line whose start has passed. derivedStateOf
     // recomputes when the position sample or the line list changes, but only
@@ -449,6 +458,13 @@ internal fun SyncedLyricsView(
         LaunchedEffect(currentLineIndex, maxHeight) {
             val index = currentLineIndex
             if (index < 0) return@LaunchedEffect
+            var readAhead = false
+            while (true) {
+                val wait = WHEEL_READ_AHEAD_MS - (System.currentTimeMillis() - lastWheelMs[0])
+                if (wait <= 0L) break
+                readAhead = true
+                delay(wait)
+            }
             // Bring the line on-screen first only if it's far away (a big seek);
             // during normal playback the next active line is already visible just
             // below centre, so this is skipped. A plain scrollToItem (no offset)
@@ -473,7 +489,7 @@ internal fun SyncedLyricsView(
             // Snap when re-centring the same line (first composition, or the
             // morph resizing the viewport every frame); animate only when the
             // song has actually advanced to a new line.
-            if (lastCentredLine.intValue == index) {
+            if (lastCentredLine.intValue == index && !readAhead) {
                 listState.scrollBy(itemCentre - viewportAnchor)
             } else {
                 // Glide, don't yank: animateScrollBy's default spring is stiff
@@ -499,6 +515,7 @@ internal fun SyncedLyricsView(
                 // glyphs (and their glass bevels) never sit flush against the
                 // clip edge where they'd be corner-cut.
                 .padding(horizontal = sideInset)
+                .onPointerEvent(PointerEventType.Scroll) { lastWheelMs[0] = System.currentTimeMillis() }
                 .fxaa()
                 .liquidGlass(tint = accent),
             contentPadding = PaddingValues(top = halfViewport, bottom = tailPadding),
@@ -778,6 +795,9 @@ private const val ACTIVE_LINE_ANCHOR = 0.38f
  * ending everything on the same frame read as an abrupt full stop.
  */
 private const val LINE_SWITCH_SCROLL_MS = 600
+
+/** How long after a wheel scroll the lyric hero leaves the list where it was put. */
+private const val WHEEL_READ_AHEAD_MS = 4_000L
 private const val LINE_SWITCH_FADE_MS = 450
 
 /**

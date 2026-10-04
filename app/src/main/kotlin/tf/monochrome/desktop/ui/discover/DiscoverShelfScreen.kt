@@ -40,6 +40,9 @@ import tf.monochrome.desktop.domain.model.DiscoveryItem
 import tf.monochrome.desktop.ui.components.AddToPlaylistSheet
 import tf.monochrome.desktop.ui.components.TrackSelectionBar
 import tf.monochrome.desktop.ui.components.rememberTrackSelectionState
+import tf.monochrome.desktop.ui.input.GridScrollbar
+import tf.monochrome.desktop.ui.library.rememberSelectionClicks
+import tf.monochrome.desktop.ui.library.selectionKeys
 import tf.monochrome.desktop.ui.player.PlayerViewModel
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
@@ -73,6 +76,8 @@ fun DiscoverShelfScreen(
     // selection state were built for, and where picking six things out of
     // twenty is actually comfortable.
     val selection = rememberTrackSelectionState<String>()
+    val clicks = rememberSelectionClicks(selection)
+    androidx.activity.compose.BackHandler(enabled = selection.active) { selection.clear() }
     var showAddToPlaylist by remember { mutableStateOf(false) }
     val selectedTracks = shelf?.items.orEmpty()
         .filterIsInstance<DiscoveryItem.TrackItem>()
@@ -143,10 +148,15 @@ fun DiscoverShelfScreen(
         }
 
         when {
-            shelf != null -> LazyVerticalGrid(
+            shelf != null -> Box(Modifier.fillMaxSize()) {
+            // Only tracks can be selected, so a range or Ctrl+A spans these.
+            val trackKeys = shelf.items.filterIsInstance<DiscoveryItem.TrackItem>().map { it.key }
+            LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Adaptive(MonoDimens.coverCard),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .selectionKeys(onSelectAll = { clicks.selectAll(trackKeys) }),
                 contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 160.dp + LocalBottomChromeInset.current),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -161,12 +171,19 @@ fun DiscoverShelfScreen(
                             // rather than playing — otherwise the gesture that
                             // starts selecting and the one that leaves the
                             // screen are the same gesture.
-                            if (selection.active && selectable) selection.toggle(item.key)
-                            else openDiscoveryItem(navController, playerViewModel, shelf, item)
+                            if (selectable) {
+                                clicks.click(item.key, trackKeys) {
+                                    openDiscoveryItem(navController, playerViewModel, shelf, item)
+                                }
+                            } else {
+                                openDiscoveryItem(navController, playerViewModel, shelf, item)
+                            }
                         },
-                        onLongClick = { if (selectable) selection.toggle(item.key) },
+                        onLongClick = { if (selectable) clicks.toggle(item.key) },
                     )
                 }
+            }
+            GridScrollbar(gridState, Modifier.padding(bottom = LocalBottomChromeInset.current))
             }
 
             loading -> Box(

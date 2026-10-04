@@ -18,6 +18,8 @@ import androidx.compose.ui.res.painterResource
 import org.jetbrains.compose.resources.DrawableResource
 import tf.monochrome.desktop.R
 import tf.monochrome.desktop.res.StringKey
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -164,6 +166,18 @@ import tf.monochrome.desktop.ui.theme.Paper
 import tf.monochrome.desktop.ui.theme.ColorBlend
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Box
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import kotlinx.coroutines.delay
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
@@ -296,8 +310,58 @@ fun SettingsScreen(
         searchSettings(searchQuery) { searchContext.getString(it) }
     }
 
+    // Escape (and the mouse's Back button) shuts an open search before it
+    // leaves Settings, as the search icon does.
+    BackHandler(enabled = searchOpen) {
+        searchOpen = false
+        searchQuery = ""
+    }
+    val searchHitsShown = searchOpen && searchQuery.trim().length >= 2 && searchHits.isNotEmpty()
+    // The left-most suggestion in view, where Down from the search field lands.
+    val firstHitFocus = remember { FocusRequester() }
+    // Whether focus is in a tab's form, whose own text fields keep Down.
+    var formHasFocus by remember { mutableStateOf(false) }
+
     CompositionLocalProvider(LocalSettingsAnchors provides settingsAnchors) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            // Desktop: Ctrl+Tab and Ctrl+Page Down step to the next tab, with
+            // Shift or Page Up the previous one, as a browser's tabs do. The
+            // swipe that did this on a phone has no mouse or keyboard
+            // equivalent. Preview, so a focused field or chip cannot keep the
+            // Tab for focus traversal first.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed || event.isAltPressed) {
+                    return@onPreviewKeyEvent false
+                }
+                val step = when (event.key) {
+                    Key.Tab -> if (event.isShiftPressed) -1 else 1
+                    Key.PageDown -> 1
+                    Key.PageUp -> -1
+                    else -> return@onPreviewKeyEvent false
+                }
+                val count = settingsPages.size
+                val next = (settingsPager.targetPage + step + count) % count
+                settingsScope.launch { settingsPager.goToPage(next, animateTabs) }
+                true
+            }
+            // Desktop: Down from the search field steps onto the suggestions,
+            // as from a browser's address bar. A one-line field has no other
+            // use for it, and Tab would stop at the close button first.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) {
+                    return@onPreviewKeyEvent false
+                }
+                if (event.isCtrlPressed || event.isAltPressed || event.isShiftPressed) {
+                    return@onPreviewKeyEvent false
+                }
+                if (!searchHitsShown || formHasFocus || !DesktopInput.isTextInputActive()) {
+                    return@onPreviewKeyEvent false
+                }
+                firstHitFocus.requestFocus()
+            }
+    ) {
         TopAppBar(
             title = { Text(stringResource(R.string.settings)) },
             navigationIcon = {
@@ -341,6 +405,9 @@ fun SettingsScreen(
         LaunchedEffect(selectedTab) {
             chipRow.animateScrollToItem(settingsTabs.indexOf(settingsPages[selectedTab]).coerceAtLeast(0))
         }
+        // Desktop: arrows at the clipped ends while the mouse is over the rail,
+        // which a mouse cannot drag.
+        HoverScrollRow(state = chipRow, modifier = Modifier.fillMaxWidth()) {
         LazyRow(
             state = chipRow,
             modifier = Modifier.fillMaxWidth(),
@@ -377,6 +444,7 @@ fun SettingsScreen(
                 )
             }
         }
+        }
 
         // The bar floats over the *form* rather than pushing it down: laid out
         // as a row of this Column it shoved the whole form down the screen every
@@ -400,10 +468,17 @@ fun SettingsScreen(
                         )
                     } else {
                         Spacer(Modifier.height(10.dp))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(searchHits) { hit ->
+                        val hitRow = rememberLazyListState()
+                        HoverScrollRow(state = hitRow) {
+                        LazyRow(state = hitRow, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            itemsIndexed(searchHits) { index, hit ->
                                 SettingsHitPill(
                                     entry = hit,
+                                    modifier = if (index == hitRow.firstVisibleItemIndex) {
+                                        Modifier.focusRequester(firstHitFocus)
+                                    } else {
+                                        Modifier
+                                    },
                                     onClick = {
                                         searchOpen = false
                                         searchQuery = ""
@@ -426,6 +501,7 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        }
                     }
                 }
             },
@@ -440,7 +516,10 @@ fun SettingsScreen(
             CompositionLocalProvider(LocalSettingsSearchInset provides searchTopInset) {
                 HorizontalPager(
                     state = settingsPager,
-                    modifier = Modifier.fillMaxWidth().fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxSize()
+                        .onFocusChanged { formHasFocus = it.hasFocus },
                     // Each tab is a full settings form; keeping neighbours composed
                     // would mean building all nine of them up front.
                     beyondViewportPageCount = 0,
@@ -904,11 +983,12 @@ private fun AppearanceControls(viewModel: SettingsViewModel) {
                 FONT_SCALE_PRESETS.minByOrNull { kotlin.math.abs(it.scale - fontScale) }
             }
 
+            val fontScaleRow = rememberScrollState()
+            HoverScrollRow(state = fontScaleRow, modifier = Modifier.padding(top = 8.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(top = 8.dp),
+                    .horizontalScroll(fontScaleRow),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FONT_SCALE_PRESETS.forEach { preset ->
@@ -919,6 +999,7 @@ private fun AppearanceControls(viewModel: SettingsViewModel) {
                         label = { Text(stringResource(preset.label)) }
                     )
                 }
+            }
             }
 
             Text(
@@ -1502,6 +1583,7 @@ private fun IntSettingSlider(
     subtitle: String? = null,
 ) {
     var local by remember(value) { mutableFloatStateOf(value.toFloat()) }
+    val span = valueRange.endInclusive - valueRange.start
     Spacer(modifier = Modifier.height(8.dp))
     Text(
         label(local.toInt()),
@@ -1520,7 +1602,18 @@ private fun IntSettingSlider(
         onValueChange = { local = it },
         onValueChangeFinished = { onCommit(local.toInt()) },
         valueRange = valueRange,
-        modifier = modifier.fillMaxWidth(),
+        // Desktop: whole numbers per wheel notch, and the write waits for the
+        // wheel to rest as it waits for a drag to let go; a write per notch
+        // would, for the exclusive-mode buffer, reopen the device each time.
+        modifier = modifier
+            .fillMaxWidth()
+            .sliderWheel(
+                value = local,
+                range = valueRange,
+                step = (span / 50f).roundToInt().coerceAtLeast(1).toFloat(),
+                fineStep = 1f,
+                onCommit = { onCommit(local.toInt()) },
+            ) { local = it },
     )
 }
 
@@ -1654,7 +1747,7 @@ private fun ScrobblingControls(viewModel: SettingsViewModel) {
         subtitle = when {
             lastFmEnabled -> stringResource(R.string.settings_connected_as, lastFmUsername ?: stringResource(R.string.settings_user))
             lastFmConnecting -> stringResource(R.string.settings_waiting_for_lastfm)
-            else -> stringResource(R.string.settings_lastfm_tap_to_authorise)
+            else -> stringResource(R.string.settings_lastfm_click_to_authorise)
         },
         // No text box. A session key is not something a person has — it comes
         // out of auth.getSession, which needs the browser handshake this
@@ -1767,7 +1860,11 @@ private fun AudioTab(viewModel: SettingsViewModel, navController: NavController)
             onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) },
             valueRange = 0f..12f,
             steps = 11,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .sliderWheel(value = crossfade.toFloat(), range = 0f..12f, steps = 11) {
+                    viewModel.setCrossfadeDuration(it.roundToInt())
+                }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -1852,7 +1949,23 @@ private fun AudioTab(viewModel: SettingsViewModel, navController: NavController)
                     viewModel.setPlaybackSpeed(exact)
                 },
                 valueRange = PitchRatio.MIN_SPEED..PitchRatio.MAX_SPEED,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .sliderWheel(
+                        value = playbackSpeed,
+                        range = PitchRatio.MIN_SPEED..PitchRatio.MAX_SPEED,
+                        step = 0.05f,
+                        fineStep = 0.01f,
+                    ) { newSpeed ->
+                        // Snapped like a drag, except where the snap would put
+                        // it straight back: at high speeds a fine notch is
+                        // smaller than the snap's reach, and the wheel would
+                        // never leave the semitone it sits on.
+                        val snapped = PitchRatio.snap(newSpeed)
+                        val exact = if (snapped == playbackSpeed) newSpeed else snapped
+                        speedText = String.format(Locale.US, "%.2f", exact)
+                        viewModel.setPlaybackSpeed(exact)
+                    }
             )
             OutlinedTextField(
                 value = speedText,
@@ -3361,6 +3474,7 @@ private fun SettingsTabContent(content: @Composable () -> Unit) {
         if (anchors.foundAt == null) anchors.clear()
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
         modifier = Modifier
@@ -3378,6 +3492,16 @@ private fun SettingsTabContent(content: @Composable () -> Unit) {
         ),
     ) {
         item { content() }
+    }
+    // Desktop: where the mouse sees how long a tab is and drags through it.
+    // The track keeps clear of the floating search bar and the bottom chrome.
+    ListScrollbar(
+        listState,
+        Modifier.padding(
+            top = LocalSettingsSearchInset.current,
+            bottom = LocalBottomChromeInset.current + navBar,
+        ),
+    )
     }
 }
 
@@ -3772,7 +3896,7 @@ private fun LibrarySettingsTab(viewModel: SettingsViewModel) {
         val hideMiniWithTabs by viewModel.miniPlayerHideWithTabs.collectAsStateWithLifecycle()
         SettingSwitchItem(
             title = stringResource(R.string.settings_mini_player_hide_with_tabs),
-            subtitle = stringResource(R.string.settings_mini_player_hide_with_tabs_desc),
+            subtitle = stringResource(R.string.settings_mini_player_hide_with_tabs_desc_desktop),
             checked = hideMiniWithTabs,
             onCheckedChange = viewModel::setMiniPlayerHideWithTabs,
         )
@@ -4088,11 +4212,11 @@ private fun PlaylistImportSection() {
 
 /** One search hit: the setting, and where it lives. */
 @Composable
-private fun SettingsHitPill(entry: SettingsEntry, onClick: () -> Unit) {
+private fun SettingsHitPill(entry: SettingsEntry, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        modifier = Modifier.bounceClick(onClick = onClick),
+        modifier = modifier.bounceClick(hoverShape = CircleShape, onClick = onClick),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -4255,7 +4379,14 @@ private fun ColorTransitionSetting(
             // One detent per stop. Slider counts the points *between* the ends,
             // so it is two fewer than there are stops.
             steps = stops.size - 2,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .sliderWheel(
+                    value = position,
+                    range = 0f..(stops.size - 1).toFloat(),
+                    steps = stops.size - 2,
+                    onCommit = { onMillisChange(stops[position.roundToInt().coerceIn(stops.indices)]) },
+                ) { position = it },
         )
         Spacer(Modifier.height(12.dp))
     }

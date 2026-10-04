@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -110,6 +111,7 @@ private fun ScrollArrow(visible: Boolean, icon: ImageVector, modifier: Modifier,
                 .pointerHoverIcon(PointerIcon.Hand)
                 // Not focusable: the row's own items are what Tab walks, and an
                 // arrow that only exists under the mouse is no place for focus.
+                .focusProperties { canFocus = false }
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
@@ -158,6 +160,16 @@ fun BoxScope.GridScrollbar(state: LazyGridState, modifier: Modifier = Modifier) 
         modifier = modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 2.dp),
     )
 }
+
+/**
+ * Whether a `verticalScroll` column holds more than it shows. Reads false before
+ * the column's first layout, where [ScrollState.maxValue] is still
+ * `Int.MAX_VALUE` and would claim an overflow for one frame.
+ *
+ * For a column whose height follows its content: [ColumnScrollbar] fills its
+ * Box's height, so drawn under a short list it would stretch the Box to its cap.
+ */
+val ScrollState.overflows: Boolean get() = viewportSize > 0 && maxValue > 0
 
 /** A scrollbar on the right edge of a [Box] holding a `verticalScroll` column. */
 @Composable

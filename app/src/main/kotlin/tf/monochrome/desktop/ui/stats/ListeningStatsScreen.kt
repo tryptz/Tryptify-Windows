@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +26,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
@@ -54,10 +56,12 @@ fun ListeningStatsScreen(
             )
         }
     ) { padding ->
+        val listState = rememberLazyListState()
+        Box(Modifier.fillMaxSize().padding(padding)) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
@@ -103,6 +107,8 @@ fun ListeningStatsScreen(
             item {
                 Spacer(modifier = Modifier.height(32.dp))
             }
+        }
+        ListScrollbar(listState, Modifier.padding(bottom = LocalBottomChromeInset.current))
         }
     }
 }

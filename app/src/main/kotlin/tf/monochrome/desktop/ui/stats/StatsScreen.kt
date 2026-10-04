@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -92,6 +94,9 @@ import tf.monochrome.desktop.data.db.dao.TopTrackAggregate
 import tf.monochrome.desktop.data.db.dao.WeekdayAggregate
 import kotlin.math.roundToInt
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.discover.RefreshKey
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
@@ -113,12 +118,19 @@ fun StatsScreen(
         }
     }
 
+    RefreshKey { if (!isRefreshing) viewModel.refresh() }
+
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text(stringResource(R.string.listening_stats)) },
             navigationIcon = {
                 IconButton(onClick = { navController.popBackStackSafe() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                }
+            },
+            actions = {
+                IconButton(onClick = viewModel::refresh, enabled = !isRefreshing) {
+                    Icon(Icons.Default.Sync, contentDescription = stringResource(R.string.action_refresh))
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
@@ -154,7 +166,10 @@ private fun StatsContent(
     lastSyncedAt: Long?,
     onPickRange: (StatsRange) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + LocalBottomChromeInset.current),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -245,6 +260,8 @@ private fun StatsContent(
             }
         }
     }
+    ListScrollbar(listState, Modifier.padding(bottom = LocalBottomChromeInset.current))
+    }
 }
 
 // ─── Stagger helper ─────────────────────────────────────────────────────────
@@ -282,18 +299,21 @@ private fun LaunchedEffectOnce(block: suspend () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RangePicker(current: StatsRange, onPick: (StatsRange) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        StatsRange.values().forEach { r ->
-            FilterChip(
-                selected = current == r,
-                onClick = { onPick(r) },
-                label = { Text(stringResource(r.labelRes())) }
-            )
+    val rowScroll = rememberScrollState()
+    HoverScrollRow(state = rowScroll) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rowScroll),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatsRange.values().forEach { r ->
+                FilterChip(
+                    selected = current == r,
+                    onClick = { onPick(r) },
+                    label = { Text(stringResource(r.labelRes())) }
+                )
+            }
         }
     }
 }
@@ -411,10 +431,12 @@ private fun HeroPill(
 
 @Composable
 private fun HighlightRow(state: StatsUiState) {
+    val rowScroll = rememberScrollState()
+    HoverScrollRow(state = rowScroll) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+            .horizontalScroll(rowScroll),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         HighlightTile(stringResource(R.string.filter_tracks), state.uniqueTracks.toString())
@@ -429,6 +451,7 @@ private fun HighlightRow(state: StatsUiState) {
         if (state.longestStreakDays > 0) {
             HighlightTile(stringResource(R.string.longest_streak), pluralStringResource(R.plurals.days_count, state.longestStreakDays, state.longestStreakDays))
         }
+    }
     }
 }
 

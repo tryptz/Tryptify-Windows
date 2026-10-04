@@ -7,6 +7,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +26,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +50,12 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.doubleClickReset
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.wheelAdjust
+import tf.monochrome.desktop.ui.mixer.dragScale
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.res.stringResource
@@ -66,6 +77,10 @@ private val LedRed    = Color(0xFFE5534B)
 /** LED peak-hold decay rate in dB/sec (rate-independent). */
 private const val DECAY_DB_PER_SEC = 36f
 
+/** What a double-click on a fader puts the parameter back to. */
+private val InflatorDefaults = InflatorState()
+private val CompressorDefaults = CompressorState()
+
 // ----------------------------------------------------------------------------
 // Vertical fader — slim tonal track with a primary-coloured fill + pill thumb.
 // ----------------------------------------------------------------------------
@@ -77,6 +92,7 @@ private fun OxfordFader(
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     trackWidth: Dp = 6.dp,
+    defaultValue: Float? = null,
 ) {
     val trackBg = MaterialTheme.colorScheme.surfaceContainerHighest
     val trackActive = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
@@ -92,11 +108,29 @@ private fun OxfordFader(
     // fader back. Same updated-state fix as FLKnob.
     val latestValue by rememberUpdatedState(value)
     val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val windowInfo = LocalWindowInfo.current
+    // Desktop: a hundredth of the travel per wheel notch or arrow press, a
+    // tenth per Page key, and a tenth of that again with Ctrl held.
+    val step = (valueRange.endInclusive - valueRange.start) / 100f
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .focusRing(focused, RoundedCornerShape(6.dp))
+                .wheelAdjust(value = value, range = valueRange, step = step, onValueChange = onValueChange)
+                .adjustKeys(
+                    value = value,
+                    range = valueRange,
+                    step = step,
+                    interactionSource = interaction,
+                    onValueChange = onValueChange,
+                )
+                // Desktop: a double-click puts the parameter back to its default.
+                .doubleClickReset(enabled = defaultValue != null) { defaultValue?.let(latestOnValueChange) }
+                .pointerHoverIcon(PointerIcon.Hand)
                 .pointerInput(valueRange) {
                     detectDragGestures(
                         onDragStart = {
@@ -105,7 +139,8 @@ private fun OxfordFader(
                         },
                         onDrag = { change, drag ->
                             change.consume()
-                            dragAccumPx += drag.y
+                            // Desktop: Shift or Ctrl held slows the drag for fine settings.
+                            dragAccumPx += drag.y * windowInfo.dragScale()
                             val h = size.height.toFloat()
                             if (h > 0f) {
                                 val span = valueRange.endInclusive - valueRange.start
@@ -325,6 +360,7 @@ private fun FaderColumn(
     meterStereo: Boolean = true,
     meterMinDb: Float = -42f,
     meterMaxDb: Float = 0f,
+    defaultValue: Float? = null,
 ) {
     Column(
         modifier = modifier,
@@ -348,6 +384,7 @@ private fun FaderColumn(
                 valueRange = valueRange,
                 onValueChange = onValueChange,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
+                defaultValue = defaultValue,
             )
             LedMeter(
                 peakL = peakL,
@@ -453,24 +490,27 @@ private fun PresetRail(
     items: List<Pair<String, Boolean>>,
     onSelect: (Int) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        items.forEachIndexed { index, (label, active) ->
-            FilterChip(
-                selected = active,
-                onClick = { onSelect(index) },
-                label = {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelSmall,
-                        letterSpacing = 0.4.sp,
-                    )
-                },
-            )
+    val railScroll = rememberScrollState()
+    HoverScrollRow(state = railScroll, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(railScroll),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items.forEachIndexed { index, (label, active) ->
+                FilterChip(
+                    selected = active,
+                    onClick = { onSelect(index) },
+                    label = {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 0.4.sp,
+                        )
+                    },
+                )
+            }
         }
     }
 }
@@ -578,6 +618,7 @@ fun InflatorScreen(
                     value = state.inputDb,
                     valueRange = -6f..12f,
                     onValueChange = effect::setInputDb,
+                    defaultValue = InflatorDefaults.inputDb,
                     peakL = peak.left, peakR = peak.right,
                     modifier = Modifier.fillMaxSize(),
                     meterStereo = true,
@@ -600,6 +641,7 @@ fun InflatorScreen(
                             value = state.effectPct,
                             valueRange = 0f..100f,
                             onValueChange = effect::setEffectPct,
+                            defaultValue = InflatorDefaults.effectPct,
                             peakL = peak.left, peakR = peak.right,
                             meterStereo = true,
                             meterMinDb = -42f, meterMaxDb = 0f,
@@ -613,6 +655,7 @@ fun InflatorScreen(
                             value = state.curve,
                             valueRange = -50f..50f,
                             onValueChange = effect::setCurve,
+                            defaultValue = InflatorDefaults.curve,
                             peakL = 0f, peakR = 0f,
                             meterStereo = false,
                             meterMinDb = -50f, meterMaxDb = 50f,
@@ -681,6 +724,7 @@ fun InflatorScreen(
                     value = state.outputDb,
                     valueRange = -12f..0f,
                     onValueChange = effect::setOutputDb,
+                    defaultValue = InflatorDefaults.outputDb,
                     peakL = peak.left, peakR = peak.right,
                     modifier = Modifier.fillMaxSize(),
                     meterStereo = true,
@@ -738,6 +782,7 @@ fun CompressorScreen(
                     value = state.thresholdDb,
                     valueRange = -60f..0f,
                     onValueChange = effect::setThresholdDb,
+                    defaultValue = CompressorDefaults.thresholdDb,
                     peakL = peak.left, peakR = peak.right,
                     modifier = Modifier.fillMaxSize(),
                     meterMinDb = -60f, meterMaxDb = 0f,
@@ -750,6 +795,7 @@ fun CompressorScreen(
                     value = state.ratio,
                     valueRange = 1f..20f,
                     onValueChange = effect::setRatio,
+                    defaultValue = CompressorDefaults.ratio,
                     peakL = 0f, peakR = 0f,
                     meterStereo = false,
                     modifier = Modifier.fillMaxSize(),
@@ -762,6 +808,7 @@ fun CompressorScreen(
                     value = state.attackMs.coerceIn(0.1f, 200f),
                     valueRange = 0.1f..200f,
                     onValueChange = effect::setAttackMs,
+                    defaultValue = CompressorDefaults.attackMs,
                     peakL = 0f, peakR = 0f,
                     meterStereo = false,
                     modifier = Modifier.fillMaxSize(),
@@ -774,6 +821,7 @@ fun CompressorScreen(
                     value = state.releaseMs,
                     valueRange = 5f..2000f,
                     onValueChange = effect::setReleaseMs,
+                    defaultValue = CompressorDefaults.releaseMs,
                     peakL = 0f, peakR = 0f,
                     meterStereo = false,
                     modifier = Modifier.fillMaxSize(),
@@ -810,6 +858,7 @@ fun CompressorScreen(
                         value = state.makeupDb,
                         valueRange = -12f..24f,
                         onValueChange = effect::setMakeupDb,
+                        defaultValue = CompressorDefaults.makeupDb,
                         peakL = 0f, peakR = 0f,
                         meterStereo = false,
                         modifier = Modifier.height(100.dp).fillMaxWidth(),

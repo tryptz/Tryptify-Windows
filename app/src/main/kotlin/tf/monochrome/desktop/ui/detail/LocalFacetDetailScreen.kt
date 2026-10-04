@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,6 +64,8 @@ import tf.monochrome.desktop.ui.theme.MonoDimens
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
 import tf.monochrome.desktop.ui.components.SearchOverlay
 import tf.monochrome.desktop.ui.components.SearchAction
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
@@ -96,6 +99,7 @@ fun LocalFacetDetailScreen(
     val visibleTracks = remember(sortedTracks, listQuery, listSort) {
         sortedTracks.applyUnifiedSearchAndSort(listQuery, listSort)
     }
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
 
     var menuTrack by remember { mutableStateOf<UnifiedTrack?>(null) }
     UnifiedTrackContextMenuHost(
@@ -133,7 +137,10 @@ fun LocalFacetDetailScreen(
             placeholder = stringResource(facet.searchHint),
             onClose = { searchOpen = false; listQuery = "" },
         ) { searchTopInset ->
+        val listState = rememberLazyListState()
+        Box(Modifier.fillMaxSize()) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                         top = searchTopInset,
@@ -230,6 +237,8 @@ fun LocalFacetDetailScreen(
                 }
             }
         }
+        ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
+        }
         }
     }
 }
@@ -245,7 +254,9 @@ private fun FacetTrackRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs),
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            // Right-click opens what the row's 3-dot opens.
+            .contextClick(onContextClick = onMoreClick),
         shape = MonoDimens.shapeMd,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = MonoDimens.cardAlpha),
         onClick = onClick

@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -92,6 +95,7 @@ fun LocalAlbumDetailScreen(
     var listSort by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = TrackSortSaver) {
         mutableStateOf(TrackSort())
     }
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
     val visibleTracks = remember(tracks, listQuery, listSort) {
         tracks.applyUnifiedSearchAndSort(listQuery, listSort)
     }
@@ -140,7 +144,10 @@ fun LocalAlbumDetailScreen(
                     placeholder = stringResource(R.string.search_this_album),
                     onClose = { searchOpen = false; listQuery = "" },
                 ) { searchTopInset ->
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         top = searchTopInset,
@@ -270,6 +277,8 @@ fun LocalAlbumDetailScreen(
                         )
                     }
                 }
+                ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
+                }
                 }
             }
         }
@@ -288,7 +297,9 @@ private fun LocalTrackRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs),
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            // Right-click opens what the row's 3-dot opens.
+            .contextClick(onContextClick = onMoreClick),
         shape = MonoDimens.shapeMd,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = MonoDimens.cardAlpha),
         onClick = onClick

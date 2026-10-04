@@ -4,6 +4,8 @@ import android.os.Build
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -16,11 +18,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -33,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +56,10 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -74,6 +87,8 @@ import tf.monochrome.desktop.ui.player.liveLensCompiles
 import tf.monochrome.desktop.ui.theme.glassTint
 import tf.monochrome.desktop.ui.theme.PressSpring
 import tf.monochrome.desktop.ui.theme.MonoDimens
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.desktopHover
 import kotlin.math.abs
 import tf.monochrome.desktop.ui.player.playerFrostTint
 import tf.monochrome.desktop.ui.player.BackdropArtFit
@@ -89,6 +104,9 @@ private val MiniCorner = 16.dp
 private val MiniControlCell = 48.dp
 private val MiniGlassIcon = 26.dp
 private val MiniProgressHeight = 2.dp
+// What a mouse can hit of the progress line: the line plus the strip of the
+// row's top padding below it. Only hit, never drawn.
+private val MiniSeekBandHeight = 8.dp
 
 @Composable
 fun MiniPlayer(
@@ -118,6 +136,12 @@ fun MiniPlayer(
      * same reason as [glassTintColor]: inside it, `background` is the album's.
      */
     glassGround: Color? = null,
+    /**
+     * Seek to a fraction of the track. Given, a mouse can click or drag along
+     * the progress line; a finger still opens or swipes the bar there, as it
+     * always has. Null leaves the line a display only.
+     */
+    onSeek: ((Float) -> Unit)? = null,
 ) {
     if (track == null) return
 
@@ -164,8 +188,35 @@ fun MiniPlayer(
         )
     }
 
+    // Previous track was a swipe and nothing else. A mouse can drag the bar the
+    // same way, but nobody guesses that, so a right-click (or the Menu key, or
+    // Shift+F10 on the focused bar) offers the swipes as a menu instead.
+    var menuOpen by remember { mutableStateOf(false) }
+    val barMenu: @Composable () -> Unit = {
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_previous)) },
+                leadingIcon = { Icon(Icons.Default.SkipPrevious, contentDescription = null) },
+                onClick = { menuOpen = false; onSkipPreviousClick() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_skip_next)) },
+                leadingIcon = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                onClick = { menuOpen = false; onSkipNextClick() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.mini_player_open_player)) },
+                leadingIcon = { Icon(Icons.Default.KeyboardArrowUp, contentDescription = null) },
+                onClick = { menuOpen = false; onClick() },
+            )
+        }
+    }
+
     if (!useGlass) {
         // ── Legacy fallback (API < 33 or glass off): haze glass + Material icons ──
+        // No indication, so the hover rim and the hand pointer are what tell a
+        // mouse the whole bar opens the player.
+        val legacyBarSource = remember { MutableInteractionSource() }
         Box(
             modifier = modifier
                 .fillMaxWidth()
@@ -173,10 +224,13 @@ fun MiniPlayer(
                     hazeState = hazeState,
                     shape = RoundedCornerShape(MiniCorner)
                 )
-                .clickable(interactionSource = null, indication = null, onClick = onClick)
+                .desktopHover(legacyBarSource, RoundedCornerShape(MiniCorner))
+                .contextClick { menuOpen = true }
+                .clickable(interactionSource = legacyBarSource, indication = null, onClick = onClick)
                 .then(swipeGestures)
         ) {
-            MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar) {
+            barMenu()
+            MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar, onSeek) {
                 IconButton(onClick = onPlayPauseClick) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -290,9 +344,11 @@ fun MiniPlayer(
             .fillMaxWidth()
             .onSizeChanged { barSize = it }
             .clip(RoundedCornerShape(MiniCorner))
+            .contextClick { menuOpen = true }
             .glassSqueeze(press = barPress, onClick = onClick)
             .then(swipeGestures)
     ) {
+        barMenu()
         // Frosted backdrop UNDER the glass slab. The slab body can be nearly
         // transparent (bodyOpacity goes down to 0.2), and without this layer
         // whatever scrolls behind the bar — list rows, titles — reads through
@@ -396,10 +452,11 @@ fun MiniPlayer(
         // Transparent content overlay: progress, cover, text, and the two tap
         // targets sitting exactly over the punched holes (same trailing cells).
         // No ripple indication — the glass press-bulge is the feedback.
-        MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar) {
+        MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar, onSeek) {
             Box(
                 modifier = Modifier
                     .size(MiniControlCell)
+                    .desktopHover(playSource, CircleShape)
                     .clickable(
                         interactionSource = playSource,
                         indication = null,
@@ -410,6 +467,7 @@ fun MiniPlayer(
             Box(
                 modifier = Modifier
                     .size(MiniControlCell)
+                    .desktopHover(skipSource, CircleShape)
                     .clickable(
                         interactionSource = skipSource,
                         indication = null,
@@ -434,18 +492,28 @@ private fun MiniPlayerContent(
     blendMillis: Int,
     userTrackChanges: Int,
     showProgress: Boolean,
+    onSeek: ((Float) -> Unit)?,
     controls: @Composable () -> Unit,
 ) {
     Column {
         if (showProgress) {
-            LinearProgressIndicator(
-                progress = { progressProvider().coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(MiniProgressHeight),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.outline
-            )
+            // Where a mouse drag along the line has got to. The line follows
+            // the drag and the track seeks once, on release, rather than on
+            // every pixel of it.
+            var scrub by remember { mutableStateOf<Float?>(null) }
+            Box(Modifier.fillMaxWidth().height(MiniProgressHeight)) {
+                LinearProgressIndicator(
+                    progress = { (scrub ?: progressProvider()).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(MiniProgressHeight),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.outline
+                )
+                if (onSeek != null) {
+                    MiniSeekBand(onScrub = { scrub = it }, onSeek = onSeek)
+                }
+            }
         }
         Row(
             modifier = Modifier.padding(horizontal = MonoDimens.spacingMd, vertical = MonoDimens.spacingSm),
@@ -480,4 +548,54 @@ private fun MiniPlayerContent(
             controls()
         }
     }
+}
+
+/**
+ * The progress line's mouse target. Laid out at the line's own 2dp, so nothing
+ * under it moves, but hit-tested at [MiniSeekBandHeight], hanging down into the
+ * row's top padding: a 2dp target is a pixel hunt.
+ *
+ * Mouse only, and the primary button only. A touch is left alone so it reaches
+ * the bar's tap and swipes exactly as before, and a right-click so it reaches
+ * the bar's menu.
+ */
+@Composable
+private fun MiniSeekBand(onScrub: (Float?) -> Unit, onSeek: (Float) -> Unit) {
+    val currentOnScrub by rememberUpdatedState(onScrub)
+    val currentOnSeek by rememberUpdatedState(onSeek)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .wrapContentHeight(Alignment.Top, unbounded = true)
+            .height(MiniSeekBandHeight)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    if (down.type != PointerType.Mouse || !currentEvent.buttons.isPrimaryPressed) {
+                        return@awaitEachGesture
+                    }
+                    fun fractionAt(x: Float) = (x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    down.consume()
+                    var at = fractionAt(down.position.x)
+                    currentOnScrub(at)
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent().changes
+                                .firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                currentOnSeek(at)
+                                break
+                            }
+                            at = fractionAt(change.position.x)
+                            change.consume()
+                            currentOnScrub(at)
+                        }
+                    } finally {
+                        currentOnScrub(null)
+                    }
+                }
+            },
+    )
 }

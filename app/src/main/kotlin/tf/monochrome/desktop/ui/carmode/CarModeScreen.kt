@@ -60,6 +60,8 @@ fun CarModeScreen(
     val bandCount by viewModel.bandCount.collectAsStateWithLifecycle()
 
     var showEqSettings by remember { mutableStateOf(false) }
+    // Escape (and back) closes the EQ settings before it leaves car mode.
+    androidx.activity.compose.BackHandler(enabled = showEqSettings) { showEqSettings = false }
 
     Box(
         modifier = Modifier

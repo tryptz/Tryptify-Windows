@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -19,12 +20,28 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -85,11 +102,20 @@ fun GlassSearchBar(
     content: @Composable ColumnScope.() -> Unit = {},
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val focus = remember { FocusRequester() }
 
     LaunchedEffect(autoFocus) {
         if (autoFocus) runCatching { focus.requestFocus() }
     }
+
+    // Back (Escape on a keyboard) empties a field that is being typed in
+    // before it leaves the screen, as a desktop search box does. Only while
+    // there is something to clear, so an empty field still goes back.
+    var fieldFocused by remember { mutableStateOf(false) }
+    val currentOnQueryChange by rememberUpdatedState(onQueryChange)
+    val clearQuery = remember { { currentOnQueryChange("") } }
+    BackHandler(enabled = fieldFocused && query.isNotEmpty(), onBack = clearQuery)
 
     GlassPanel(
         hazeState = hazeState,
@@ -125,6 +151,18 @@ fun GlassSearchBar(
                     ),
                     modifier = Modifier
                         .weight(1f)
+                        .onFocusChanged { fieldFocused = it.isFocused }
+                        // Down arrow leaves the field for whatever lies below
+                        // it, the bar's pills or the first result, as in a
+                        // desktop search box. Where nothing does, the field
+                        // keeps the key.
+                        .onPreviewKeyEvent { event ->
+                            event.type == KeyEventType.KeyDown &&
+                                event.key == Key.DirectionDown &&
+                                !event.isShiftPressed && !event.isCtrlPressed &&
+                                !event.isAltPressed && !event.isMetaPressed &&
+                                focusManager.moveFocus(FocusDirection.Down)
+                        }
                         .focusRequester(focus),
                     // BasicTextField rather than a Material one because those
                     // bring a container, an indicator and their own vertical

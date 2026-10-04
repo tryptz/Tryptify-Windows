@@ -58,7 +58,25 @@ import tf.monochrome.desktop.ui.components.liquidGlass
 import tf.monochrome.desktop.ui.mixer.FLKnobControl
 import tf.monochrome.desktop.ui.mixer.ParamDef
 import tf.monochrome.desktop.ui.mixer.getParamDefs
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.input.wheelAdjust
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -87,8 +105,15 @@ fun FxCard(
     onOversample: (Int) -> Unit,
     onPreset: (FxPreset) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Desktop: the reorder a mouse finds in the right-click menu and a keyboard
+     * on Alt+Up and Alt+Down, beside the drag handle. Null at either end.
+     */
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
 ) {
     val bypassed = plugin.bypassed
+    var menuOpen by remember { mutableStateOf(false) }
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         label = "fxCardChevron"
@@ -109,7 +134,19 @@ fun FxCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp),
+                .height(44.dp)
+                // On the row, so the keys arrive from whichever header control has focus.
+                .contextClick { menuOpen = true }
+                .onKeyEvent { event ->
+                    if (!event.isAltPressed) return@onKeyEvent false
+                    val move = when (event.key) {
+                        Key.DirectionUp -> onMoveUp
+                        Key.DirectionDown -> onMoveDown
+                        else -> return@onKeyEvent false
+                    }
+                    if (event.type == KeyEventType.KeyDown) move?.invoke()
+                    true
+                },
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Category accent stripe (left edge)
@@ -122,7 +159,7 @@ fun FxCard(
             )
 
             // Drag handle
-            Box(modifier = dragHandle.padding(horizontal = 4.dp)) {
+            Box(modifier = dragHandle.pointerHoverIcon(PointerIcon.Hand).padding(horizontal = 4.dp)) {
                 Icon(
                     Icons.Default.DragHandle,
                     contentDescription = stringResource(R.string.mixer_reorder),
@@ -184,6 +221,29 @@ fun FxCard(
                     contentDescription = stringResource(R.string.api_remove),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     modifier = Modifier.size(16.dp)
+                )
+            }
+
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                onMoveUp?.let { move ->
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.api_move_up)) },
+                        onClick = { menuOpen = false; move() }
+                    )
+                }
+                onMoveDown?.let { move ->
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.mixer_move_down)) },
+                        onClick = { menuOpen = false; move() }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text(if (bypassed) stringResource(R.string.mixer_enable) else stringResource(R.string.mixer_bypass)) },
+                    onClick = { menuOpen = false; onBypass() }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.api_remove)) },
+                    onClick = { menuOpen = false; onRemove() }
                 )
             }
         }
@@ -325,6 +385,7 @@ private fun Eq10BandKnobs(
     onParam: (Int, Float) -> Unit,
 ) {
     // Param 0 = preamp; then 5 params per band.
+    // About 51 knobs: each takes the wheel only from directly under the pointer, and a chain still gliding keeps it; the scrollbar never touches one.
     if (defs.isNotEmpty()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             val def = defs[0]
@@ -414,9 +475,13 @@ private fun MixSlider(
     val haptic = LocalHapticFeedback.current
     val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
     val thumb = MaterialTheme.colorScheme.surfaceContainerHighest
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
     Canvas(
         modifier = modifier
             .height(28.dp)
+            .focusRing(focused, RoundedCornerShape(14.dp))
+            .pointerHoverIcon(PointerIcon.Hand)
             .adjustableSemantics(
                 label = stringResource(R.string.mixer_mix),
                 value = value,
@@ -426,6 +491,16 @@ private fun MixSlider(
             )
             // Desktop: the wheel sweeps it 5% a notch.
             .wheelAdjust(value = value, range = 0f..1f, step = 0.05f, onValueChange = { latest(it) })
+            // Desktop: the arrows 5% (Ctrl 1%), Page Up/Down 25%, Home dry, End wet.
+            .adjustKeys(
+                value = value,
+                range = 0f..1f,
+                step = 0.05f,
+                bigStep = 0.25f,
+                fineStep = 0.01f,
+                interactionSource = interaction,
+                onValueChange = { latest(it) },
+            )
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { latest((it.x / size.width).coerceIn(0f, 1f)) },

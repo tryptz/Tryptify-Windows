@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.player.legacy
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -10,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,13 +55,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.devedit.DevEditable
 import tf.monochrome.desktop.domain.model.NowPlayingViewMode
 import tf.monochrome.desktop.domain.model.Track
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.desktopHover
 import tf.monochrome.desktop.ui.player.DynamicAlbumGlow
 import tf.monochrome.desktop.ui.player.MainPlayerUiState
 import tf.monochrome.desktop.ui.player.PlayerDesignTokens
@@ -129,6 +137,8 @@ fun LegacyMainPlayerScreen(
 ) {
     val accent = state.albumColors.vibrant
     var statusExpanded by remember { mutableStateOf(false) }
+    // Escape (and the mouse Back button) close the overlay before leaving the player.
+    BackHandler(enabled = statusExpanded) { statusExpanded = false }
 
     Box(
         modifier = Modifier
@@ -336,11 +346,17 @@ private fun LegacyProgressSection(
 
 @Composable
 private fun SwipeUpHandle(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    // Desktop: the grabber and its label brighten under the mouse, which has
+    // no swipe to discover the strip by.
+    val hovered by interaction.collectIsHoveredAsState()
+    val ink = if (hovered) 0.85f else 0.55f
     Column(
         modifier = Modifier
             .padding(bottom = 8.dp)
+            .desktopHover(interaction)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 onClick = onClick,
             ),
@@ -351,19 +367,19 @@ private fun SwipeUpHandle(onClick: () -> Unit) {
             modifier = Modifier
                 .width(40.dp)
                 .height(4.dp)
-                .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(999.dp)),
+                .background(Color.White.copy(alpha = if (hovered) 0.6f else 0.35f), RoundedCornerShape(999.dp)),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Default.KeyboardArrowUp,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.55f),
+                tint = Color.White.copy(alpha = ink),
                 modifier = Modifier.size(16.dp),
             )
             Text(
                 text = stringResource(R.string.audio_tools),
                 style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.55f),
+                color = Color.White.copy(alpha = ink),
             )
         }
     }
@@ -408,16 +424,27 @@ private fun StatusOverlayPanel(
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = PlayerDesignTokens.ScreenPadding)
-                .padding(top = 12.dp, bottom = 24.dp),
+                // The handle's 8dp of padding takes over 8dp of this inset, so
+                // the grabber stays where it was.
+                .padding(top = 4.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Click the handle (or swipe the panel down / click the scrim) to close.
             Box(
                 modifier = Modifier
-                    .width(40.dp)
-                    .height(4.dp)
-                    .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(999.dp)),
-            )
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(onClick = onDismiss)
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(40.dp)
+                        .height(4.dp)
+                        .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(999.dp)),
+                )
+            }
             LegacyPlayerStatusGrid(
                 accent = accent,
                 outputLabel = state.outputLabel,
@@ -540,6 +567,14 @@ private fun PlayerTrackInfo(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val artistLinked = track?.artist?.id != null
+            val artistInteraction = remember { MutableInteractionSource() }
+            val artistHovered by artistInteraction.collectIsHoveredAsState()
+            val artistFocused by artistInteraction.collectIsFocusedAsState()
+            // Desktop: the name reads as plain text, so it underlines like a
+            // link under the mouse or keyboard focus.
+            val artistUnderlined = artistLinked &&
+                (artistHovered || (artistFocused && DesktopInput.focusVisible))
             Text(
                 text = track?.title ?: stringResource(R.string.no_track_playing),
                 style = MaterialTheme.typography.titleLarge,
@@ -551,14 +586,17 @@ private fun PlayerTrackInfo(
                 text = track?.displayArtist?.ifBlank { stringResource(R.string.unknown) } ?: stringResource(R.string.unknown),
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color.White.copy(alpha = 0.6f),
+                textDecoration = if (artistUnderlined) TextDecoration.Underline else null,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.clickable(
-                    enabled = track?.artist?.id != null,
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onArtistClick,
-                ),
+                modifier = Modifier
+                    .pointerHoverIcon(if (artistLinked) PointerIcon.Hand else PointerIcon.Default)
+                    .clickable(
+                        enabled = artistLinked,
+                        interactionSource = artistInteraction,
+                        indication = null,
+                        onClick = onArtistClick,
+                    ),
             )
             // Where it plays from, and "via" when that is another service
             // or the device — the same tag as the current player.

@@ -13,7 +13,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +52,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -68,6 +73,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,6 +93,10 @@ import tf.monochrome.desktop.domain.model.Track
 import tf.monochrome.desktop.domain.model.VisualizerEngineStatus
 import tf.monochrome.desktop.domain.model.VisualizerPreset
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.desktopHover
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.onPointerActivity
 import tf.monochrome.desktop.visualizer.ProjectMEngineRepository
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -277,12 +296,14 @@ private fun CircularProgressHero(
         contentAlignment = Alignment.Center,
     ) {
         val ringStroke = 8.dp
+        val artInteraction = remember { MutableInteractionSource() }
         Box(
             modifier = Modifier
                 .fillMaxSize(0.86f)
                 .clip(CircleShape)
+                .desktopHover(artInteraction, CircleShape)
                 .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
+                    interactionSource = artInteraction,
                     indication = null,
                     onClick = onEnterVisualizer,
                 ),
@@ -355,11 +376,22 @@ private fun VisualizerHero(
     // (a tap just before the deadline used to give a near-zero window).
     var showOverlay by remember { mutableStateOf(true) }
     var overlayInteraction by remember { mutableIntStateOf(0) }
-    LaunchedEffect(overlayInteraction) {
+    // Desktop: the controls stay up while Tab is moving through them, since a
+    // keyboard cannot find a button that has faded out of the composition,
+    // and while the mouse rests on the preset panel it is about to use.
+    var focusInside by remember { mutableStateOf(false) }
+    val panelHover = remember { MutableInteractionSource() }
+    val panelHovered by panelHover.collectIsHoveredAsState()
+    val holdOverlay = (focusInside && DesktopInput.focusVisible) || panelHovered
+    LaunchedEffect(overlayInteraction, holdOverlay) {
         showOverlay = true
+        if (holdOverlay) return@LaunchedEffect
         delay(2000)
         showOverlay = false
     }
+    // The last time pointer movement restarted the countdown. Moves arrive many
+    // times a frame; restarting on each would recompose the hero just as often.
+    val lastPointerPoke = remember { longArrayOf(0L) }
     // In fullscreen the system bars are hidden and the exit button lives in
     // the auto-hiding overlay — without this, Back pops the whole player and
     // (fullscreen being a persisted pref) reopening lands right back here.
@@ -373,9 +405,32 @@ private fun VisualizerHero(
         color = Color.Black,
     ) {
         val interactionSource = remember { MutableInteractionSource() }
+        val surfaceFocused by interactionSource.collectIsFocusedAsState()
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // Desktop: moving the mouse brings the controls back and keeps
+                // them while it moves, as a video player does; a mouse never
+                // taps just to look. In fullscreen the pointer hides with them.
+                .onPointerActivity {
+                    val now = System.currentTimeMillis()
+                    if (!showOverlay || now - lastPointerPoke[0] > POINTER_POKE_MS) {
+                        lastPointerPoke[0] = now
+                        overlayInteraction++
+                    }
+                }
+                .pointerHoverIcon(if (isFullscreen && !showOverlay) HiddenPointer else PointerIcon.Default)
+                .focusRing(surfaceFocused, RectangleShape)
+                .onFocusChanged { focusInside = it.hasFocus }
+                // F toggles fullscreen while the visualizer has focus. Ctrl+F
+                // is the app's search, so modified presses are left to it.
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.key != Key.F) return@onKeyEvent false
+                    if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return@onKeyEvent false
+                    if (DesktopInput.isTextInputActive()) return@onKeyEvent false
+                    onToggleFullscreen()
+                    true
+                }
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
@@ -434,7 +489,7 @@ private fun VisualizerHero(
                         onOpenPresetBrowser = onOpenPresetBrowser,
                         isFavorite = isPresetFavorite,
                         onToggleFavorite = onTogglePresetFavorite,
-                        modifier = Modifier.align(Alignment.BottomCenter),
+                        modifier = Modifier.align(Alignment.BottomCenter).hoverable(panelHover),
                     )
                 }
             }
@@ -548,6 +603,23 @@ private fun VisualizerHeroOverlay(
  */
 private const val AMBIENT_CONTROLS_IDLE_MS = 4_000L
 
+/** How often mouse movement may restart an overlay's idle countdown. */
+internal const val POINTER_POKE_MS = 400L
+
+/**
+ * A fully transparent cursor, for a fullscreen visualizer whose controls have
+ * hidden: the arrow parked over the picture is the one thing left on screen.
+ */
+private val HiddenPointer: PointerIcon by lazy {
+    PointerIcon(
+        java.awt.Toolkit.getDefaultToolkit().createCustomCursor(
+            java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB),
+            java.awt.Point(0, 0),
+            "hidden",
+        ),
+    )
+}
+
 /**
  * Preset controls for ambient mode's "Remove album cover" state.
  *
@@ -603,9 +675,18 @@ internal fun AmbientPresetControls(
     // key the same effect, so either one restarts the timer.
     var selfPoke by remember { mutableIntStateOf(0) }
     var visible by remember { mutableStateOf(true) }
+    // Desktop: held while the mouse is over the row, and while the keyboard
+    // has focus inside it, so Tab does not lose its place in a row that fades
+    // out under it. Keyboard use elsewhere must not pin it: the caller brings
+    // it back on Tab instead, since a keyboard cannot tap the empty art.
+    val rowHover = remember { MutableInteractionSource() }
+    val rowHovered by rowHover.collectIsHoveredAsState()
+    var focusInside by remember { mutableStateOf(false) }
+    val hold = rowHovered || (focusInside && DesktopInput.focusVisible)
 
-    LaunchedEffect(revealKey, selfPoke) {
+    LaunchedEffect(revealKey, selfPoke, hold) {
         visible = true
+        if (hold) return@LaunchedEffect
         delay(AMBIENT_CONTROLS_IDLE_MS)
         visible = false
     }
@@ -618,6 +699,9 @@ internal fun AmbientPresetControls(
         exit = fadeOut(tween(520)),
         modifier = modifier,
     ) {
+        // The row leaves the composition with focus still inside it after a
+        // mouse press, and a removed node reports no focus change.
+        DisposableEffect(Unit) { onDispose { focusInside = false } }
         // A Box with three aligned children rather than a four-way
         // SpaceBetween row. Browse has to stay on the centre axis the transport
         // below is centred on, and four evenly spaced buttons would push it off
@@ -626,6 +710,8 @@ internal fun AmbientPresetControls(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .hoverable(rowHover)
+                .onFocusChanged { focusInside = it.hasFocus }
                 .padding(horizontal = 20.dp, vertical = 10.dp),
         ) {
             AmbientPresetButton(
@@ -776,8 +862,17 @@ private fun HeroCoverArt(
     var controlsVisible by remember { mutableStateOf(true) }
     var controlsInteraction by remember { mutableIntStateOf(0) }
     val showControls = { controlsInteraction++ }
-    LaunchedEffect(controlsInteraction) {
+    // Desktop: the controls show while the mouse is over the art, which is
+    // where a mouse looks for them, and while Tab is inside it.
+    val artInteraction = remember { MutableInteractionSource() }
+    val artHovered by artInteraction.collectIsHoveredAsState()
+    val artFocused by artInteraction.collectIsFocusedAsState()
+    var focusInside by remember { mutableStateOf(false) }
+    val keyboardInside = focusInside && DesktopInput.focusVisible
+    val holdControls = artHovered || keyboardInside
+    LaunchedEffect(controlsInteraction, holdControls) {
         controlsVisible = true
+        if (holdControls) return@LaunchedEffect
         delay(1200)
         controlsVisible = false
     }
@@ -786,14 +881,18 @@ private fun HeroCoverArt(
         animationSpec = tween(durationMillis = 220),
         label = "controlsFade",
     )
-    val interactive = controlsAlpha > 0.5f
+    // Enabled from the moment Tab lands on the art, not once the fade-in has
+    // passed halfway, so the next Tab finds the buttons rather than skipping them.
+    val interactive = controlsAlpha > 0.5f || keyboardInside
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .backdropFrame(coverFrame)
+            .focusRing(artFocused, RectangleShape)
+            .onFocusChanged { focusInside = it.hasFocus }
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = artInteraction,
                 indication = null,
             ) { showControls(); onArtTap() }
     ) {
@@ -996,6 +1095,7 @@ private fun VisualizerActionPill(
     Surface(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
+            .desktopHover(interactionSource, RoundedCornerShape(12.dp))
             .clickable(interactionSource = interactionSource, indication = null, onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         color = accent.copy(alpha = 0.14f),

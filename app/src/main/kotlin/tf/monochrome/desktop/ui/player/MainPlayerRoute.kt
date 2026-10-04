@@ -30,12 +30,19 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -50,6 +57,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloseFullscreen
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
@@ -110,6 +119,10 @@ import tf.monochrome.desktop.ui.navigation.navigateTool
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.desktopHover
+import tf.monochrome.desktop.ui.input.onPointerActivity
+import tf.monochrome.desktop.ui.input.wheelAdjust
 
 /**
  * Stateful entry point for the main player. Collects every flow from
@@ -647,9 +660,21 @@ fun MainPlayerRoute(
     // consumes downs in the ordinary cover mode. lyricsSlotWide is the same
     // predicate the lyric surface is composed under.
     var ambientPresetReveal by remember { mutableIntStateOf(0) }
+    // Desktop: moving the mouse over the region brings the row back too, since
+    // a mouse never taps just to look. Throttled: moves arrive many times a
+    // frame, and each bump restarts the row's idle countdown.
+    val lastPresetPoke = remember { longArrayOf(0L) }
     val revealPresetControls =
         if (ambientActive && !lyricsSlotWide) {
-            Modifier.pointerInput(Unit) { detectTapGestures { ambientPresetReveal++ } }
+            Modifier
+                .pointerInput(Unit) { detectTapGestures { ambientPresetReveal++ } }
+                .onPointerActivity {
+                    val now = System.currentTimeMillis()
+                    if (now - lastPresetPoke[0] > POINTER_POKE_MS) {
+                        lastPresetPoke[0] = now
+                        ambientPresetReveal++
+                    }
+                }
         } else {
             Modifier
         }
@@ -858,6 +883,7 @@ fun MainPlayerRoute(
                 // Fx/spectrum/beat locals are provided once around the
                 // whole player (see the route-level provider). Rendered on
                 // top of the art so it fades in over it.
+                val lyricsInteraction = remember { MutableInteractionSource() }
                 LyricsHeroBox(
                     lyrics = lyrics,
                     isLoading = isLyricsLoading,
@@ -873,12 +899,29 @@ fun MainPlayerRoute(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = lyricsProgress }
+                        .desktopHover(lyricsInteraction, enabled = lyricsCanExpand)
                         .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
+                            interactionSource = lyricsInteraction,
                             indication = null,
                             enabled = lyricsCanExpand,
                         ) { lyricsExpanded = !lyricsExpanded },
                 )
+                // Desktop: the outline says the lyrics take a click, this says
+                // what the click does. Bare, with no pane, on the top fade.
+                val lyricsHovered by lyricsInteraction.collectIsHoveredAsState()
+                val lyricsFocused by lyricsInteraction.collectIsFocusedAsState()
+                if (lyricsCanExpand && (lyricsHovered || (lyricsFocused && DesktopInput.focusVisible))) {
+                    Icon(
+                        imageVector = if (lyricsExpanded) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                            .size(18.dp)
+                            .graphicsLayer { alpha = lyricsProgress },
+                    )
+                }
             }
 
             // Ambient: the preset controls live on the visualizer hero, which
@@ -974,7 +1017,22 @@ fun MainPlayerRoute(
     val pickedFrom = currentUnified?.sourceType ?: state.track?.let(trackSource)
     val playerSource = pickedFrom?.let { it to playedFrom }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // Desktop: a keyboard cannot tap the art to bring the faded preset
+            // row back, and Tab cannot reach buttons that have left the
+            // composition. Every Tab inside the player brings the row back;
+            // the key itself is left to focus traversal.
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key == Key.Tab &&
+                    ambientActive && !lyricsSlotWide
+                ) {
+                    ambientPresetReveal++
+                }
+                false
+            },
+    ) {
     androidx.compose.runtime.CompositionLocalProvider(
         tf.monochrome.desktop.ui.components.LocalPlayerSource provides playerSource,
     ) {
@@ -1465,7 +1523,13 @@ private fun BoxScope.SpeedPanel(
                         thumbColor = speedAccent,
                         activeTrackColor = speedAccent,
                     ),
-                    modifier = controlModifier,
+                    // Desktop: the wheel nudges it, held Ctrl for a finer step.
+                    modifier = controlModifier.wheelAdjust(
+                        value = speed,
+                        range = PitchRatio.MIN_SPEED..PitchRatio.MAX_SPEED,
+                        step = 0.05f,
+                        fineStep = 0.01f,
+                    ) { onSpeedChange(PitchRatio.snap(it)) },
                 )
             }
 

@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +45,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +60,7 @@ import tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap
 import tf.monochrome.desktop.domain.model.FilterType
 import tf.monochrome.desktop.ui.components.bounceClick
 import tf.monochrome.desktop.ui.components.bounceCombinedClick
+import tf.monochrome.desktop.ui.input.HoverScrollRow
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -188,21 +196,30 @@ fun ParametricEqEditScreen(
         tf.monochrome.desktop.devedit.DevEditable("peq_edit_band_strip", Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
             SectionLabel(stringResource(R.string.eq_bands_caps))
+            // The + sits outside the scrolling chips, so it stays in reach however
+            // many bands push the row past the edge.
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                currentBands.sortedBy { it.freq }.forEach { band ->
-                    BandChip(
-                        label = formatFreq(band.freq),
-                        gainDb = band.gain,
-                        isSelected = band.id == selectedBandId,
-                        onClick = { viewModel.selectBand(band.id) },
-                        onLongPress = { viewModel.removeBand(band.id) }
-                    )
+                val chipScroll = rememberScrollState()
+                HoverScrollRow(state = chipScroll, modifier = Modifier.weight(1f, fill = false)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(chipScroll),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        currentBands.sortedBy { it.freq }.forEach { band ->
+                            BandChip(
+                                label = formatFreq(band.freq),
+                                gainDb = band.gain,
+                                isSelected = band.id == selectedBandId,
+                                onClick = { viewModel.selectBand(band.id) },
+                                onLongPress = { viewModel.removeBand(band.id) }
+                            )
+                        }
+                    }
                 }
                 Box(
                     modifier = Modifier
@@ -386,28 +403,52 @@ private fun BandChip(
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .then(
-                if (isSelected) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
-                else Modifier.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+    // A long press, a right-click, the Menu key or Delete open a menu holding
+    // Remove. Removing on the press itself took the band of a mouse user who
+    // held the button while trying to drag the row.
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .then(
+                    if (isSelected) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                    else Modifier.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                )
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.key != Key.Delete) return@onKeyEvent false
+                    showMenu = true
+                    true
+                }
+                .bounceCombinedClick(
+                    onLongClick = { showMenu = true },
+                    hoverShape = RoundedCornerShape(10.dp),
+                    onClick = onClick,
+                )
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
             )
-            .bounceCombinedClick(onClick = onClick, onLongClick = onLongPress)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            "%+.1f".format(gainDb),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+            Text(
+                "%+.1f".format(gainDb),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.eq_remove_band)) },
+                onClick = {
+                    showMenu = false
+                    onLongPress()
+                }
+            )
+        }
     }
 }
 

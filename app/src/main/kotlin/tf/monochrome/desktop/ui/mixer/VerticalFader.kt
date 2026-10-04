@@ -1,10 +1,16 @@
 package tf.monochrome.desktop.ui.mixer
 
 import tf.monochrome.desktop.ui.input.wheelAdjust
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.doubleClickReset
+import tf.monochrome.desktop.ui.input.focusRing
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,8 +26,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.ui.components.adjustableSemantics
 import kotlin.math.absoluteValue
@@ -66,10 +80,14 @@ fun VerticalFader(
     // values (same pattern as FLKnob).
     val latestGainDb by rememberUpdatedState(gainDb)
     val latestOnGainChange by rememberUpdatedState(onGainChange)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val windowInfo = LocalWindowInfo.current
 
     Canvas(
         modifier = modifier
             .fillMaxHeight()
+            .focusRing(focused, RoundedCornerShape(6.dp))
             .adjustableSemantics(
                 label = stringResource(R.string.mixer_gain_fader),
                 value = gainDb,
@@ -79,6 +97,24 @@ fun VerticalFader(
             )
             // Desktop: the wheel moves it 1 dB a notch.
             .wheelAdjust(value = gainDb, range = -60f..24f, step = 1f, onValueChange = onGainChange)
+            // Desktop: arrow keys move it 1 dB (Ctrl 0.1, Page keys 6), and
+            // Delete or a double-click puts it back to unity.
+            .onKeyEvent { event ->
+                if (event.key != Key.Delete) return@onKeyEvent false
+                if (event.type == KeyEventType.KeyDown) latestOnGainChange(0f)
+                true
+            }
+            .adjustKeys(
+                value = gainDb,
+                range = -60f..24f,
+                step = 1f,
+                bigStep = 6f,
+                fineStep = 0.1f,
+                interactionSource = interaction,
+                onValueChange = onGainChange,
+            )
+            .doubleClickReset { onGainChange(0f) }
+            .pointerHoverIcon(PointerIcon.Hand)
             .pointerInput(Unit) {
                 // Vertical-only, delta-based dragging. The fader is the
                 // largest touch area of each strip inside the mixer's
@@ -90,6 +126,8 @@ fun VerticalFader(
                 // sideways swipes scroll the row; moving from the cap's
                 // current position keeps grabs jump-free. Tap-to-set is gone
                 // for the same reason — a stray tap was an instant gain jump.
+                // A mouse drag never scrolls the row on the desktop; the row
+                // has its own hover arrows and Shift+wheel for that.
                 var dragStartDb = 0f
                 var dragAccumPx = 0f
                 detectVerticalDragGestures(
@@ -99,7 +137,7 @@ fun VerticalFader(
                     },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        dragAccumPx += dragAmount
+                        dragAccumPx += dragAmount * windowInfo.dragScale()
                         val h = size.height.toFloat()
                         if (h > 0f) {
                             val startY = dbToY(dragStartDb, h)

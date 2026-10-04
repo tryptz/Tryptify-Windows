@@ -19,6 +19,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -67,6 +68,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -88,16 +90,30 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -125,6 +141,9 @@ import tf.monochrome.desktop.domain.model.RadioStation
 import tf.monochrome.desktop.ui.components.GlassPanel
 import tf.monochrome.desktop.ui.components.GlassSearchBar
 import tf.monochrome.desktop.ui.components.bounceClick
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.player.LocalPlayerGlass
 import tf.monochrome.desktop.ui.player.PlayerViewModel
 import tf.monochrome.desktop.ui.theme.DynamicColorScope
@@ -264,6 +283,11 @@ private fun WorldRadioContent(
     val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     val recents by viewModel.recentSearches.collectAsStateWithLifecycle()
 
+    // Escape and the mouse's Back button close what is open over the globe
+    // before they leave the tab. The card is registered last, so it goes first.
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { viewModel.toggleSearch() }
+    androidx.activity.compose.BackHandler(enabled = selected != null) { viewModel.select(null) }
+
     fun spinTo(city: RadioCity) {
         flight?.cancel()
         if (canvasSize == IntSize.Zero) return
@@ -290,6 +314,37 @@ private fun WorldRadioContent(
     // so opening the panel re-aims rather than leaving the city underneath it.
     LaunchedEffect(selected?.id, canvasSize, panelHeightPx / FLIGHT_HEIGHT_QUANTUM) {
         selected?.let { spinTo(it) }
+    }
+
+    // Desktop: the globe with keyboard focus turns on the arrows and zooms on
+    // + and -, as the drag and the wheel do. Home is the recentre button.
+    // Arrows with a modifier are left to the app's shortcuts.
+    val globeFocus = remember { FocusRequester() }
+    var globeFocused by remember { mutableStateOf(false) }
+    // Whether the pointer is over a city, for the hand cursor: on a mouse,
+    // nothing else says which dots a click will open.
+    var overCity by remember { mutableStateOf(false) }
+    fun globeKey(event: KeyEvent): Boolean {
+        if (event.type != KeyEventType.KeyDown) return false
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        if (DesktopInput.isTextInputActive() || canvasSize == IntSize.Zero) return false
+        val step = minOf(canvasSize.width, canvasSize.height) * KEY_SPIN_FRACTION
+        val plain = !event.isShiftPressed
+        val next = when {
+            plain && event.key == Key.DirectionLeft -> camera.spun(Offset(step, 0f), 1f, canvasSize)
+            plain && event.key == Key.DirectionRight -> camera.spun(Offset(-step, 0f), 1f, canvasSize)
+            plain && event.key == Key.DirectionUp -> camera.spun(Offset(0f, step), 1f, canvasSize)
+            plain && event.key == Key.DirectionDown -> camera.spun(Offset(0f, -step), 1f, canvasSize)
+            event.key == Key.Plus || event.key == Key.Equals || event.key == Key.NumPadAdd ->
+                camera.spun(Offset.Zero, WHEEL_ZOOM_STEP, canvasSize)
+            event.key == Key.Minus || event.key == Key.NumPadSubtract ->
+                camera.spun(Offset.Zero, 1f / WHEEL_ZOOM_STEP, canvasSize)
+            plain && event.key == Key.MoveHome -> GlobeCamera()
+            else -> return false
+        }
+        flight?.cancel()
+        camera = next
+        return true
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -343,8 +398,37 @@ private fun WorldRadioContent(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
+                    .focusRing(globeFocused, RectangleShape)
                     .hazeSource(mapHaze)
                     .onSizeChanged { canvasSize = it }
+                    .onFocusChanged { globeFocused = it.isFocused }
+                    .onKeyEvent { globeKey(it) }
+                    .focusRequester(globeFocus)
+                    .focusable()
+                    .pointerHoverIcon(if (overCity) PointerIcon.Hand else PointerIcon.Default)
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                when (event.type) {
+                                    PointerEventType.Move -> {
+                                        val change = event.changes.firstOrNull() ?: continue
+                                        // Mid-drag the globe is turning under the pointer.
+                                        if (change.pressed) continue
+                                        overCity = hitTest(
+                                            change.position,
+                                            liveCities.value,
+                                            liveScale.value,
+                                            size.width,
+                                            size.height,
+                                            liveCamera.value,
+                                        ) != null
+                                    }
+                                    PointerEventType.Exit -> overCity = false
+                                }
+                            }
+                        }
+                    }
                     .pointerInput(Unit) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             flight?.cancel()
@@ -367,7 +451,7 @@ private fun WorldRadioContent(
                         }
                     }
                     .pointerInput(Unit) {
-                        detectTapGestures { point ->
+                        detectTapGestures(onPress = { globeFocus.requestFocus() }) { point ->
                             val hit = hitTest(
                                 point,
                                 liveCities.value,
@@ -522,7 +606,12 @@ private fun GlobeFxSheet(
     onReset: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // No half-height stop: with one, Escape on the open sheet only drops it to
+    // half height, and closing it takes a second press.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -690,53 +779,56 @@ private fun StationSearchBar(
             // bar looked wired up while having nowhere to put an answer.
             if (!state.isEmpty) {
                 Spacer(Modifier.height(10.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Inside a country, the way back leads. Sliding right to
-                    // find the exit would make the drill-down a trap on a row
-                    // that can be two dozen cities long.
-                    state.inCountry?.let { open ->
-                        item {
+                val rowState = rememberLazyListState()
+                HoverScrollRow(state = rowState) {
+                    LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Inside a country, the way back leads. Sliding right to
+                        // find the exit would make the drill-down a trap on a row
+                        // that can be two dozen cities long.
+                        state.inCountry?.let { open ->
+                            item {
+                                CountryPill(
+                                    country = open,
+                                    open = true,
+                                    onClick = { onOpenCountry(null) },
+                                )
+                            }
+                        }
+                        // Countries first otherwise: a country is the broadest
+                        // answer to a half-typed word, and the one most likely to be
+                        // what was meant when it matches at all.
+                        items(state.countries) { country ->
                             CountryPill(
-                                country = open,
-                                open = true,
-                                onClick = { onOpenCountry(null) },
+                                country = country,
+                                open = false,
+                                onClick = { onOpenCountry(country) },
                             )
                         }
-                    }
-                    // Countries first otherwise: a country is the broadest
-                    // answer to a half-typed word, and the one most likely to be
-                    // what was meant when it matches at all.
-                    items(state.countries) { country ->
-                        CountryPill(
-                            country = country,
-                            open = false,
-                            onClick = { onOpenCountry(country) },
-                        )
-                    }
-                    // Then cities. They are the ones that are certainly right —
-                    // matched against the globe's own list rather than guessed
-                    // at from a station's name — and they are already on screen
-                    // while the directory is still being asked.
-                    items(state.cities) { city ->
-                        CitySuggestionPill(
-                            city = city,
-                            onClick = {
-                                keyboard?.hide()
-                                onPickCity(city)
-                            },
-                        )
-                    }
-                    // Unkeyed, as everywhere else the directory's data is
-                    // listed: it does not promise unique uuids, and a duplicate
-                    // pill beats a crash.
-                    items(state.stations) { station ->
-                        StationPill(
-                            station = station,
-                            onClick = {
-                                keyboard?.hide()
-                                onPickStation(station)
-                            },
-                        )
+                        // Then cities. They are the ones that are certainly right —
+                        // matched against the globe's own list rather than guessed
+                        // at from a station's name — and they are already on screen
+                        // while the directory is still being asked.
+                        items(state.cities) { city ->
+                            CitySuggestionPill(
+                                city = city,
+                                onClick = {
+                                    keyboard?.hide()
+                                    onPickCity(city)
+                                },
+                            )
+                        }
+                        // Unkeyed, as everywhere else the directory's data is
+                        // listed: it does not promise unique uuids, and a duplicate
+                        // pill beats a crash.
+                        items(state.stations) { station ->
+                            StationPill(
+                                station = station,
+                                onClick = {
+                                    keyboard?.hide()
+                                    onPickStation(station)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -747,22 +839,25 @@ private fun StationSearchBar(
             // spell.
             if (query.isBlank() && recents.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(recents) { past ->
-                        RecentSearchPill(text = past, onClick = { onQueryChange(past) })
-                    }
-                    item {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.Transparent,
-                            modifier = Modifier.bounceClick(onClick = onClearRecents),
-                        ) {
-                            Text(
-                                text = stringResource(R.string.action_clear),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            )
+                val rowState = rememberLazyListState()
+                HoverScrollRow(state = rowState) {
+                    LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(recents) { past ->
+                            RecentSearchPill(text = past, onClick = { onQueryChange(past) })
+                        }
+                        item {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.Transparent,
+                                modifier = Modifier.bounceClick(onClick = onClearRecents),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.action_clear),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -1071,9 +1166,12 @@ private fun CityCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(nearby, key = { it.id }) { neighbour ->
-                        CityChip(city = neighbour, onClick = { onNearby(neighbour) })
+                val rowState = rememberLazyListState()
+                HoverScrollRow(state = rowState) {
+                    LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(nearby, key = { it.id }) { neighbour ->
+                            CityChip(city = neighbour, onClick = { onNearby(neighbour) })
+                        }
                     }
                 }
             }
@@ -1304,6 +1402,9 @@ private const val MAX_ZOOM = 48f
 
 /** Desktop: the zoom one mouse-wheel notch applies, in or out. */
 private const val WHEEL_ZOOM_STEP = 1.18f
+
+/** Desktop: how far one arrow press turns the globe, as a share of the viewport's shorter side. */
+private const val KEY_SPIN_FRACTION = 0.12f
 
 /** Fraction of the smaller viewport dimension the globe fills at zoom 1. */
 private const val GLOBE_FIT = 0.42f

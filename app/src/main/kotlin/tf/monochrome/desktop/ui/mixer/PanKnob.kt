@@ -1,10 +1,16 @@
 package tf.monochrome.desktop.ui.mixer
 
 import tf.monochrome.desktop.ui.input.wheelAdjust
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.doubleClickReset
+import tf.monochrome.desktop.ui.input.focusRing
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -18,8 +24,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.ui.components.adjustableSemantics
 import kotlin.math.cos
@@ -59,6 +73,9 @@ fun PanKnob(
     // updated-state holder so a drag starts from the actual current pan.
     val latestValue by rememberUpdatedState(value)
     val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val windowInfo = LocalWindowInfo.current
 
     Canvas(
         modifier = modifier
@@ -66,6 +83,7 @@ fun PanKnob(
             // accessibility minimum so it isn't a near-impossible hit.
             .minimumInteractiveComponentSize()
             .size(28.dp)
+            .focusRing(focused, CircleShape)
             .adjustableSemantics(
                 label = stringResource(R.string.mixer_pan),
                 value = value,
@@ -85,6 +103,23 @@ fun PanKnob(
             )
             // Desktop: the wheel pans it 5% a notch.
             .wheelAdjust(value = value, range = -1f..1f, step = 0.05f, onValueChange = onValueChange)
+            // Desktop: arrow keys pan it, and Delete or a double-click centres it.
+            .onKeyEvent { event ->
+                if (event.key != Key.Delete) return@onKeyEvent false
+                if (event.type == KeyEventType.KeyDown) latestOnValueChange(0f)
+                true
+            }
+            .adjustKeys(
+                value = value,
+                range = -1f..1f,
+                step = 0.05f,
+                bigStep = 0.25f,
+                fineStep = 0.01f,
+                interactionSource = interaction,
+                onValueChange = onValueChange,
+            )
+            .doubleClickReset { onValueChange(0f) }
+            .pointerHoverIcon(PointerIcon.Hand)
             .pointerInput(Unit) {
                 // Delta-based vertical drag (up = right, down = left). The knob
                 // sits inside the horizontally-scrolling channel row; an
@@ -102,7 +137,7 @@ fun PanKnob(
                     },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        accumPx += dragAmount
+                        accumPx += dragAmount * windowInfo.dragScale()
                         // ~150px of travel spans the full -1..+1 range.
                         val newVal = (startVal - accumPx / 150f).coerceIn(-1f, 1f)
                         latestOnValueChange(newVal)

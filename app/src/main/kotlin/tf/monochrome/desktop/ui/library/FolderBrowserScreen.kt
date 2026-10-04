@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +76,7 @@ import tf.monochrome.desktop.ui.components.SearchAction
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.contextClick
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -99,6 +102,8 @@ fun FolderBrowserScreen(
     val visibleTracks = remember(tracks, listQuery, listSort) {
         tracks.applyUnifiedSearchAndSort(listQuery, listSort)
     }
+    // Escape and the mouse's Back button close the search before they leave the folder.
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
 
     var folderToExclude by remember { mutableStateOf<FolderToExclude?>(null) }
     folderToExclude?.let { folder ->
@@ -237,6 +242,32 @@ fun FolderBrowserScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    // The long press, where a mouse and the keyboard can see it.
+                    // It only opens the menu: removing still asks first.
+                    Box {
+                        var menuOpen by remember { mutableStateOf(false) }
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = stringResource(R.string.action_more_options),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.remove_folder)) },
+                                onClick = {
+                                    menuOpen = false
+                                    folderToExclude = FolderToExclude(
+                                        path = folder.path,
+                                        displayName = folder.displayName,
+                                        trackCount = folder.trackCount,
+                                    )
+                                },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -261,6 +292,8 @@ fun FolderBrowserScreen(
                             if (nowPlaying) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                             else Color.Transparent
                         )
+                        // Right-click opens what the row's 3-dot opens.
+                        .contextClick { menuTrack = track }
                         .clickable { onPlayTrack(track, visibleTracks) }
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically

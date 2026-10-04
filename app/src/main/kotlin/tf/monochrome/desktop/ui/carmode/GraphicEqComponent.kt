@@ -2,6 +2,8 @@ package tf.monochrome.desktop.ui.carmode
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,18 +21,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tf.monochrome.desktop.domain.model.EqBand
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.doubleClickReset
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.wheelAdjust
 import kotlin.math.log10
 import kotlin.math.pow
 
@@ -88,6 +100,13 @@ fun EqSlider(
 ) {
     val minValue = -12f
     val maxValue = 12f
+    // The drag below outlives recompositions; it reads the gain and callback
+    // through these so it never works from the values of its first frame.
+    val currentGain by rememberUpdatedState(band.gain)
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val trackShape = RoundedCornerShape(4.dp)
 
     Column(
         modifier = modifier
@@ -130,12 +149,39 @@ fun EqSlider(
                 .width(32.dp)
                 .weight(1f)
                 .fillMaxHeight()
-                .clip(RoundedCornerShape(4.dp))
+                .focusRing(focused, trackShape)
+                .clip(trackShape)
                 .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+                .pointerHoverIcon(PointerIcon.Hand)
+                // Desktop: wheel, arrow keys and a double-click back to flat.
+                .wheelAdjust(band.gain, minValue..maxValue, step = 1f, fineStep = 0.5f, onValueChange = onValueChange)
+                .adjustKeys(
+                    value = band.gain,
+                    range = minValue..maxValue,
+                    step = 1f,
+                    bigStep = 3f,
+                    fineStep = 0.5f,
+                    interactionSource = interaction,
+                    onValueChange = onValueChange,
+                )
+                .doubleClickReset { onValueChange(0f) }
                 .pointerInput(Unit) {
-                    detectVerticalDragGestures { change, dragAmount ->
-                        val newGain = (band.gain - dragAmount / 2).coerceIn(minValue, maxValue)
-                        onValueChange(newGain)
+                    // The thumb's centre travels the track less one thumb, so
+                    // the range maps over that span and the thumb stays under
+                    // the finger.
+                    var startGain = 0f
+                    var travelled = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            startGain = currentGain
+                            travelled = 0f
+                        },
+                    ) { change, dragAmount ->
+                        travelled += dragAmount
+                        val travel = (size.height - 24.dp.toPx()).coerceAtLeast(1f)
+                        val perPx = (maxValue - minValue) / travel
+                        val newGain = (startGain - travelled * perPx).coerceIn(minValue, maxValue)
+                        currentOnValueChange(newGain)
                         change.consume()
                     }
                 },
@@ -156,6 +202,7 @@ fun EqSlider(
             // Knob at the filled portion
             Box(
                 modifier = Modifier
+                    .align(BiasAlignment(0f, 1f - 2f * fillRatio))
                     .size(24.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),

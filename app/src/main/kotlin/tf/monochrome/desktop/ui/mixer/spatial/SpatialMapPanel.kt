@@ -1,9 +1,12 @@
 package tf.monochrome.desktop.ui.mixer.spatial
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +39,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -43,6 +48,18 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -61,6 +78,9 @@ import tf.monochrome.desktop.audio.dsp.spatial.SpatialPlacement
 import tf.monochrome.desktop.audio.dsp.spatial.clamped
 import tf.monochrome.desktop.domain.model.SpeakerChannel
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.mixer.GlassChoiceChip
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import kotlin.math.abs
@@ -69,6 +89,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import androidx.compose.ui.res.stringResource
@@ -116,6 +137,8 @@ fun SpatialMapPanel(
     val speakers = remember(count) { SpatialLayout.speakers(count) }
     val placed = placement.placementFor(count)
     var dragging by remember { mutableStateOf(-1) }
+    // Desktop: the channel the keys move while the map has focus, or -1.
+    var keyed by remember(count) { mutableIntStateOf(-1) }
 
     Column(
         modifier = modifier
@@ -148,17 +171,25 @@ fun SpatialMapPanel(
 
         // ── Which layout, when the song does not decide ────────────────
         if (live == null) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SpatialLayout.EDITABLE_COUNTS.forEach { c ->
-                    GlassChoiceChip(
-                        label = SpatialLayout.layoutName(c),
-                        selected = c == editing,
-                        accent = accent,
-                        onClick = { editing = c },
-                    )
+            val layoutScroll = rememberScrollState()
+            HoverScrollRow(state = layoutScroll, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // As tall as the scroll arrows, so the map does not shrink when they appear.
+                        .heightIn(min = 36.dp)
+                        .horizontalScroll(layoutScroll),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SpatialLayout.EDITABLE_COUNTS.forEach { c ->
+                        GlassChoiceChip(
+                            label = SpatialLayout.layoutName(c),
+                            selected = c == editing,
+                            accent = accent,
+                            onClick = { editing = c },
+                        )
+                    }
                 }
             }
         }
@@ -197,24 +228,30 @@ fun SpatialMapPanel(
 
         // ── Headphone target: AutoEQ's curves, the render equalized to one ─
         if (placement.binaural && headphoneTargets.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(R.string.mixer_target),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onSurfaceVariant,
-                )
-                headphoneTargets.forEach { (id, label) ->
-                    GlassChoiceChip(
-                        label = label,
-                        selected = placement.targetId == id,
-                        accent = accent,
-                        onClick = { onTargetChange(id) },
-                        description = stringResource(R.string.mixer_headphone_target, label),
+            val targetScroll = rememberScrollState()
+            HoverScrollRow(state = targetScroll, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 36.dp)
+                        .horizontalScroll(targetScroll),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.mixer_target),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant,
                     )
+                    headphoneTargets.forEach { (id, label) ->
+                        GlassChoiceChip(
+                            label = label,
+                            selected = placement.targetId == id,
+                            accent = accent,
+                            onClick = { onTargetChange(id) },
+                            description = stringResource(R.string.mixer_headphone_target, label),
+                        )
+                    }
                 }
             }
         }
@@ -240,14 +277,17 @@ fun SpatialMapPanel(
                         if (!placement.enabled) onEnabledChange(true)
                         onMove(count, i, p)
                     },
+                    keyed = keyed,
+                    onKeyed = { keyed = it },
                 )
             }
         }
 
         // ── What is happening, in words ────────────────────────────────
-        val readout = if (dragging in speakers.indices) {
-            val s = speakers[dragging]
-            val p = placed[dragging]
+        val shown = if (dragging in speakers.indices) dragging else keyed
+        val readout = if (shown in speakers.indices) {
+            val s = speakers[shown]
+            val p = placed[shown]
             val db = 20f * log10(SpatialLayout.gainFor(p.distance))
             "${s.label}  ${angleText(p.azimuthDeg)} · ${if (db >= 0f) "+" else "−"}${"%.1f".format(abs(db))} dB"
         } else {
@@ -308,6 +348,9 @@ private fun SpatialMapCanvas(
     dragging: Int,
     onDragging: (Int) -> Unit,
     onMove: (index: Int, placement: ChannelPlacement) -> Unit,
+    /** Desktop: the channel the keys move while the map has focus, or -1; ringed on the map. */
+    keyed: Int = -1,
+    onKeyed: (Int) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     val heightTint = colors.tertiary
@@ -322,6 +365,30 @@ private fun SpatialMapCanvas(
     val currentPlaced by rememberUpdatedState(placed)
     val currentMove by rememberUpdatedState(onMove)
     val currentDragging by rememberUpdatedState(onDragging)
+    val currentKeyed by rememberUpdatedState(keyed)
+    val currentOnKeyed by rememberUpdatedState(onKeyed)
+
+    // Desktop: the dot under the mouse, or -1, drawn a size up so what a click
+    // or the wheel will move shows before it moves.
+    var hovered by remember(count) { mutableIntStateOf(-1) }
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // The dots the keys walk, in the decoder's order; the LFE is not moved.
+    val movable = remember(speakers) { speakers.indices.filter { !speakers[it].isLfe } }
+    // [0] the placement the last nudge started from, [1] where it sent the dot:
+    // a notch or a key repeat that lands before the next frame builds on the
+    // last one instead of repeating it.
+    val pending = remember(count) { arrayOfNulls<ChannelPlacement>(2) }
+    val pendingIndex = remember(count) { intArrayOf(-1) }
+    fun nudge(i: Int, change: (ChannelPlacement) -> ChannelPlacement) {
+        val drawn = currentPlaced.getOrNull(i) ?: return
+        val base = if (pendingIndex[0] == i && pending[0] == drawn) pending[1] ?: drawn else drawn
+        val next = change(base)
+        pendingIndex[0] = i
+        pending[0] = drawn
+        pending[1] = next
+        if (next != base) currentMove(i, next)
+    }
 
     val description = stringResource(
         R.string.mixer_map_description,
@@ -334,6 +401,93 @@ private fun SpatialMapCanvas(
         modifier = Modifier
             .fillMaxSize()
             .semantics { contentDescription = description }
+            .focusRing(focused)
+            .pointerHoverIcon(if (hovered >= 0) PointerIcon.Hand else PointerIcon.Default)
+            // Desktop: Tab lands on the first dot and walks the rest, as it would a
+            // row of knobs; the arrows turn the ringed one (5 degrees, Ctrl 1) and
+            // move it nearer or further (1 dB, Ctrl 0.1), Delete sends it home,
+            // and 1 to 9 pick a dot directly. Alt and Shift with an arrow are left
+            // to the app's own shortcuts.
+            .onFocusChanged { state ->
+                currentOnKeyed(
+                    if (!state.isFocused) -1
+                    else currentKeyed.takeIf { it in movable } ?: movable.firstOrNull() ?: -1,
+                )
+            }
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || event.isAltPressed) return@onKeyEvent false
+                // None ringed yet (the layout changed under the focus): the keys start at the first.
+                val at = movable.indexOf(currentKeyed)
+                val i = if (at >= 0) currentKeyed else movable.firstOrNull() ?: return@onKeyEvent false
+                val fine = event.isCtrlPressed
+                val plain = !event.isShiftPressed
+                when {
+                    event.key == Key.Tab && !fine -> {
+                        // Past the last dot (or before the first), focus moves on.
+                        val next = if (at < 0) i
+                        else movable.getOrNull(if (event.isShiftPressed) at - 1 else at + 1) ?: return@onKeyEvent false
+                        currentOnKeyed(next)
+                    }
+                    event.key == Key.DirectionLeft && plain ->
+                        nudge(i) { turned(it, -(if (fine) 1f else TURN_STEP_DEG), speakers[i]) }
+                    event.key == Key.DirectionRight && plain ->
+                        nudge(i) { turned(it, if (fine) 1f else TURN_STEP_DEG, speakers[i]) }
+                    event.key == Key.DirectionUp && plain ->
+                        nudge(i) { louder(it, if (fine) 0.1f else LEVEL_STEP_DB) }
+                    event.key == Key.DirectionDown && plain ->
+                        nudge(i) { louder(it, -(if (fine) 0.1f else LEVEL_STEP_DB)) }
+                    event.key == Key.Delete && !fine && plain ->
+                        nudge(i) { ChannelPlacement(speakers[i].azimuthDeg, 1f) }
+                    event.key in DIGIT_KEYS && !fine && plain && !DesktopInput.isTextInputActive() ->
+                        currentOnKeyed(movable.getOrNull(DIGIT_KEYS.indexOf(event.key)) ?: return@onKeyEvent false)
+                    else -> return@onKeyEvent false
+                }
+                if (at < 0 && event.key != Key.Tab && event.key !in DIGIT_KEYS) currentOnKeyed(i)
+                true
+            }
+            .focusable(interactionSource = interaction)
+            // Desktop: the hover enlargement, and the wheel over a dot: nearer or
+            // further, or with Shift (a sideways wheel) round you.
+            .pointerInput(count) {
+                // The dot a wheel turn started on keeps the wheel until the mouse
+                // itself moves, though each notch carries it out from under the pointer.
+                var latched = -1
+                var latchedAt = Offset.Zero
+                val still = 4.dp.toPx()
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: continue
+                        if (change.type != PointerType.Mouse) continue
+                        val at = change.position
+                        val near = { nearestDot(at, size.width / 2f, size.height / 2f, speakers, currentPlaced, touchRadius) }
+                        when (event.type) {
+                            PointerEventType.Exit -> {
+                                latched = -1
+                                hovered = -1
+                            }
+                            PointerEventType.Enter, PointerEventType.Move -> {
+                                if (latched >= 0 && (at - latchedAt).getDistance() > still) latched = -1
+                                // Mid-drag the picked dot is already drawn large.
+                                if (latched < 0 && !change.pressed) hovered = near()
+                            }
+                            PointerEventType.Press -> latched = -1
+                            PointerEventType.Scroll -> {
+                                val i = if (change.isConsumed) -1 else if (latched >= 0) latched else near()
+                                if (i >= 0) {
+                                    latched = i
+                                    latchedAt = at
+                                    hovered = i
+                                    val d = change.scrollDelta
+                                    if (abs(d.x) > abs(d.y)) nudge(i) { turned(it, d.x * TURN_STEP_DEG, speakers[i]) }
+                                    else nudge(i) { louder(it, -d.y * LEVEL_STEP_DB) }
+                                    change.consume()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             .pointerInput(count) {
                 var picked = -1
                 detectDragGestures(
@@ -380,10 +534,19 @@ private fun SpatialMapCanvas(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
             }
             val level = levels?.getOrNull(i)?.let { ((it + 60f) / 60f).coerceIn(0f, 1f) }
+            val radius = dotRadius * when (i) {
+                dragging -> 1.25f
+                hovered -> 1.15f
+                else -> 1f
+            }
+            // Desktop: the dot the keys move, ringed outside the heights' own ring.
+            if (i == keyed) {
+                drawCircle(onSurface.copy(alpha = 0.75f), radius = radius * 1.65f, center = here, style = Stroke(2.dp.toPx()))
+            }
             drawChannelDot(
                 center = here,
                 listener = c,
-                radius = dotRadius * (if (i == dragging) 1.25f else 1f),
+                radius = radius,
                 tint = tint,
                 level = level,
                 dim = !enabled,
@@ -434,6 +597,36 @@ internal fun placementAt(at: Offset, cx: Float, cy: Float, speaker: SpeakerChann
     if (abs(d - 1f) < 0.06f) d = 1f
     if (abs(angleBetween(az, speaker.azimuthDeg)) < 3f) az = speaker.azimuthDeg
     return ChannelPlacement(az, d).clamped()
+}
+
+/** Desktop: how far a wheel notch or an arrow turns a dot round you. */
+private const val TURN_STEP_DEG = 5f
+
+/** Desktop: how much nearer (louder) or further a wheel notch or an arrow moves a dot, in dB. */
+private const val LEVEL_STEP_DB = 1f
+
+/** The number keys, which pick the first nine dots. */
+private val DIGIT_KEYS = listOf(
+    Key.One, Key.Two, Key.Three, Key.Four, Key.Five,
+    Key.Six, Key.Seven, Key.Eight, Key.Nine,
+)
+
+/** [p] turned [deg] round you, settling on the channel's own angle as it passes. */
+private fun turned(p: ChannelPlacement, deg: Float, speaker: SpeakerChannel): ChannelPlacement {
+    var az = p.azimuthDeg + deg
+    if (abs(angleBetween(az, speaker.azimuthDeg)) < 0.5f) az = speaker.azimuthDeg
+    return ChannelPlacement(az, p.distance).clamped()
+}
+
+/**
+ * [p] made [db] louder, or quieter when negative. Level is 1 / distance, so a
+ * decibel is the same share of the distance anywhere on the map. Settles on the
+ * speaker ring as it passes.
+ */
+private fun louder(p: ChannelPlacement, db: Float): ChannelPlacement {
+    var d = p.distance / 10f.pow(db / 20f)
+    if (abs(d - 1f) < 0.01f) d = 1f
+    return ChannelPlacement(p.azimuthDeg, d).clamped()
 }
 
 private fun angleBetween(a: Float, b: Float): Float {

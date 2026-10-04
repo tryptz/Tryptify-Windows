@@ -2,6 +2,10 @@ package tf.monochrome.desktop.ui.player
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.desktopHover
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -103,16 +107,23 @@ fun PlayerTopBar(
                 )
             }
 
+            // Desktop: the chip's own glass deepens a step under the mouse or
+            // keyboard focus; no pane is added beneath it.
+            val speedInteraction = remember { MutableInteractionSource() }
+            val speedHovered by speedInteraction.collectIsHoveredAsState()
+            val speedFocused by speedInteraction.collectIsFocusedAsState()
+            val speedLifted = speedHovered || (speedFocused && DesktopInput.focusVisible)
             Surface(
                 modifier = Modifier
+                    .desktopHover(speedInteraction, RoundedCornerShape(999.dp))
                     .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
+                        interactionSource = speedInteraction,
                         indication = null,
                         onClick = onSpeedClick,
                     )
                     .liquidGlass(
                         shape = RoundedCornerShape(999.dp),
-                        tintAlpha = PlayerDesignTokens.GlassTintMedium,
+                        tintAlpha = if (speedLifted) PlayerDesignTokens.GlassTintStrong else PlayerDesignTokens.GlassTintMedium,
                         borderAlpha = PlayerDesignTokens.GlassTintSoft,
                     ),
                 shape = RoundedCornerShape(999.dp),

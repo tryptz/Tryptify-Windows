@@ -36,8 +36,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -48,6 +53,7 @@ import tf.monochrome.desktop.ui.mixer.formatParamValue
 import tf.monochrome.desktop.audio.dsp.SnapinType
 import tf.monochrome.desktop.audio.dsp.model.FxTapFrame
 import tf.monochrome.desktop.audio.dsp.model.PluginInstance
+import tf.monochrome.desktop.ui.mixer.dragScale
 import tf.monochrome.desktop.ui.mixer.getParamDefs
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import kotlin.math.abs
@@ -133,6 +139,9 @@ internal fun FxVisual(
     // The handle under the finger, or -1. While one is held the picture
     // follows the raw values: a spring would leave the curve trailing the dot.
     var activeHandle by remember { mutableIntStateOf(-1) }
+    // Desktop: the handle under the mouse, or -1, ringed so a click's target shows before the click.
+    var hoveredHandle by remember { mutableIntStateOf(-1) }
+    val windowInfo = LocalWindowInfo.current
     val rawP: (Int) -> Float = { i -> raw[i] ?: defs.getOrNull(i)?.default ?: 0f }
     val latestRawP by rememberUpdatedState(rawP)
     val latestOnParam by rememberUpdatedState(onParam)
@@ -193,83 +202,100 @@ internal fun FxVisual(
             .background(panelBg)
             .then(
                 if (handles.isEmpty()) Modifier
-                else Modifier.pointerInput(type) {
-                    var lastTapAt = 0L
-                    var lastTapHandle = -1
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val grab = 30.dp.toPx()
-                        val w = size.width.toFloat()
-                        val h = size.height.toFloat()
-                        val p0 = latestRawP
-                        // The nearest handle within reach; a touch anywhere else
-                        // is left alone, so the FX list still scrolls under it.
-                        val hit = handles.indices
-                            .map { i ->
-                                val (fx, fy) = handles[i].position(p0)
-                                i to hypot(fx * w - down.position.x, fy * h - down.position.y)
-                            }
-                            .filter { it.second <= grab }
-                            .minByOrNull { it.second }?.first
-                            ?: return@awaitEachGesture
-                        val handle = handles[hit]
-                        down.consume()
-                        activeHandle = hit
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-
-                        // Values as this drag has left them, over the live ones.
-                        val moved = HashMap<Int, Float>()
-                        val pNow: (Int) -> Float = { i -> moved[i] ?: latestRawP(i) }
-                        var travelled = 0f
-                        fun step(axis: FxAxis?, deltaFrac: Float) {
-                            if (axis == null || deltaFrac == 0f) return
-                            val def = defs.getOrNull(axis.param) ?: return
-                            val next = axis.fromFrac(axis.toFrac(pNow(axis.param), pNow) + deltaFrac, pNow)
-                            if (!next.isFinite()) return
-                            val clamped = next.coerceIn(def.min, def.max)
-                            if (clamped != pNow(axis.param)) {
-                                // Kept smooth here so small moves add up; a
-                                // stepped parameter is sent as whole steps.
-                                moved[axis.param] = clamped
-                                val steps = def.steps
-                                val sent = if (steps == null || steps <= 0) clamped else {
-                                    val frac = (clamped - def.min) / (def.max - def.min)
-                                    def.min + kotlin.math.round(frac * steps) / steps * (def.max - def.min)
+                else Modifier
+                    .pointerHoverIcon(if (hoveredHandle >= 0) PointerIcon.Hand else PointerIcon.Default)
+                    .pointerInput(type) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: continue
+                                if (change.type != PointerType.Mouse) continue
+                                hoveredHandle = when (event.type) {
+                                    PointerEventType.Exit -> -1
+                                    PointerEventType.Enter, PointerEventType.Move ->
+                                        if (change.pressed) hoveredHandle
+                                        else handleNear(
+                                            handles, latestRawP, size.width.toFloat(), size.height.toFloat(),
+                                            change.position, 30.dp.toPx(),
+                                        ) ?: -1
+                                    else -> hoveredHandle
                                 }
-                                latestOnParam?.invoke(axis.param, sent)
                             }
-                        }
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
-                            val d = change.position - change.previousPosition
-                            travelled += hypot(d.x, d.y)
-                            step(handle.x, d.x / w)
-                            step(handle.y, d.y / h)
-                            change.consume()
-                        }
-                        activeHandle = -1
-
-                        // A second tap on the same handle, without dragging:
-                        // back to the defaults for what it controls.
-                        val now = System.currentTimeMillis()
-                        if (travelled < viewConfiguration.touchSlop) {
-                            if (hit == lastTapHandle && now - lastTapAt < 320L) {
-                                for (param in handle.params) {
-                                    defs.getOrNull(param)?.let { latestOnParam?.invoke(param, it.default) }
-                                }
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                lastTapHandle = -1
-                            } else {
-                                lastTapHandle = hit
-                                lastTapAt = now
-                            }
-                        } else {
-                            lastTapHandle = -1
                         }
                     }
-                }
+                    .pointerInput(type) {
+                        var lastTapAt = 0L
+                        var lastTapHandle = -1
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val grab = 30.dp.toPx()
+                            val w = size.width.toFloat()
+                            val h = size.height.toFloat()
+                            val p0 = latestRawP
+                            // The nearest handle within reach; a touch anywhere else
+                            // is left alone, so the FX list still scrolls under it.
+                            val hit = handleNear(handles, p0, w, h, down.position, grab)
+                                ?: return@awaitEachGesture
+                            val handle = handles[hit]
+                            down.consume()
+                            activeHandle = hit
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
+                            // Values as this drag has left them, over the live ones.
+                            val moved = HashMap<Int, Float>()
+                            val pNow: (Int) -> Float = { i -> moved[i] ?: latestRawP(i) }
+                            var travelled = 0f
+                            fun step(axis: FxAxis?, deltaFrac: Float) {
+                                if (axis == null || deltaFrac == 0f) return
+                                val def = defs.getOrNull(axis.param) ?: return
+                                val next = axis.fromFrac(axis.toFrac(pNow(axis.param), pNow) + deltaFrac, pNow)
+                                if (!next.isFinite()) return
+                                val clamped = next.coerceIn(def.min, def.max)
+                                if (clamped != pNow(axis.param)) {
+                                    // Kept smooth here so small moves add up; a
+                                    // stepped parameter is sent as whole steps.
+                                    moved[axis.param] = clamped
+                                    val steps = def.steps
+                                    val sent = if (steps == null || steps <= 0) clamped else {
+                                        val frac = (clamped - def.min) / (def.max - def.min)
+                                        def.min + kotlin.math.round(frac * steps) / steps * (def.max - def.min)
+                                    }
+                                    latestOnParam?.invoke(axis.param, sent)
+                                }
+                            }
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                val d = change.position - change.previousPosition
+                                travelled += hypot(d.x, d.y)
+                                // Shift or Ctrl held: a quarter of the travel.
+                                val scale = windowInfo.dragScale()
+                                step(handle.x, d.x / w * scale)
+                                step(handle.y, d.y / h * scale)
+                                change.consume()
+                            }
+                            activeHandle = -1
+
+                            // A second tap on the same handle, without dragging:
+                            // back to the defaults for what it controls.
+                            val now = System.currentTimeMillis()
+                            if (travelled < viewConfiguration.touchSlop) {
+                                if (hit == lastTapHandle && now - lastTapAt < maxOf(320L, viewConfiguration.doubleTapTimeoutMillis)) {
+                                    for (param in handle.params) {
+                                        defs.getOrNull(param)?.let { latestOnParam?.invoke(param, it.default) }
+                                    }
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    lastTapHandle = -1
+                                } else {
+                                    lastTapHandle = hit
+                                    lastTapAt = now
+                                }
+                            } else {
+                                lastTapHandle = -1
+                            }
+                        }
+                    }
             )
     ) {
         val p: (Int) -> Float = { i -> values.getOrElse(i) { 0f } }
@@ -388,7 +414,7 @@ internal fun FxVisual(
                 fx.coerceIn(0.02f, 0.98f) * size.width,
                 fy.coerceIn(0.04f, 0.96f) * size.height,
             )
-            drawHandle(center, style, active = i == activeHandle)
+            drawHandle(center, style, active = i == activeHandle, hovered = i == hoveredHandle)
         }
         handles.getOrNull(activeHandle)?.let { handle ->
             val (fx, fy) = handle.position(p)
@@ -445,8 +471,12 @@ private fun DrawScope.drawTransferAxis(measurer: TextMeasurer, color: Color, s: 
 }
 
 /** A draggable point: a ring with a lit core, and a halo while it is held. */
-private fun DrawScope.drawHandle(center: Offset, s: FxVisualStyle, active: Boolean) {
+private fun DrawScope.drawHandle(center: Offset, s: FxVisualStyle, active: Boolean, hovered: Boolean = false) {
     val ring = (if (active) 8.dp else 6.5.dp).toPx()
+    if (hovered && !active) {
+        drawCircle(s.curve.copy(alpha = 0.6f * s.dim), radius = ring + 5.dp.toPx(), center = center,
+            style = Stroke(width = 1.dp.toPx()))
+    }
     if (active) {
         drawCircle(s.curve.copy(alpha = 0.16f * s.dim), radius = 20.dp.toPx(), center = center)
         drawLine(s.curve.copy(alpha = 0.25f * s.dim), Offset(center.x, 0f), Offset(center.x, size.height),
@@ -466,6 +496,22 @@ private fun DrawScope.drawHandle(center: Offset, s: FxVisualStyle, active: Boole
         radius = ring * (if (active) 0.55f else 0.45f), center = center,
     )
 }
+
+/** The handle nearest [at] and no further than [grab] from it, or null. */
+private fun handleNear(
+    handles: List<FxHandle>,
+    p: (Int) -> Float,
+    w: Float,
+    h: Float,
+    at: Offset,
+    grab: Float,
+): Int? = handles.indices
+    .map { i ->
+        val (fx, fy) = handles[i].position(p)
+        i to hypot(fx * w - at.x, fy * h - at.y)
+    }
+    .filter { it.second <= grab }
+    .minByOrNull { it.second }?.first
 
 /** The held handle's values, in a pill kept inside the panel. */
 private fun DrawScope.drawValueBubble(

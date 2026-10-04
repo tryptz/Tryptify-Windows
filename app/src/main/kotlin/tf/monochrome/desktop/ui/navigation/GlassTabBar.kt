@@ -7,6 +7,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +48,8 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -62,7 +66,10 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import tf.monochrome.desktop.performance.LocalPerformanceProfile
+import tf.monochrome.desktop.ui.components.GlassPressDefaults
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.desktopHover
 import tf.monochrome.desktop.ui.player.BackdropArtFit
 import tf.monochrome.desktop.ui.player.LocalPlayerBackdrop
 import tf.monochrome.desktop.ui.player.LocalPlayerGlass
@@ -145,10 +152,24 @@ internal fun GlassTabBar(
     val sources = remember(tabs.size) { List(tabs.size) { MutableInteractionSource() } }
     val pressed = sources.map { it.collectIsPressedAsState() }
     val pressedIndex = pressed.indexOfFirst { it.value }
+    // A resting mouse, or focus that came from the keyboard, raises a smaller
+    // dome on its tab: the glass panes' hover (see GlassPressDefaults.HOVER),
+    // so the bar answers the pointer the way the mini player beside it does.
+    val hovered = sources.map { it.collectIsHoveredAsState() }
+    val focused = sources.map { it.collectIsFocusedAsState() }
+    val restingIndex = hovered.indexOfFirst { it.value }.takeIf { it >= 0 }
+        ?: if (DesktopInput.focusVisible) focused.indexOfFirst { it.value } else -1
     val bulgeSlot = remember { mutableIntStateOf(0) }
-    LaunchedEffect(pressedIndex) { if (pressedIndex >= 0) bulgeSlot.intValue = pressedIndex }
+    LaunchedEffect(pressedIndex, restingIndex) {
+        if (pressedIndex >= 0) bulgeSlot.intValue = pressedIndex
+        else if (restingIndex >= 0) bulgeSlot.intValue = restingIndex
+    }
     val bulgeAmt by animateFloatAsState(
-        targetValue = if (pressedIndex >= 0) 1f else 0f,
+        targetValue = when {
+            pressedIndex >= 0 -> 1f
+            restingIndex >= 0 -> GlassPressDefaults.HOVER
+            else -> 0f
+        },
         animationSpec = PressSpring,
         label = "tabBulge",
     )
@@ -332,6 +353,10 @@ private fun TabSlot(
         modifier = modifier
             .fillMaxHeight()
             .semantics { this.selected = selected }
+            // Carved, the slab's dome is the hover and focus feedback; the
+            // fallback pane has no dome, so it gets the outline instead.
+            .pointerHoverIcon(PointerIcon.Hand)
+            .desktopHover(interactionSource, RoundedCornerShape(TabBarHeight / 2), enabled = !carved)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,

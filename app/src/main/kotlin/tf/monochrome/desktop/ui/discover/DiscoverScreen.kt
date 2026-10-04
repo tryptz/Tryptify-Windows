@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -103,6 +104,8 @@ import tf.monochrome.desktop.ui.navigation.openCatalogArtist
 import tf.monochrome.desktop.ui.player.PlayerViewModel
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import tf.monochrome.desktop.ui.components.SearchOverlay
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
@@ -179,6 +182,13 @@ fun DiscoverScreen(
     // it stays out while a selection is live even with the field folded.
     val genreSelected = genreRail.any { it.node.name == selectedChip }
 
+    androidx.activity.compose.BackHandler(enabled = searchOpen) {
+        searchOpen = false
+        viewModel.setGenreQuery("")
+    }
+
+    RefreshKey { if (!refreshing) viewModel.refresh() }
+
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text(stringResource(R.string.discover_beta)) },
@@ -194,6 +204,11 @@ fun DiscoverScreen(
                         if (searchOpen) Icons.Default.Close else Icons.Default.Search,
                         contentDescription = if (searchOpen) stringResource(R.string.close_genre_search) else stringResource(R.string.search_genres),
                     )
+                }
+                // What the pull does. Kept apart from the button beside it,
+                // which deals a different page rather than refetching this one.
+                IconButton(onClick = { viewModel.refresh() }, enabled = !refreshing) {
+                    Icon(Icons.Default.Sync, contentDescription = stringResource(R.string.action_refresh))
                 }
                 IconButton(onClick = { viewModel.showSomethingElse() }) {
                     Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.show_something_else))
@@ -403,6 +418,7 @@ fun DiscoverScreen(
                 }
             }
         }
+        ListScrollbar(listState, Modifier.padding(bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current))
         }
         }
         }
@@ -556,7 +572,10 @@ private fun GenreRail(
         }
         return
     }
+    val rowState = rememberLazyListState()
+    HoverScrollRow(state = rowState) {
     LazyRow(
+        state = rowState,
         modifier = Modifier.fillMaxWidth().swallowHorizontalScroll(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -580,6 +599,7 @@ private fun GenreRail(
                 colors = FilterChipDefaults.filterChipColors(),
             )
         }
+    }
     }
 }
 
@@ -630,7 +650,10 @@ private fun DiscoveryChipRail(
     onSelect: (String?) -> Unit,
     onToggle: (String) -> Unit,
 ) {
+    val rowState = rememberLazyListState()
+    HoverScrollRow(state = rowState) {
     LazyRow(
+        state = rowState,
         modifier = Modifier.fillMaxWidth().swallowHorizontalScroll(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -663,6 +686,7 @@ private fun DiscoveryChipRail(
                 colors = FilterChipDefaults.filterChipColors(),
             )
         }
+    }
     }
 }
 
@@ -702,7 +726,10 @@ private fun CombinedGenreRow(
                 TextButton(onClick = onReset) { Text(stringResource(R.string.action_reset)) }
             }
         }
+        val rowState = rememberLazyListState()
+        HoverScrollRow(state = rowState) {
         LazyRow(
+            state = rowState,
             modifier = Modifier.fillMaxWidth().swallowHorizontalScroll(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -720,6 +747,7 @@ private fun CombinedGenreRow(
                     },
                 )
             }
+        }
         }
     }
 }
@@ -882,7 +910,10 @@ private fun DiscoveryShelfRow(
                 modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
             )
         }
+        val rowState = rememberLazyListState()
+        HoverScrollRow(state = rowState) {
         LazyRow(
+            state = rowState,
             modifier = Modifier.fillMaxWidth().swallowHorizontalScroll(),
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -894,6 +925,7 @@ private fun DiscoveryShelfRow(
                     onLongClick = { onItemLongClick(item) },
                 )
             }
+        }
         }
         Spacer(modifier = Modifier.height(20.dp))
     }

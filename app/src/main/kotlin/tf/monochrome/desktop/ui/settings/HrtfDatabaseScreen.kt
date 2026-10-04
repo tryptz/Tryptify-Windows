@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
@@ -151,6 +153,9 @@ fun HrtfDatabaseScreen(
 
     // Hardware back navigates up a folder before leaving the screen.
     BackHandler(enabled = true) { if (!viewModel.up()) navController.popBackStackSafe() }
+    // Desktop: and before that, empties a filter, so Escape typed into it
+    // clears it as it does in any search box. Registered later, so it wins.
+    BackHandler(enabled = state.query.isNotEmpty()) { viewModel.setQuery("") }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -202,37 +207,45 @@ fun HrtfDatabaseScreen(
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(16.dp),
             )
-            else -> LazyColumn(
-                Modifier.fillMaxSize(),
-                // The last databases clear the floating tab bar and mini player.
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding,
-                ),
-            ) {
-                items(folders, key = { "d/" + it.href }) { folder ->
-                    ListItem(
-                        headlineContent = { Text(folder.display) },
-                        leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth().clickable { viewModel.enter(folder) },
-                    )
+            else -> Box(Modifier.fillMaxSize()) {
+                val listState = rememberLazyListState()
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    state = listState,
+                    // The last databases clear the floating tab bar and mini player.
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding,
+                    ),
+                ) {
+                    items(folders, key = { "d/" + it.href }) { folder ->
+                        ListItem(
+                            headlineContent = { Text(folder.display) },
+                            leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null) },
+                            modifier = Modifier.fillMaxWidth().clickable { viewModel.enter(folder) },
+                        )
+                    }
+                    items(files, key = { "f/" + it.href }) { file ->
+                        val busy = state.busyFile == file.href
+                        ListItem(
+                            headlineContent = { Text(file.display) },
+                            supportingContent = {
+                                Text(listOfNotNull(file.size, stringResource(R.string.hrtf_click_to_use)).joinToString(" · "))
+                            },
+                            leadingContent = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
+                            trailingContent = {
+                                if (busy) CircularProgressIndicator(Modifier.size(20.dp))
+                            },
+                            modifier = Modifier.fillMaxWidth().clickable { viewModel.apply(file) },
+                        )
+                    }
+                    if (folders.isEmpty() && files.isEmpty()) {
+                        item { Text(stringResource(R.string.hrtf_nothing_here), modifier = Modifier.padding(16.dp)) }
+                    }
                 }
-                items(files, key = { "f/" + it.href }) { file ->
-                    val busy = state.busyFile == file.href
-                    ListItem(
-                        headlineContent = { Text(file.display) },
-                        supportingContent = {
-                            Text(listOfNotNull(file.size, stringResource(R.string.hrtf_tap_to_use)).joinToString(" · "))
-                        },
-                        leadingContent = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
-                        trailingContent = {
-                            if (busy) CircularProgressIndicator(Modifier.size(20.dp))
-                        },
-                        modifier = Modifier.fillMaxWidth().clickable { viewModel.apply(file) },
-                    )
-                }
-                if (folders.isEmpty() && files.isEmpty()) {
-                    item { Text(stringResource(R.string.hrtf_nothing_here), modifier = Modifier.padding(16.dp)) }
-                }
+                ListScrollbar(
+                    listState,
+                    Modifier.padding(bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current),
+                )
             }
         }
     }

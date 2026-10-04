@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.contextClick
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.SolidColor
@@ -708,50 +710,55 @@ fun LyricsFxStudioScreen(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LyricsFxSettings.PRESETS.forEach { (name, preset) ->
-                    FilterChip(
-                        selected = fx.matchesPreset(preset),
-                        onClick = { viewModel.applyPreset(preset) },
-                        label = { Text(name) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
-                    )
-                }
-                // The user's own saved presets. Tapping applies; the trailing
-                // icon opens a Share / Delete sheet for that preset.
-                customPresets.forEach { saved ->
-                    FilterChip(
-                        selected = fx.matchesPreset(saved.settings),
-                        onClick = { viewModel.applyPreset(saved.settings) },
-                        label = { Text(saved.name) },
-                        trailingIcon = {
-                            Icon(
-                                Icons.Default.Share,
-                                contentDescription = null,
-                                // Chip height caps the target, but padding
-                                // before the click enlarges it past the bare
-                                // 16dp glyph, and the label/role make it a
-                                // findable button for TalkBack.
-                                modifier = Modifier
-                                    .buttonSemantics(label = stringResource(R.string.fx_manage_named, saved.name))
-                                    .clickable { presetAction = saved }
-                                    .padding(4.dp)
-                                    .size(16.dp),
-                            )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
-                    )
+            val fxPresetRow = rememberScrollState()
+            HoverScrollRow(state = fxPresetRow, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(fxPresetRow),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LyricsFxSettings.PRESETS.forEach { (name, preset) ->
+                        FilterChip(
+                            selected = fx.matchesPreset(preset),
+                            onClick = { viewModel.applyPreset(preset) },
+                            label = { Text(name) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        )
+                    }
+                    // The user's own saved presets. Tapping applies; the trailing
+                    // icon opens a Share / Delete sheet for that preset.
+                    customPresets.forEach { saved ->
+                        FilterChip(
+                            selected = fx.matchesPreset(saved.settings),
+                            onClick = { viewModel.applyPreset(saved.settings) },
+                            // Right-click, Menu or Shift+F10 opens the same sheet.
+                            modifier = Modifier.contextClick { presetAction = saved },
+                            label = { Text(saved.name) },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = null,
+                                    // Chip height caps the target, but padding
+                                    // before the click enlarges it past the bare
+                                    // 16dp glyph, and the label/role make it a
+                                    // findable button for TalkBack.
+                                    modifier = Modifier
+                                        .buttonSemantics(label = stringResource(R.string.fx_manage_named, saved.name))
+                                        .clickable { presetAction = saved }
+                                        .padding(4.dp)
+                                        .size(16.dp),
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -1294,44 +1301,52 @@ private fun PlayerGlassTab(
             }
         }
         Spacer(Modifier.height(6.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            PlayerGlassSettings.PRESETS.forEach { (name, preset) ->
-                FilterChip(
-                    selected = glass.matchesPreset(preset),
-                    onClick = { onApplyPreset(preset) },
-                    label = { Text(name) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primary,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                )
-            }
-            // The user's own saved themes. Tapping applies; the trailing icon
-            // opens a Share / Delete sheet for that theme.
-            customPresets.forEach { saved ->
-                FilterChip(
-                    selected = glass.matchesPreset(saved.settings),
-                    onClick = { onApplyPreset(saved.settings) },
-                    label = { Text(saved.name) },
-                    trailingIcon = {
-                        Icon(
-                            Icons.Default.Share,
-                            contentDescription = stringResource(R.string.fx_manage_named, saved.name),
-                            modifier = Modifier
-                                .size(16.dp)
-                                .clickable { glassPresetAction = saved },
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primary,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                )
+        val glassPresetRow = rememberScrollState()
+        HoverScrollRow(state = glassPresetRow, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(glassPresetRow),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PlayerGlassSettings.PRESETS.forEach { (name, preset) ->
+                    FilterChip(
+                        selected = glass.matchesPreset(preset),
+                        onClick = { onApplyPreset(preset) },
+                        label = { Text(name) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    )
+                }
+                // The user's own saved themes. Tapping applies; the trailing icon
+                // opens a Share / Delete sheet for that theme.
+                customPresets.forEach { saved ->
+                    FilterChip(
+                        selected = glass.matchesPreset(saved.settings),
+                        onClick = { onApplyPreset(saved.settings) },
+                        // Right-click, Menu or Shift+F10 opens the same sheet.
+                        modifier = Modifier.contextClick { glassPresetAction = saved },
+                        label = { Text(saved.name) },
+                        trailingIcon = {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = stringResource(R.string.fx_manage_named, saved.name),
+                                // Padding inside the click enlarges the target
+                                // past the bare 16dp glyph, as on the lyric chips.
+                                modifier = Modifier
+                                    .clickable { glassPresetAction = saved }
+                                    .padding(4.dp)
+                                    .size(16.dp),
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    )
+                }
             }
         }
 
@@ -1678,11 +1693,26 @@ private fun GlassColorPickerDialog(
                         .background(preview),
                 )
                 Text(stringResource(R.string.fx_hue), style = MaterialTheme.typography.labelSmall)
-                Slider(value = h, onValueChange = { h = it }, valueRange = 0f..360f)
+                Slider(
+                    value = h,
+                    onValueChange = { h = it },
+                    valueRange = 0f..360f,
+                    modifier = Modifier.sliderWheel(value = h, range = 0f..360f, step = 5f, fineStep = 1f) { h = it },
+                )
                 Text(stringResource(R.string.fx_saturation), style = MaterialTheme.typography.labelSmall)
-                Slider(value = s, onValueChange = { s = it }, valueRange = 0f..1f)
+                Slider(
+                    value = s,
+                    onValueChange = { s = it },
+                    valueRange = 0f..1f,
+                    modifier = Modifier.sliderWheel(value = s, range = 0f..1f) { s = it },
+                )
                 Text(stringResource(R.string.fx_brightness), style = MaterialTheme.typography.labelSmall)
-                Slider(value = v, onValueChange = { v = it }, valueRange = 0f..1f)
+                Slider(
+                    value = v,
+                    onValueChange = { v = it },
+                    valueRange = 0f..1f,
+                    modifier = Modifier.sliderWheel(value = v, range = 0f..1f) { v = it },
+                )
                 TextButton(onClick = { onPick(0) }) { Text(stringResource(R.string.fx_use_current_album_colour)) }
             }
         },
@@ -1968,7 +1998,15 @@ private fun FxSlider(
             onValueChangeFinished = onChangeFinished ?: {},
             valueRange = range,
             steps = steps,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .sliderWheel(
+                    value = value,
+                    range = range,
+                    steps = steps,
+                    onCommit = onChangeFinished,
+                    onValueChange = onChange,
+                ),
         )
     }
 }

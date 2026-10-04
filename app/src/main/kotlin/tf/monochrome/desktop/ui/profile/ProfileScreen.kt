@@ -2,6 +2,7 @@ package tf.monochrome.desktop.ui.profile
 
 import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -72,6 +73,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import tf.monochrome.desktop.ui.navigation.navigateTool
 import tf.monochrome.desktop.ui.navigation.Screen
 import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.input.ColumnScrollbar
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
 
@@ -147,51 +149,57 @@ fun ProfileScreen(
                 )
             }
         } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(bottom = LocalBottomChromeInset.current)
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                // Center the form in the middle of the screen by default; it still
-                // scrolls when the keyboard opens or content overflows.
-                verticalArrangement = Arrangement.Center
-            ) {
-                if (userProfile != null) {
-                    SignedInView(
-                        profile = userProfile!!,
-                        isSyncing = isSyncing,
-                        syncStatus = syncStatus?.resolve(androidx.compose.ui.platform.LocalContext.current),
-                        onSync = { viewModel.syncNow() },
-                        onOpenStats = { navController.navigateTool(Screen.Stats) },
-                        onSignOut = {
-                            viewModel.signOut()
-                        }
-                    )
-                } else {
-                    SignedOutView(
-                        isLoading = false,
-                        errorMessage = errorMessage,
-                        successMessage = successMessage,
-                        email = authEmail,
-                        onEmailChange = { authEmail = it },
-                        password = authPassword,
-                        onPasswordChange = { authPassword = it },
-                        isSignUp = authIsSignUp,
-                        onIsSignUpChange = { authIsSignUp = it },
-                        onSignInWithGoogle = {
-                            viewModel.signInWithGoogle(context)
-                        },
-                        onSignInWithEmail = { email, password ->
-                            viewModel.signInWithEmail(email, password)
-                        },
-                        onSignUpWithEmail = { email, password ->
-                            viewModel.signUpWithEmail(email, password)
-                        },
-                        onClearError = { viewModel.clearError(); viewModel.clearSuccess() }
-                    )
+            val formScroll = rememberScrollState()
+            Box(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(formScroll)
+                        .padding(bottom = LocalBottomChromeInset.current)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    // Center the form in the middle of the screen by default; it still
+                    // scrolls when the keyboard opens or content overflows.
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    if (userProfile != null) {
+                        SignedInView(
+                            profile = userProfile!!,
+                            isSyncing = isSyncing,
+                            syncStatus = syncStatus?.resolve(androidx.compose.ui.platform.LocalContext.current),
+                            onSync = { viewModel.syncNow() },
+                            onOpenStats = { navController.navigateTool(Screen.Stats) },
+                            onSignOut = {
+                                viewModel.signOut()
+                            }
+                        )
+                    } else {
+                        SignedOutView(
+                            isLoading = false,
+                            errorMessage = errorMessage,
+                            successMessage = successMessage,
+                            email = authEmail,
+                            onEmailChange = { authEmail = it },
+                            password = authPassword,
+                            onPasswordChange = { authPassword = it },
+                            isSignUp = authIsSignUp,
+                            onIsSignUpChange = { authIsSignUp = it },
+                            onSignInWithGoogle = {
+                                viewModel.signInWithGoogle(context)
+                            },
+                            onSignInWithEmail = { email, password ->
+                                viewModel.signInWithEmail(email, password)
+                            },
+                            onSignUpWithEmail = { email, password ->
+                                viewModel.signUpWithEmail(email, password)
+                            },
+                            onClearError = { viewModel.clearError(); viewModel.clearSuccess() }
+                        )
+                    }
                 }
+                // Desktop: a short window cuts the sign-in form off, and the wheel
+                // alone gave no sign there was more below it.
+                ColumnScrollbar(formScroll, Modifier.padding(bottom = LocalBottomChromeInset.current))
             }
         }
     }

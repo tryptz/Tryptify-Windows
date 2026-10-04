@@ -16,11 +16,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -173,6 +179,12 @@ fun FLChannelStrip(
     isRouteSource: Boolean = false,
     /** Turns the send knob shown where [route] is routed. */
     onSendLevel: (Float) -> Unit = {},
+    /**
+     * Desktop: the right-click menu's way to this bus's insert rack and FX
+     * chain, which on a phone are a second tap and the pull-down handle.
+     */
+    onOpenInserts: (() -> Unit)? = null,
+    onOpenFxChain: (() -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val isMaster = bus.isMaster
@@ -195,6 +207,8 @@ fun FLChannelStrip(
     )
     val meterWidth = 7.dp
     val inactiveButton = colors.surfaceContainerHighest.copy(alpha = 0.88f)
+    var menuOpen by remember { mutableStateOf(false) }
+    val hasMenu = onOpenInserts != null || onOpenFxChain != null || onLongPress != null
 
     // The pane's own colour. A tint chosen in the Studio wins, as it does on
     // every other panel; with none set the channel accent tints it — that
@@ -240,7 +254,16 @@ fun FLChannelStrip(
             // whole sheet of glass and not just the labels standing on it. Still
             // an ancestor of the fader and the knob, exactly as before, so their
             // drags claim the gesture first.
-            .bounceCombinedClick(onLongClick = onLongPress, onClick = onSelect)
+            //
+            // A right-click opens a menu rather than the removal prompt itself,
+            // so a mouse looking for the inserts does not land in a delete
+            // question. The long press still asks to remove, as before.
+            .bounceCombinedClick(
+                onLongClick = onLongPress,
+                hoverShape = stripShape,
+                onContextClick = if (hasMenu) ({ menuOpen = true }) else null,
+                onClick = onSelect,
+            )
     ) {
         // ── The pane, behind the controls ─────────────────────────────────
         // Its own node so the glass is relit on its own layer and the fader,
@@ -523,6 +546,36 @@ fun FLChannelStrip(
                     maxLines = 1
                 )
             }
+        }
+    }
+    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+        if (onOpenInserts != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.mixer_insert_rack)) },
+                onClick = {
+                    menuOpen = false
+                    onOpenInserts()
+                },
+            )
+        }
+        if (onOpenFxChain != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.mixer_fx_chain)) },
+                onClick = {
+                    menuOpen = false
+                    onOpenFxChain()
+                },
+            )
+        }
+        if (onLongPress != null) {
+            // Opens the same confirmation the long press does.
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_remove)) },
+                onClick = {
+                    menuOpen = false
+                    onLongPress()
+                },
+            )
         }
     }
     }

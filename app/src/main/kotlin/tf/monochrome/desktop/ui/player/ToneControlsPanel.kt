@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,8 +17,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -25,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -37,6 +43,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -48,6 +61,11 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.wheelAdjust
+import java.awt.Cursor
 
 // The two gain "O" knobs are ~20% larger than the "o" cutoff/Q knobs, and sit on
 // the outer edges — bass far left, treble far right — mirroring each other:
@@ -127,32 +145,35 @@ internal fun ToneControlsPanel(
                 ) {
                     Knob(stringResource(R.string.tone_bass), "%+.0f dB".format(tone.bassGainDb), tone.bassGainDb,
                         ToneControls.GAIN_MIN..ToneControls.GAIN_MAX, accent, contentColor, KNOB_BIG,
-                        d.bassGainDb) {
+                        d.bassGainDb, step = 0.5f, fineStep = 0.5f,
+                        exactText = "%+.1f dB".format(tone.bassGainDb)) {
                         onChange(tone.copy(bassGainDb = snap(it, 0.5f)))
                     }
                     Knob(stringResource(R.string.tone_freq), "${tone.bassFreq.roundToInt()} Hz", tone.bassFreq,
                         ToneControls.BASS_FREQ_MIN..ToneControls.BASS_FREQ_MAX, accent, contentColor, KNOB_SMALL,
-                        d.bassFreq) {
+                        d.bassFreq, step = 5f, fineStep = 1f) {
                         onChange(tone.copy(bassFreq = it))
                     }
                     Knob("Q", "%.2f".format(tone.bassQ), tone.bassQ,
                         ToneControls.Q_MIN..ToneControls.Q_MAX, accent, contentColor, KNOB_SMALL,
-                        d.bassQ) {
+                        d.bassQ, step = 0.05f, fineStep = 0.01f) {
                         onChange(tone.copy(bassQ = it))
                     }
                     Knob("Q", "%.2f".format(tone.trebleQ), tone.trebleQ,
                         ToneControls.Q_MIN..ToneControls.Q_MAX, accent, contentColor, KNOB_SMALL,
-                        d.trebleQ) {
+                        d.trebleQ, step = 0.05f, fineStep = 0.01f) {
                         onChange(tone.copy(trebleQ = it))
                     }
                     Knob(stringResource(R.string.tone_freq), "${(tone.trebleFreq / 1000f).format1()} kHz", tone.trebleFreq,
                         ToneControls.TREBLE_FREQ_MIN..ToneControls.TREBLE_FREQ_MAX, accent, contentColor, KNOB_SMALL,
-                        d.trebleFreq) {
+                        d.trebleFreq, step = 100f, fineStep = 10f,
+                        exactText = "${tone.trebleFreq.roundToInt()} Hz") {
                         onChange(tone.copy(trebleFreq = it))
                     }
                     Knob(stringResource(R.string.tone_treble), "%+.0f dB".format(tone.trebleGainDb), tone.trebleGainDb,
                         ToneControls.GAIN_MIN..ToneControls.GAIN_MAX, accent, contentColor, KNOB_BIG,
-                        d.trebleGainDb) {
+                        d.trebleGainDb, step = 0.5f, fineStep = 0.5f,
+                        exactText = "%+.1f dB".format(tone.trebleGainDb)) {
                         onChange(tone.copy(trebleGainDb = snap(it, 0.5f)))
                     }
                 }
@@ -199,63 +220,106 @@ private fun Knob(
     contentColor: Color,
     knobSize: Dp,
     resetValue: Float,
+    /** Desktop: one wheel notch or arrow press; Ctrl moves [fineStep]. */
+    step: Float = (range.endInclusive - range.start) / 48f,
+    fineStep: Float = step / 10f,
+    /**
+     * Desktop: the value finer than [valueText] rounds it, for the hover hint.
+     * The gain knobs move in half decibels and read in whole ones.
+     */
+    exactText: String? = null,
     onChange: (Float) -> Unit,
 ) {
     val span = range.endInclusive - range.start
     val curValue by rememberUpdatedState(value)
     val curOnChange by rememberUpdatedState(onChange)
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    var resetMenu by remember { mutableStateOf(false) }
+    val resetHint = stringResource(R.string.knob_reset_hint_desktop)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
         modifier = Modifier.padding(horizontal = 1.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(knobSize)
-                // Double-tap resets the knob to its default.
-                .pointerInput(Unit) {
-                    detectTapGestures(onDoubleTap = { curOnChange(resetValue) })
-                }
-                .pointerInput(Unit) {
-                    detectDragGestures { change, drag ->
-                        change.consume()
-                        // ~150 px of vertical travel spans the whole range; up = up.
-                        val next = (curValue - drag.y / 150f * span)
-                            .coerceIn(range.start, range.endInclusive)
-                        curOnChange(next)
+        // Desktop: the double-click reset is otherwise found only by accident.
+        PlayerTooltip(text = { listOfNotNull(exactText, resetHint).joinToString("\n") }) {
+            Box(
+                modifier = Modifier
+                    .size(knobSize)
+                    .focusRing(focused, CircleShape)
+                    .pointerHoverIcon(PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR)))
+                    // Desktop: the wheel turns it, the arrows step it once Tab has
+                    // reached it, right-click or the Menu key offers the reset the
+                    // double-tap does, and Delete does it outright.
+                    .wheelAdjust(value, range, step, fineStep) { curOnChange(it) }
+                    .contextClick { resetMenu = true }
+                    .onKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown || event.key != Key.Delete) return@onKeyEvent false
+                        curOnChange(resetValue)
+                        true
                     }
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Canvas(modifier = Modifier.size(knobSize)) {
-                val stroke = 4.dp.toPx()
-                val radius = size.minDimension / 2f - stroke
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val startAngle = 135f
-                val sweep = 270f
-                drawArc(
-                    color = contentColor.copy(alpha = 0.15f),
-                    startAngle = startAngle,
-                    sweepAngle = sweep,
-                    useCenter = false,
-                    topLeft = Offset(center.x - radius, center.y - radius),
-                    size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
-                )
-                val frac = ((value - range.start) / span).coerceIn(0f, 1f)
-                drawArc(
-                    color = accent,
-                    startAngle = startAngle,
-                    sweepAngle = sweep * frac,
-                    useCenter = false,
-                    topLeft = Offset(center.x - radius, center.y - radius),
-                    size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
-                )
-                val ang = Math.toRadians((startAngle + sweep * frac).toDouble())
-                val px = center.x + (radius * cos(ang)).toFloat()
-                val py = center.y + (radius * sin(ang)).toFloat()
-                drawCircle(color = contentColor, radius = stroke * 0.7f, center = Offset(px, py))
+                    .adjustKeys(value, range, step, fineStep = fineStep, interactionSource = interaction) {
+                        curOnChange(it)
+                    }
+                    // Double-tap resets the knob to its default.
+                    .pointerInput(Unit) {
+                        detectTapGestures(onDoubleTap = { curOnChange(resetValue) })
+                    }
+                    .pointerInput(Unit) {
+                        // Built up apart from the value, which the gain knobs snap
+                        // to 0.5 dB: built on the snapped value, a slow drag rounded
+                        // back to where it started on every event and never moved.
+                        var raw = 0f
+                        detectDragGestures(onDragStart = { raw = curValue }) { change, drag ->
+                            change.consume()
+                            // ~150 px of vertical travel spans the whole range; up = up.
+                            raw = (raw - drag.y / 150f * span)
+                                .coerceIn(range.start, range.endInclusive)
+                            curOnChange(raw)
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(modifier = Modifier.size(knobSize)) {
+                    val stroke = 4.dp.toPx()
+                    val radius = size.minDimension / 2f - stroke
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val startAngle = 135f
+                    val sweep = 270f
+                    drawArc(
+                        color = contentColor.copy(alpha = 0.15f),
+                        startAngle = startAngle,
+                        sweepAngle = sweep,
+                        useCenter = false,
+                        topLeft = Offset(center.x - radius, center.y - radius),
+                        size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                    val frac = ((value - range.start) / span).coerceIn(0f, 1f)
+                    drawArc(
+                        color = accent,
+                        startAngle = startAngle,
+                        sweepAngle = sweep * frac,
+                        useCenter = false,
+                        topLeft = Offset(center.x - radius, center.y - radius),
+                        size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                    val ang = Math.toRadians((startAngle + sweep * frac).toDouble())
+                    val px = center.x + (radius * cos(ang)).toFloat()
+                    val py = center.y + (radius * sin(ang)).toFloat()
+                    drawCircle(color = contentColor, radius = stroke * 0.7f, center = Offset(px, py))
+                }
+                DropdownMenu(expanded = resetMenu, onDismissRequest = { resetMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.action_reset)) },
+                        onClick = {
+                            resetMenu = false
+                            curOnChange(resetValue)
+                        },
+                    )
+                }
             }
         }
         Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))

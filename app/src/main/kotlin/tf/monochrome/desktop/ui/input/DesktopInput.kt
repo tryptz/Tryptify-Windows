@@ -42,6 +42,9 @@ object DesktopInput {
     @Volatile
     var onForward: (() -> Unit)? = null
 
+    /** [focusVisible] as it was before the navigation key now being handled. */
+    private var focusVisibleBeforeKey = false
+
     private var installed = false
 
     /** Starts listening. Called once, from main, before the window opens. */
@@ -82,9 +85,21 @@ object DesktopInput {
         }
     }
 
+    /**
+     * The arrow just pressed was a shortcut (a seek, a skip, a volume step), not
+     * a move. The AWT listener sees an arrow before anyone has acted on it, so
+     * it has already shown focus; put that back. Otherwise a seek after clicking a
+     * row would show the row's ring and hand it Space, replaying the row instead
+     * of pausing.
+     */
+    fun keyWasShortcut() {
+        focusVisible = focusVisibleBeforeKey
+    }
+
     private fun onAwtEvent(event: AWTEvent) {
         when (event) {
             is KeyEvent -> if (event.id == KeyEvent.KEY_PRESSED && event.keyCode in NAVIGATION_KEYS) {
+                focusVisibleBeforeKey = focusVisible
                 focusVisible = true
             }
             is MouseEvent -> when (event.id) {

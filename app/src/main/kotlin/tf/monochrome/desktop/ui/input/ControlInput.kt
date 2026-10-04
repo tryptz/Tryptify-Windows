@@ -12,6 +12,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.key.key
@@ -94,6 +95,9 @@ fun Modifier.adjustKeys(
     this
         .onKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+            // Alt+Left/Right is the window's back and forward; a focused knob
+            // must not swallow it as a value step.
+            if (event.isAltPressed) return@onKeyEvent false
             val small = if (event.isCtrlPressed) fineStep else step
             val next = when (event.key) {
                 Key.DirectionUp, Key.DirectionRight -> current + small

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -55,6 +56,8 @@ import tf.monochrome.desktop.data.charts.ChartEntry
 import tf.monochrome.desktop.data.charts.ChartSource
 import tf.monochrome.desktop.data.charts.ChartWindow
 import tf.monochrome.desktop.data.charts.GenreChart
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import tf.monochrome.desktop.ui.player.PlayerViewModel
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import java.text.SimpleDateFormat
@@ -99,6 +102,9 @@ fun GenreChartScreen(
         }
     }
 
+    // F5 does what the refresh button does, as in a browser.
+    RefreshKey { if (!loading) viewModel.refresh(force = true) }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
@@ -136,7 +142,11 @@ fun GenreChartScreen(
 
                 entries.isEmpty() -> EmptyChart(chart)
 
-                else -> LazyColumn(
+                else -> Box(Modifier.fillMaxSize()) {
+                val listState = rememberLazyListState()
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = MonoDimens.spacingXl + LocalBottomChromeInset.current),
                 ) {
                     item {
@@ -162,6 +172,8 @@ fun GenreChartScreen(
                         )
                     }
                 }
+                ListScrollbar(listState, Modifier.padding(bottom = LocalBottomChromeInset.current))
+                }
             }
         }
     }
@@ -171,7 +183,10 @@ fun GenreChartScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WindowRail(selected: ChartWindow, onSelect: (ChartWindow) -> Unit) {
+    val rowState = rememberLazyListState()
+    HoverScrollRow(state = rowState) {
     LazyRow(
+        state = rowState,
         contentPadding = PaddingValues(horizontal = MonoDimens.spacingLg),
         horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingSm),
         modifier = Modifier.padding(vertical = MonoDimens.spacingSm),
@@ -184,6 +199,7 @@ private fun WindowRail(selected: ChartWindow, onSelect: (ChartWindow) -> Unit) {
                 colors = FilterChipDefaults.filterChipColors(),
             )
         }
+    }
     }
 }
 

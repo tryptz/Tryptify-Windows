@@ -2,9 +2,12 @@ package tf.monochrome.desktop.ui.eq
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -24,9 +27,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -36,6 +41,20 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.TextLayoutResult
@@ -50,6 +69,8 @@ import tf.monochrome.desktop.domain.model.EqBand
 import tf.monochrome.desktop.domain.model.FilterType
 import tf.monochrome.desktop.domain.model.FrequencyPoint
 import tf.monochrome.desktop.audio.eq.AutoEqEngine
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.focusRing
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.log10
@@ -66,6 +87,15 @@ private const val GRAPH_PADDING_RIGHT = 40f
 private const val GRAPH_PADDING_TOP = 12f
 private const val GRAPH_PADDING_BOTTOM = 20f
 
+/** Desktop: how far an arrow or a sideways wheel notch moves a band, in octaves. */
+private const val OCTAVE_STEP = 1f / 24f
+
+/** Desktop: how far an arrow or a wheel notch raises or lowers a band, in dB. */
+private const val GAIN_STEP_DB = 0.5f
+
+/** Desktop: how near a dot the pointer must be, in px, for the wheel to move the dot. */
+private const val WHEEL_RADIUS = 24f
+
 /**
  * Interactive frequency response graph matching SeapEngine's visual style.
  *
@@ -77,6 +107,7 @@ private const val GRAPH_PADDING_BOTTOM = 20f
  * - Target curve (primary color, dashed)
  * - Corrected curve (white, solid) with draggable EQ band dots
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun FrequencyResponseGraph(
     originalCurve: List<FrequencyPoint>,
@@ -231,6 +262,32 @@ fun FrequencyResponseGraph(
     val latestMaxAbsDragGain by rememberUpdatedState(maxAbsDragGain)
     val latestOnBandDragged by rememberUpdatedState(onBandDragged)
 
+    // Desktop: the dot under the mouse, or -1. Ringed, with the hand cursor, so
+    // what a press will grab shows before it is grabbed.
+    var hoveredBandId by remember { mutableIntStateOf(-1) }
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // Desktop: set by the second press of a double-click, so the tap it ends in
+    // does not toggle off the band the double-click just reset.
+    val skipTap = remember { booleanArrayOf(false) }
+    // [0] the band the last nudge started from, [1] what it sent: a notch or a
+    // key repeat that lands before the next frame builds on the last one
+    // instead of repeating it.
+    val pending = remember { arrayOfNulls<EqBand>(2) }
+    fun nudge(bandId: Int, change: (EqBand) -> EqBand) {
+        val emit = latestOnBandDragged ?: return
+        val drawn = latestEqBands.firstOrNull { it.id == bandId } ?: return
+        val last = pending[1]
+        val base = if (pending[0] == drawn && last != null && last.id == bandId) last else drawn
+        val cap = latestMaxAbsDragGain
+        val next = change(base).let {
+            it.copy(freq = it.freq.coerceIn(MIN_FREQ, MAX_FREQ), gain = it.gain.coerceIn(-cap, cap))
+        }
+        pending[0] = drawn
+        pending[1] = next
+        if (next != base) emit(bandId, next.freq, next.gain)
+    }
+
     // Per-band contribution curves for the profile-line pass (drawn behind the
     // response). These are the same per-band responses the corrected curve is
     // summed from, just offset to the baseline instead of added together — so
@@ -263,11 +320,134 @@ fun FrequencyResponseGraph(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerHoverIcon(if (hoveredBandId >= 0) PointerIcon.Hand else PointerIcon.Default)
+                // Desktop: with the graph focused, [ and ] pick the band, the
+                // arrows move it (1/24 octave, 0.5 dB; Ctrl a fifth of that) and
+                // Delete puts its gain back to zero. Tab moves on, and Alt or
+                // Shift with an arrow are left to the app's own shortcuts.
+                .onFocusChanged { state ->
+                    if (state.isFocused && latestEqBands.none { it.enabled && it.id == selectedBandId }) {
+                        selectedBandId = latestEqBands.filter { it.enabled }.minByOrNull { it.freq }?.id ?: -1
+                    }
+                }
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.isAltPressed || event.isShiftPressed) {
+                        return@onKeyEvent false
+                    }
+                    if (eqDotsHidden) return@onKeyEvent false
+                    val order = latestEqBands.filter { it.enabled }.sortedBy { it.freq }
+                    if (order.isEmpty()) return@onKeyEvent false
+                    val at = order.indexOfFirst { it.id == selectedBandId }
+                    val bandId = if (at >= 0) selectedBandId else order.first().id
+                    val fine = event.isCtrlPressed
+                    val octaves = if (fine) OCTAVE_STEP / 5f else OCTAVE_STEP
+                    val db = if (fine) GAIN_STEP_DB / 5f else GAIN_STEP_DB
+                    when (event.key) {
+                        Key.LeftBracket, Key.RightBracket -> {
+                            if (fine || DesktopInput.isTextInputActive()) return@onKeyEvent false
+                            val by = if (event.key == Key.RightBracket) 1 else -1
+                            selectedBandId =
+                                if (at < 0) order.first().id else order[(at + by).mod(order.size)].id
+                            return@onKeyEvent true
+                        }
+                        Key.DirectionLeft -> nudge(bandId) { it.copy(freq = it.freq * 2f.pow(-octaves)) }
+                        Key.DirectionRight -> nudge(bandId) { it.copy(freq = it.freq * 2f.pow(octaves)) }
+                        Key.DirectionUp -> nudge(bandId) { it.copy(gain = it.gain + db) }
+                        Key.DirectionDown -> nudge(bandId) { it.copy(gain = it.gain - db) }
+                        Key.Delete -> if (fine) return@onKeyEvent false else nudge(bandId) { it.copy(gain = 0f) }
+                        else -> return@onKeyEvent false
+                    }
+                    selectedBandId = bandId
+                    true
+                }
+                .focusable(enabled = onBandDragged != null, interactionSource = interaction)
                 .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+                // Inside the padding, so the box's rounded clip does not shave it.
+                .focusRing(focused)
+                // Desktop: hover, the wheel and the double-click, mouse only.
+                .pointerInput(Unit) {
+                    if (onBandDragged == null) return@pointerInput
+                    // The dot a wheel turn started on keeps the wheel until the mouse
+                    // itself moves, though each notch carries it out from under the pointer.
+                    var latched = -1
+                    var latchedAt = Offset.Zero
+                    val still = 4.dp.toPx()
+                    // When the last primary press landed, and on which band.
+                    var lastPressAt = Long.MIN_VALUE / 2
+                    var lastPressBand = -1
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: continue
+                            if (change.type != PointerType.Mouse) continue
+                            val at = change.position
+                            val near = { radius: Float ->
+                                if (eqDotsHidden) -1 else findNearestBand(
+                                    at, latestEqBands, latestCorrected, latestPreamp, latestSampleRate,
+                                    size.width.toFloat(), size.height.toFloat(),
+                                    latestMinGain, latestMaxGain, latestZeroOffset, radius,
+                                )
+                            }
+                            when (event.type) {
+                                PointerEventType.Exit -> {
+                                    latched = -1
+                                    hoveredBandId = -1
+                                }
+                                PointerEventType.Enter, PointerEventType.Move -> {
+                                    if (latched >= 0 && (at - latchedAt).getDistance() > still) latched = -1
+                                    if (latched < 0 && !change.pressed) hoveredBandId = near(GRAB_RADIUS)
+                                }
+                                PointerEventType.Press -> {
+                                    latched = -1
+                                    if (event.button == PointerButton.Primary) {
+                                        // Double-click a dot to put its gain back to zero.
+                                        val band = near(GRAB_RADIUS)
+                                        val double = band >= 0 && band == lastPressBand &&
+                                            change.uptimeMillis - lastPressAt <= viewConfiguration.doubleTapTimeoutMillis
+                                        skipTap[0] = double
+                                        if (double) {
+                                            lastPressAt = Long.MIN_VALUE / 2
+                                            nudge(band) { it.copy(gain = 0f) }
+                                            selectedBandId = band
+                                        } else {
+                                            lastPressAt = change.uptimeMillis
+                                            lastPressBand = band
+                                        }
+                                    }
+                                }
+                                PointerEventType.Scroll -> {
+                                    // The wheel moves a dot only with the pointer right on it;
+                                    // anywhere else on the graph it scrolls the page.
+                                    val band = if (change.isConsumed) -1 else if (latched >= 0) latched else near(WHEEL_RADIUS)
+                                    if (band >= 0) {
+                                        latched = band
+                                        latchedAt = at
+                                        hoveredBandId = band
+                                        val fine = event.keyboardModifiers.isCtrlPressed
+                                        val d = change.scrollDelta
+                                        // Sideways (Shift+wheel) is frequency, as the graph's own axes are.
+                                        if (abs(d.x) > abs(d.y)) {
+                                            val octaves = d.x * (if (fine) OCTAVE_STEP / 5f else OCTAVE_STEP)
+                                            nudge(band) { it.copy(freq = it.freq * 2f.pow(octaves)) }
+                                        } else {
+                                            val db = -d.y * (if (fine) GAIN_STEP_DB / 5f else GAIN_STEP_DB)
+                                            nudge(band) { it.copy(gain = it.gain + db) }
+                                        }
+                                        change.consume()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 .pointerInput(Unit) {
                     if (onBandDragged == null) return@pointerInput
                     detectTapGestures { offset ->
                         if (eqDotsHidden) return@detectTapGestures
+                        if (skipTap[0]) {
+                            skipTap[0] = false
+                            return@detectTapGestures
+                        }
                         val tapped = findNearestBand(
                             offset, latestEqBands, latestCorrected, latestPreamp, latestSampleRate,
                             size.width.toFloat(), size.height.toFloat(),
@@ -294,7 +474,13 @@ fun FrequencyResponseGraph(
                         )
                         if (bandId < 0) return@awaitEachGesture
 
-                        val touchSlop = viewConfiguration.touchSlop
+                        // Desktop: a mouse holds still where a finger cannot, so a
+                        // third of the slop lets a small, precise move register.
+                        val touchSlop = if (down.type == PointerType.Mouse) {
+                            viewConfiguration.touchSlop / 3f
+                        } else {
+                            viewConfiguration.touchSlop
+                        }
                         var started = false
                         while (true) {
                             val event = awaitPointerEvent()
@@ -307,6 +493,7 @@ fun FrequencyResponseGraph(
                                 // detector (which toggles selection).
                                 if ((pos - down.position).getDistance() < touchSlop) continue
                                 started = true
+                                skipTap[0] = false
                                 selectedBandId = bandId
                                 isDragging = true
                             }
@@ -502,6 +689,16 @@ fun FrequencyResponseGraph(
                         }
                     )
                 )
+
+                // Desktop: the dot a press would grab.
+                if (band.id == hoveredBandId && !isDragging) {
+                    drawCircle(
+                        color = curveNeutral.copy(alpha = 0.6f),
+                        radius = dotRadius + 6f,
+                        center = Offset(dotX, dotY),
+                        style = Stroke(width = 2f),
+                    )
+                }
 
                 // Band number, so a dot maps to its row in the list below.
                 // Compact handles skip it (unreadable at that size and count);
@@ -796,6 +993,9 @@ private fun bandDotGain(
     gainAtFreq
 }
 
+/** How near a dot, in px, a press grabs its band. */
+private const val GRAB_RADIUS = 50f
+
 private fun findNearestBand(
     position: Offset,
     bands: List<EqBand>,
@@ -806,9 +1006,9 @@ private fun findNearestBand(
     height: Float,
     minGain: Float,
     maxGain: Float,
-    zeroOffset: Float
+    zeroOffset: Float,
+    threshold: Float = GRAB_RADIUS,
 ): Int {
-    val threshold = 50f
     var nearest = -1
     var nearestDist = Float.MAX_VALUE
     bands.forEach { band ->

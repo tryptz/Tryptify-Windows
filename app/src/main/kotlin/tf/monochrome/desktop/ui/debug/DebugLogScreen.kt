@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -55,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import tf.monochrome.desktop.R
 import tf.monochrome.desktop.debug.DebugLogEntry
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -186,16 +188,21 @@ fun DebugLogScreen(
             }
         }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp),
-            contentPadding = PaddingValues(bottom = 80.dp + LocalBottomChromeInset.current),
-        ) {
-            items(items = entries) { entry ->
-                LogRow(entry = entry)
+        // Desktop: a scrollbar in the list's right gutter. The buffer runs to
+        // thousands of lines, and the wheel alone is no way to reach the top.
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp),
+                contentPadding = PaddingValues(bottom = 80.dp + LocalBottomChromeInset.current),
+            ) {
+                items(items = entries) { entry ->
+                    LogRow(entry = entry)
+                }
             }
+            ListScrollbar(listState, Modifier.padding(bottom = LocalBottomChromeInset.current))
         }
     }
 }

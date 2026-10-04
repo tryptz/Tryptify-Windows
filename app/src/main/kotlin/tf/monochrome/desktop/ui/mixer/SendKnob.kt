@@ -1,11 +1,22 @@
 package tf.monochrome.desktop.ui.mixer
 
 import tf.monochrome.desktop.ui.input.wheelAdjust
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.doubleClickReset
+import tf.monochrome.desktop.ui.input.focusRing
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -22,8 +33,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -56,6 +76,10 @@ internal fun sendDbLabel(level: Float): String =
  * scrolls the strip row and a grab never jumps the value); it stops just
  * above silence, so removing a route is always the deliberate tap, as it was
  * on the arrow this replaces. The dB reads inside the knob while it turns.
+ *
+ * Desktop: a mouse click does not remove the route, because a click is how a
+ * mouse grabs a knob; removing is in the right-click menu (also the Menu key,
+ * Shift+F10 or Delete), and a double-click puts the send back to unity.
  */
 @Composable
 internal fun SendKnob(
@@ -72,11 +96,16 @@ internal fun SendKnob(
     val latestOnRemove by rememberUpdatedState(onRemove)
     val removeRouteLabel = stringResource(R.string.mixer_remove_route)
     var dragging by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val windowInfo = LocalWindowInfo.current
 
     Box(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .size(SendKnobSize)
+            .focusRing(focused, CircleShape)
             .adjustableSemantics(
                 label = stringResource(R.string.mixer_send_to, destinationName),
                 value = level,
@@ -91,11 +120,33 @@ internal fun SendKnob(
                     CustomAccessibilityAction(removeRouteLabel) { latestOnRemove(); true }
                 )
             }
+            .pointerHoverIcon(PointerIcon.Hand)
+            .contextClick { menuOpen = true }
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || event.key != Key.Delete) return@onKeyEvent false
+                menuOpen = true
+                true
+            }
+            .adjustKeys(
+                value = level,
+                range = MinSend..1f,
+                step = 0.05f,
+                bigStep = 0.25f,
+                fineStep = 0.01f,
+                interactionSource = interaction,
+                onValueChange = onLevelChange,
+            )
+            .doubleClickReset { onLevelChange(1f) }
             .pointerInput(Unit) {
-                detectTapGestures(onTap = {
+                // A tap removes the route; a mouse click never does (see above).
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    if (down.type == PointerType.Mouse) return@awaitEachGesture
+                    val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                    up.consume()
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     latestOnRemove()
-                })
+                }
             }
             .pointerInput(Unit) {
                 var startVal = 0f
@@ -112,7 +163,7 @@ internal fun SendKnob(
                     onDragCancel = { dragging = false },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        accumPx += dragAmount
+                        accumPx += dragAmount * windowInfo.dragScale()
                         // ~150px of travel spans the whole knob, as on PanKnob.
                         val v = (startVal - accumPx / 150f).coerceIn(MinSend, 1f)
                         latestOnLevelChange(v)
@@ -164,6 +215,22 @@ internal fun SendKnob(
                 fontWeight = FontWeight.Bold,
                 color = Color.White.copy(alpha = 0.92f),
                 maxLines = 1,
+            )
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_reset)) },
+                onClick = {
+                    menuOpen = false
+                    onLevelChange(1f)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(removeRouteLabel) },
+                onClick = {
+                    menuOpen = false
+                    onRemove()
+                },
             )
         }
     }

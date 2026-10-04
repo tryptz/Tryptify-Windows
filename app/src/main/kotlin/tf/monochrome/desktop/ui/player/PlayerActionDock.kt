@@ -7,7 +7,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.focusRing
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,6 +63,10 @@ private val DockItemVerticalPadding = 10.dp
 // ~80% of their viewport: about 3dp of margin against an 11dp blur.
 private val DockBloomPadding = 16.dp
 private val DockBloomBox = PlayerDesignTokens.DockIconSize + DockBloomPadding * 2
+
+// How far a hovered or keyboard-focused slot lights its glyph: clearly short
+// of the active state, so pointing at a slot never reads as switching it on.
+private const val DockHoverLit = 0.4f
 
 /**
  * Erase the four dock glyphs from whatever has just been drawn, leaving
@@ -249,9 +259,19 @@ private fun DockLabel(
         animationSpec = PressSpring,
         label = "dockLabelScale",
     )
+    // Desktop: the mouse over a slot, or Tab on it, lights the glyph part
+    // way, the same light its active state carries. A mark on the glyph
+    // rather than a pane behind it, which would be a slab under glass.
+    val hovered by interactionSource.collectIsHoveredAsState()
+    val focused by interactionSource.collectIsFocusedAsState()
+    val pointedAt = hovered || (focused && DesktopInput.focusVisible)
     // Fade the "lit" glyph in/out so toggling active glows on smoothly.
     val lit by animateFloatAsState(
-        targetValue = if (active) 1f else 0f,
+        targetValue = when {
+            active -> 1f
+            pointedAt -> DockHoverLit
+            else -> 0f
+        },
         animationSpec = spring(stiffness = Spring.StiffnessLow),
         label = "dockLit",
     )
@@ -263,6 +283,8 @@ private fun DockLabel(
     Column(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
+            .pointerHoverIcon(PointerIcon.Hand)
+            .focusRing(focused, RoundedCornerShape(12.dp))
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,

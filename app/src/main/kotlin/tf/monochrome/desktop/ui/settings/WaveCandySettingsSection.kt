@@ -143,6 +143,14 @@ private fun WaveSlider(
                 dragging = Float.NaN
             },
             valueRange = range,
+            modifier = Modifier.sliderWheel(
+                value = shown,
+                range = range,
+                onCommit = {
+                    if (!dragging.isNaN()) onCommit(dragging)
+                    dragging = Float.NaN
+                },
+            ) { dragging = it },
         )
     }
 }

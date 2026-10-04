@@ -19,6 +19,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -88,15 +90,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -138,6 +156,9 @@ import coil3.compose.AsyncImage
 import tf.monochrome.desktop.data.charts.ChartEntry
 import tf.monochrome.desktop.ui.components.bounceClick
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.navigation.Screen
 import tf.monochrome.desktop.ui.navigation.navigateSafe
 import tf.monochrome.desktop.ui.player.LocalPlayerGlass
@@ -218,6 +239,9 @@ fun GenreMapScreen(
     val chart by viewModel.mapChart.collectAsStateWithLifecycle()
     val chartMessage by viewModel.mapChartMessage.collectAsStateWithLifecycle()
 
+    // Escape and the mouse's Back button close the panel before they leave the map.
+    androidx.activity.compose.BackHandler(enabled = selected != null) { viewModel.selectOnMap(null) }
+
     // A tapped chart row that no catalogue can match says so. The row stays in
     // the list either way — the chart is a record of what was listened to, and
     // dropping the rows this app happens not to stock would quietly rewrite it.
@@ -288,6 +312,7 @@ fun GenreMapScreen(
     // while the screen shows something else, and taps land on nothing.
     val liveBounds = rememberUpdatedState(bounds)
     val liveMorph = rememberUpdatedState(morph.value)
+    val liveLayout = rememberUpdatedState(layout)
 
     // How much of the bottom the detail panel is covering, so a genre can be
     // centred in the part of the map you can actually see.
@@ -349,6 +374,44 @@ fun GenreMapScreen(
         flight = scope.launch {
             flyTo(node, canvasSize, panelHeightPx, bounds, camera, instant) { camera = it }
         }
+    }
+
+    // Desktop: the map with keyboard focus pans on the arrows and zooms on +
+    // and -, about the centre, as the drag and the wheel do. Home is the
+    // recentre button. Arrows with a modifier are left to the app's shortcuts.
+    val mapFocus = remember { FocusRequester() }
+    var mapFocused by remember { mutableStateOf(false) }
+    fun mapKey(event: KeyEvent): Boolean {
+        if (event.type != KeyEventType.KeyDown) return false
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        if (DesktopInput.isTextInputActive() || canvasSize == IntSize.Zero) return false
+        val step = minOf(canvasSize.width, canvasSize.height) * KEY_PAN_FRACTION
+        val plain = !event.isShiftPressed
+        val pan = when {
+            !plain -> null
+            event.key == Key.DirectionLeft -> Offset(step, 0f)
+            event.key == Key.DirectionRight -> Offset(-step, 0f)
+            event.key == Key.DirectionUp -> Offset(0f, step)
+            event.key == Key.DirectionDown -> Offset(0f, -step)
+            else -> null
+        }
+        val zoom = when (event.key) {
+            Key.Plus, Key.Equals, Key.NumPadAdd -> WHEEL_ZOOM_STEP
+            Key.Minus, Key.NumPadSubtract -> 1f / WHEEL_ZOOM_STEP
+            else -> null
+        }
+        val next = when {
+            pan != null -> camera.zoomedAt(Offset.Zero, pan, 1f, canvasSize, bounds)
+            zoom != null -> camera.zoomedAt(
+                Offset(canvasSize.width / 2f, canvasSize.height / 2f), Offset.Zero, zoom,
+                canvasSize, bounds,
+            )
+            event.key == Key.MoveHome && plain -> Camera()
+            else -> return false
+        }
+        flight?.cancel()
+        camera = next
+        return true
     }
 
     /** Unfold a genre's subtree, or fold it back, growing it out of the genre itself. */
@@ -505,8 +568,13 @@ fun GenreMapScreen(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
+                    .focusRing(mapFocused, RectangleShape)
                     .hazeSource(mapHaze)
                     .onSizeChanged { canvasSize = it }
+                    .onFocusChanged { mapFocused = it.isFocused }
+                    .onKeyEvent { mapKey(it) }
+                    .focusRequester(mapFocus)
+                    .focusable()
                     .pointerInput(Unit) {
                         detectTransformGestures { centroid, pan, zoom, _ ->
                             // Touching the map takes it back from any camera
@@ -520,25 +588,38 @@ fun GenreMapScreen(
                     }
                     // Desktop: a mouse has no pinch, so the wheel zooms instead,
                     // about the pointer as the pinch did about the fingers.
+                    // The timeline is a long page, though, and there the plain
+                    // wheel scrolls it; Ctrl+wheel zooms, as a touchpad pinch
+                    // arrives.
                     .pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
                                 val event = awaitPointerEvent()
                                 if (event.type != PointerEventType.Scroll) continue
                                 val change = event.changes.firstOrNull() ?: continue
-                                val notches = change.scrollDelta.y
-                                if (notches == 0f) continue
+                                val notches = change.scrollDelta
+                                val mods = event.keyboardModifiers
+                                val scrolls = liveLayout.value == MapLayout.TIMELINE &&
+                                    !mods.isCtrlPressed && !mods.isMetaPressed
+                                if (notches == Offset.Zero || (!scrolls && notches.y == 0f)) continue
                                 flight?.cancel()
-                                camera = liveCamera.value.zoomedAt(
-                                    change.position, Offset.Zero, WHEEL_ZOOM_STEP.pow(-notches),
-                                    size, liveBounds.value,
-                                )
+                                camera = if (scrolls) {
+                                    liveCamera.value.zoomedAt(
+                                        Offset.Zero, -notches * WHEEL_PAN.toPx(), 1f,
+                                        size, liveBounds.value,
+                                    )
+                                } else {
+                                    liveCamera.value.zoomedAt(
+                                        change.position, Offset.Zero, WHEEL_ZOOM_STEP.pow(-notches.y),
+                                        size, liveBounds.value,
+                                    )
+                                }
                                 change.consume()
                             }
                         }
                     }
                     .pointerInput(Unit) {
-                        detectTapGestures { point ->
+                        detectTapGestures(onPress = { mapFocus.requestFocus() }) { point ->
                             val hit = hitTest(
                                 point, liveVisible.value, size.width, size.height,
                                 liveBounds.value, liveCamera.value, liveFold.value,
@@ -957,13 +1038,16 @@ private fun GenreCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(related.nodes, key = { it.id }) { child ->
-                        RelativeChip(
-                            node = child,
-                            accent = familyColor,
-                            onClick = { onRelated(child) },
-                        )
+                val rowState = rememberLazyListState()
+                HoverScrollRow(state = rowState) {
+                    LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(related.nodes, key = { it.id }) { child ->
+                            RelativeChip(
+                                node = child,
+                                accent = familyColor,
+                                onClick = { onRelated(child) },
+                            )
+                        }
                     }
                 }
             }
@@ -1375,6 +1459,10 @@ private const val MAX_SCALE = 14f
 
 /** Desktop: the zoom one mouse-wheel notch applies, in or out. */
 private const val WHEEL_ZOOM_STEP = 1.18f
+/** How far one arrow press moves the map, as a share of its shorter side. */
+private const val KEY_PAN_FRACTION = 0.12f
+/** How far one wheel notch scrolls the timeline. */
+private val WHEEL_PAN = 56.dp
 
 /** Leaves a little air around the map at scale 1 instead of running it to the bezel. */
 private const val FIT_MARGIN = 0.92f

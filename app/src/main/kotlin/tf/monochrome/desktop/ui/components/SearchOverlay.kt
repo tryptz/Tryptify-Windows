@@ -6,6 +6,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,15 +22,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.launch
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
 
@@ -98,6 +106,13 @@ fun SearchOverlay(
      */
     barContent: @Composable ColumnScope.() -> Unit = {},
     /**
+     * The state of the list running under the bar. A mouse wheel turned over
+     * the bar scrolls it, as it would over the rows the bar is covering: the
+     * bar is drawn beside the list, not inside it, so the wheel would otherwise
+     * stop dead at the glass. Null leaves the wheel to the bar alone.
+     */
+    scrollState: ScrollableState? = null,
+    /**
      * The screen's content, handed the room the bar is taking — its measured
      * height while it is open, and zero while it is closed.
      *
@@ -154,7 +169,33 @@ fun SearchOverlay(
         label = "searchInset",
     )
 
-    Box(modifier = modifier.fillMaxSize()) {
+    // The wheel over the bar, handed on to the list. Read on the Main pass from
+    // the outside, so every child has had its turn first: a wheel the list
+    // itself took, or a row of pills in the bar, arrives consumed and is left
+    // alone, and only a wheel over the bar's own strip is handed on. The step
+    // mirrors the Windows scroll config the list applies to its own wheel: a
+    // twentieth of the height per line, at the system's default of three lines
+    // a notch.
+    val wheelScope = rememberCoroutineScope()
+    val currentScrollState by rememberUpdatedState(scrollState)
+    val currentOpen by rememberUpdatedState(open)
+    val wheelForward = if (scrollState == null) Modifier else Modifier.pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                if (event.type != PointerEventType.Scroll) continue
+                val target = currentScrollState ?: continue
+                val change = event.changes.firstOrNull() ?: continue
+                if (change.isConsumed || change.scrollDelta.y == 0f) continue
+                if (!currentOpen || change.position.y > barHeight.toPx()) continue
+                val delta = change.scrollDelta.y * size.height / 20f * WHEEL_LINES_PER_NOTCH
+                change.consume()
+                wheelScope.launch { target.scrollBy(delta) }
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize().then(wheelForward)) {
         Box(modifier = Modifier.fillMaxSize().hazeSource(haze)) {
             content(inset)
         }
@@ -184,3 +225,6 @@ fun SearchOverlay(
         }
     }
 }
+
+/** Windows' default for "lines to scroll per notch". */
+private const val WHEEL_LINES_PER_NOTCH = 3f

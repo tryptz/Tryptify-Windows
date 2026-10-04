@@ -2,8 +2,12 @@ package tf.monochrome.desktop.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,14 +38,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import tf.monochrome.desktop.ui.input.adjustKeys
+import tf.monochrome.desktop.ui.input.desktopHover
+import tf.monochrome.desktop.ui.input.focusRing
+import tf.monochrome.desktop.ui.input.wheelAdjust
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import kotlin.math.roundToInt
 import androidx.compose.ui.res.stringResource
@@ -100,8 +118,7 @@ fun ColorPickerDialog(
                 onChange = { s, v -> sat = s; value = v },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1.4f)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .aspectRatio(1.4f),
             )
 
             Spacer(Modifier.height(16.dp))
@@ -110,8 +127,7 @@ fun ColorPickerDialog(
                 onChange = { hue = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(28.dp)
-                    .clip(CircleShape),
+                    .height(28.dp),
             )
 
             Spacer(Modifier.height(16.dp))
@@ -170,13 +186,44 @@ private fun SaturationValueField(
         onChange(s, v)
     }
 
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+
     Box(
         modifier = modifier
             .onSizeChanged { size = it }
+            // The ring before the clip, which would cut away its outer half.
+            .focusRing(focused, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
             // White → hue across x, then transparent → black down y, which is
             // exactly the HSV square: left edge greyscale, top-right the pure hue.
             .background(Brush.horizontalGradient(listOf(Color.White, hueColor)))
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black)))
+            .pointerHoverIcon(PointerIcon.Crosshair)
+            // Desktop: the wheel moves the dot up and down the square, as the
+            // vertical arrows do.
+            .wheelAdjust(value = value, range = 0f..1f, step = 0.02f, fineStep = 0.005f) {
+                onChange(saturation, it)
+            }
+            // Desktop: the arrows walk the dot across the square, finer with
+            // Ctrl; Page Up and Page Down move it a long way up or down, as on
+            // every slider. Nothing else reaches it without a drag.
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                if (event.isAltPressed) return@onKeyEvent false
+                val by = if (event.isCtrlPressed) 0.005f else 0.02f
+                when (event.key) {
+                    Key.DirectionLeft -> onChange((saturation - by).coerceIn(0f, 1f), value)
+                    Key.DirectionRight -> onChange((saturation + by).coerceIn(0f, 1f), value)
+                    Key.DirectionUp -> onChange(saturation, (value + by).coerceIn(0f, 1f))
+                    Key.DirectionDown -> onChange(saturation, (value - by).coerceIn(0f, 1f))
+                    Key.PageUp -> onChange(saturation, (value + 0.2f).coerceIn(0f, 1f))
+                    Key.PageDown -> onChange(saturation, (value - 0.2f).coerceIn(0f, 1f))
+                    else -> return@onKeyEvent false
+                }
+                true
+            }
+            .focusable(interactionSource = interaction)
             .pointerInput(hue) {
                 detectTapGestures { report(it) }
             }
@@ -214,10 +261,27 @@ private fun HueStrip(
         onChange((x / width).coerceIn(0f, 1f) * 360f)
     }
 
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+
     Box(
         modifier = modifier
             .onSizeChanged { width = it.width }
+            .focusRing(focused, CircleShape)
+            .clip(CircleShape)
             .background(Brush.horizontalGradient(spectrum))
+            .pointerHoverIcon(PointerIcon.Crosshair)
+            // Desktop: wheel and arrows turn the hue a few degrees at a time;
+            // Page Up and Page Down jump a twelfth of the circle, one stop of the strip.
+            .wheelAdjust(value = hue, range = 0f..360f, step = 5f, fineStep = 1f, onValueChange = onChange)
+            .adjustKeys(
+                value = hue,
+                range = 0f..360f,
+                step = 1f,
+                bigStep = 30f,
+                interactionSource = interaction,
+                onValueChange = onChange,
+            )
             .pointerInput(Unit) { detectTapGestures { report(it.x) } }
             .pointerInput(Unit) { detectDragGestures { change, _ -> report(change.position.x) } },
     ) {
@@ -300,11 +364,20 @@ fun ColorSwatchRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            // A clickable rather than a bare tap detector, so Tab reaches the
+            // row, Enter opens the picker, and a mouse sees the hand and the rim.
+            .desktopHover(interaction, RoundedCornerShape(12.dp))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

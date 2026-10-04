@@ -1792,3 +1792,60 @@ settings_exclusive_error_desktop	Bypass couldn’t engage. Check that the DAC is
 settings_download_folder_default	%1$s (default)	%1$s（默认）	%1$s（既定）	%1$s (par défaut)	%1$s (predeterminada)	%1$s (varsayılan)	%1$s (Standard)
 settings_titles_from_file_names	Titles from file names	用文件名作为标题	ファイル名をタイトルにする	Titres depuis les noms de fichiers	Títulos desde el nombre de archivo	Başlıklar dosya adlarından	Titel aus Dateinamen
 settings_titles_from_file_names_desc	Name local songs after their files instead of their title tags. Changing this rescans the library.	本地歌曲使用文件名而不是标题标签命名。更改后会重新扫描资料库。	ローカルの曲をタイトルタグではなくファイル名で表示します。変更するとライブラリを再スキャンします。	Nomme les morceaux locaux d’après leurs fichiers plutôt que leurs balises de titre. La modification relance l’analyse de la bibliothèque.	Nombra las canciones locales según sus archivos en lugar de sus etiquetas de título. Cambiarlo vuelve a escanear la biblioteca.	Yerel şarkıları başlık etiketleri yerine dosya adlarıyla adlandırır. Değiştirmek kitaplığı yeniden tarar.	Lokale Songs nach ihren Dateinamen statt nach ihren Titel-Tags benennen. Eine Änderung durchsucht die Mediathek neu.
+mixer_move_down	Move down	下移	下へ移動	Descendre	Bajar	Aşağı taşı	Nach unten
+queue_move_down	Move down	下移	下へ移動	Descendre	Bajar	Aşağı taşı	Nach unten
+audio_tool_open_settings	Open %1$s settings	打开%1$s设置	%1$s の設定を開く	Ouvrir les paramètres de %1$s	Abrir ajustes de %1$s	%1$s ayarlarını aç	%1$s-Einstellungen öffnen
+knob_reset_hint_desktop	Double-click to reset	双击以重置	ダブルクリックでリセット	Double-cliquez pour réinitialiser	Haz doble clic para restablecer	Sıfırlamak için çift tıklayın	Doppelklicken zum Zurücksetzen
+hint_click_desktop	Click: %1$s	点击：%1$s	クリック：%1$s	Clic : %1$s	Clic: %1$s	Tık: %1$s	Klick: %1$s
+hint_right_click_desktop	Right-click: %1$s	右键点击：%1$s	右クリック：%1$s	Clic droit : %1$s	Clic derecho: %1$s	Sağ tık: %1$s	Rechtsklick: %1$s
+waterfall_preview_hint_desktop	↕ angle · ↔ depth · Ctrl+scroll weight · drag the fade line	↕ 角度 · ↔ 深度 · 按住 Ctrl 滚动调粗细 · 拖动淡出线	↕ 角度 · ↔ 奥行き · Ctrl+スクロールで太さ · フェード線をドラッグ	↕ angle · ↔ profondeur · Ctrl+molette : épaisseur · faites glisser la ligne de fondu	↕ ángulo · ↔ profundidad · Ctrl+rueda: grosor · arrastra la línea de desvanecimiento	↕ açı · ↔ derinlik · Ctrl+tekerlek: kalınlık · solma çizgisini sürükleyin	↕ Winkel · ↔ Tiefe · Strg+Mausrad: Stärke · Ausblendlinie ziehen
+waterfall_knobs_hint_desktop	Overlap: how much each analysis overlaps the last. Higher moves more smoothly; lower steps, and saves a little battery. Drag a knob up or down, scroll over it or use the arrow keys; double-click it or press Delete to reset.	重叠：每次分析与上一次重叠的程度。越高动作越平滑；越低越有跳跃感，也更省电。上下拖动旋钮、在其上滚动滚轮或使用方向键来调整；双击或按 Delete 键可复位。	オーバーラップ：各解析が前の解析とどれだけ重なるか。高いほどなめらかに動き、低いほどステップ状になり、電池も少し節約できます。ノブは上下にドラッグするか、ノブの上でスクロールするか、矢印キーで調整し、ダブルクリックかDeleteキーでリセットします。	Chevauchement : à quel point chaque analyse recouvre la précédente. Plus haut, le mouvement est plus fluide ; plus bas, il est saccadé et économise un peu de batterie. Faites glisser un bouton vers le haut ou le bas, faites défiler la molette dessus ou utilisez les touches fléchées ; double-cliquez dessus ou appuyez sur Suppr pour le réinitialiser.	Solapamiento: cuánto se solapa cada análisis con el anterior. Más alto se mueve con más suavidad; más bajo va a saltos y ahorra algo de batería. Arrastra un mando hacia arriba o abajo, gira la rueda sobre él o usa las teclas de flecha; haz doble clic o pulsa Supr para restablecerlo.	Örtüşme: her analizin bir öncekiyle ne kadar örtüştüğü. Yüksek değer daha akıcı hareket eder; düşük değer kademeli ilerler ve biraz pil tasarrufu sağlar. Bir düğmeyi yukarı veya aşağı sürükleyin, üzerinde tekerleği çevirin ya da ok tuşlarını kullanın; sıfırlamak için çift tıklayın veya Delete tuşuna basın.	Überlappung: wie stark jede Analyse die vorige überlappt. Höher bewegt sich flüssiger, niedriger stufiger und spart etwas Akku. Zieh einen Regler nach oben oder unten, dreh das Mausrad darüber oder nimm die Pfeiltasten; ein Doppelklick oder Entf setzt ihn zurück.
+hrtf_click_to_use	click to use as HRTF	点击以用作 HRTF	クリックして HRTF として使用	cliquer pour l’utiliser comme HRTF	haz clic para usarla como HRTF	HRTF olarak kullanmak için tıklayın	klicken, um sie als HRTF zu nutzen
+settings_lastfm_click_to_authorise	Not connected. Click to authorise in your browser	未连接。点击以在浏览器中授权	未接続です。クリックするとブラウザで認証します	Non connecté. Cliquez pour autoriser dans votre navigateur	Sin conectar. Haz clic para autorizar en tu navegador	Bağlı değil. Tarayıcınızda yetkilendirmek için tıklayın	Nicht verbunden. Klicken, um im Browser zu autorisieren
+api_serves_nothing_check_then_click	Serves nothing Tryptify can use right now. Check the server, then click ↻.	目前没有提供 Tryptify 可用的内容。请检查服务器，然后点击 ↻。	現在 Tryptify が使えるものを提供していません。サーバーを確認してから ↻ をクリックしてください。	Ne propose rien que Tryptify puisse utiliser pour l’instant. Vérifiez le serveur, puis cliquez sur ↻.	Ahora no ofrece nada que Tryptify pueda usar. Revisa el servidor y haz clic en ↻.	Şu anda Tryptify’ın kullanabileceği bir şey sunmuyor. Sunucuyu kontrol edin, ardından ↻ simgesine tıklayın.	Stellt gerade nichts bereit, was Tryptify nutzen kann. Prüfe den Server und klicke dann auf ↻.
+settings_mini_player_hide_with_tabs_desc_desktop	Scroll up for the nav bar, down for the mini player. Click the page you’re on in the nav bar to bring the player back.	向上滚动显示导航栏，向下滚动显示迷你播放器。在导航栏中点击当前所在的页面可调出迷你播放器。	上にスクロールするとナビゲーションバー、下にスクロールするとミニプレーヤーを表示します。ナビゲーションバーで表示中のページをクリックするとミニプレーヤーが表示されます。	Faites défiler vers le haut pour la barre de navigation, vers le bas pour le mini-lecteur. Cliquez sur la page actuelle dans la barre pour faire revenir le lecteur.	Desplázate hacia arriba para ver la barra de navegación y hacia abajo para el minirreproductor. En la barra, haz clic en la página en la que estás para que vuelva el reproductor.	Gezinme çubuğu için yukarı, mini oynatıcı için aşağı kaydırın. Oynatıcıyı geri getirmek için çubukta bulunduğunuz sayfaya tıklayın.	Nach oben scrollen zeigt die Navigationsleiste, nach unten den Mini-Player. Klicke in der Leiste auf die aktuelle Seite, um den Player zurückzuholen.
+mini_player_open_player	Open player	打开播放器	プレーヤーを開く	Ouvrir le lecteur	Abrir el reproductor	Oynatıcıyı aç	Player öffnen
+shortcut_help_title	Keyboard and mouse	键盘和鼠标	キーボードとマウス	Clavier et souris	Teclado y mouse	Klavye ve fare	Tastatur und Maus
+shortcut_section_navigation	Getting around	导航	ナビゲーション	Navigation	Navegación	Gezinme	Navigation
+shortcut_section_controls	Sliders and knobs	滑块和旋钮	スライダーとノブ	Curseurs et boutons	Deslizadores y mandos	Kaydırıcılar ve düğmeler	Schieberegler und Regler
+shortcut_section_lists	Lists and menus	列表和菜单	リストとメニュー	Listes et menus	Listas y menús	Listeler ve menüler	Listen und Menüs
+shortcut_play_pause	Play or pause	播放或暂停	再生／一時停止	Lecture ou pause	Reproducir o pausar	Çal veya duraklat	Wiedergabe oder Pause
+shortcut_next_track	Next track	下一首	次の曲	Titre suivant	Canción siguiente	Sonraki parça	Nächster Titel
+shortcut_previous_track	Previous track	上一首	前の曲	Titre précédent	Canción anterior	Önceki parça	Vorheriger Titel
+shortcut_seek	Seek %1$d seconds back or ahead	快退或快进 %1$d 秒	%1$d 秒戻す／進める	Reculer ou avancer de %1$d secondes	Retroceder o avanzar %1$d segundos	%1$d saniye geri veya ileri sar	%1$d Sekunden zurück oder vor
+shortcut_volume	Volume up or down	调高或调低音量	音量を上げる／下げる	Monter ou baisser le volume	Subir o bajar el volumen	Sesi artır veya azalt	Lauter oder leiser
+shortcut_mute	Mute or unmute	静音或取消静音	ミュート／ミュート解除	Couper ou rétablir le son	Silenciar o reactivar el sonido	Sesi kapat veya aç	Stummschaltung an oder aus
+shortcut_shuffle	Shuffle on or off	随机播放：开／关	シャッフル：オン／オフ	Lecture aléatoire : activer ou désactiver	Aleatorio: activar o desactivar	Karıştırmayı aç veya kapat	Zufallswiedergabe: an oder aus
+shortcut_repeat	Change repeat mode	切换循环模式	リピートを切り替え	Changer le mode de répétition	Cambiar el modo de repetición	Tekrarlama modunu değiştir	Wiederholungsmodus wechseln
+shortcut_like	Like or unlike	喜欢／取消喜欢	お気に入りに追加／削除	J’aime / Je n’aime plus	Me gusta / Ya no me gusta	Beğen / Beğenmekten vazgeç	Gefällt mir / Gefällt mir nicht mehr
+shortcut_tabs	Go to a tab	切换标签页	タブに移動	Aller à un onglet	Ir a una pestaña	Bir sekmeye git	Zu einem Tab wechseln
+action_forward	Forward	前进	進む	Avancer	Adelante	İleri	Vorwärts
+shortcut_move_focus	Move between controls	在控件之间移动	コントロール間を移動	Passer d’un contrôle à l’autre	Moverse entre controles	Denetimler arasında geçiş yap	Zwischen Bedienelementen wechseln
+shortcut_activate	Press the selected control	按下选中的控件	選択中のコントロールを押す	Activer le contrôle sélectionné	Activar el control seleccionado	Seçili denetimi etkinleştir	Ausgewähltes Element auslösen
+shortcut_show_help	Show this list	显示此列表	この一覧を表示	Afficher cette liste	Mostrar esta lista	Bu listeyi göster	Diese Liste anzeigen
+shortcut_adjust	Adjust	调节	調整	Régler	Ajustar	Ayarla	Einstellen
+shortcut_adjust_fine	Fine adjust	微调	微調整	Réglage fin	Ajuste fino	İnce ayar	Feineinstellung
+shortcut_adjust_big	Adjust in big steps	大幅调节	大きく調整	Régler par grands pas	Ajustar en pasos grandes	Büyük adımlarla ayarla	In großen Schritten einstellen
+shortcut_min_max	Minimum or maximum	最小值或最大值	最小値／最大値	Minimum ou maximum	Mínimo o máximo	En düşük veya en yüksek	Minimum oder Maximum
+shortcut_item_menu	Open an item's menu	打开项目的菜单	項目のメニューを開く	Ouvrir le menu d’un élément	Abrir el menú de un elemento	Bir öğenin menüsünü aç	Menü eines Eintrags öffnen
+shortcut_menu_move	Move through a menu	在菜单中移动	メニュー内を移動	Parcourir un menu	Recorrer un menú	Menüde gezin	Durch ein Menü gehen
+shortcut_scroll_row	Scroll a row sideways	横向滚动一行	行を横にスクロール	Faire défiler une rangée horizontalement	Desplazar una fila hacia los lados	Bir satırı yana kaydır	Eine Reihe seitlich scrollen
+key_ctrl	Ctrl	Ctrl	Ctrl	Ctrl	Ctrl	Ctrl	Strg
+key_shift	Shift	Shift	Shift	Maj	Mayús	Shift	Umschalt
+key_alt	Alt	Alt	Alt	Alt	Alt	Alt	Alt
+key_space	Space	空格	スペース	Espace	Espacio	Boşluk	Leertaste
+key_esc	Esc	Esc	Esc	Échap	Esc	Esc	Esc
+key_tab	Tab	Tab	Tab	Tab	Tab	Tab	Tab
+key_enter	Enter	回车	Enter	Entrée	Enter	Enter	Eingabe
+key_backspace	Backspace	退格	BackSpace	Retour arrière	Retroceso	Backspace	Rücktaste
+key_home	Home	Home	Home	Début	Inicio	Home	Pos1
+key_end	End	End	End	Fin	Fin	End	Ende
+key_page_up	PgUp	PgUp	PageUp	Page préc.	RePág	PgUp	Bild ↑
+key_page_down	PgDn	PgDn	PageDown	Page suiv.	AvPág	PgDn	Bild ↓
+key_delete	Delete	删除	Delete	Suppr	Supr	Delete	Entf
+key_menu	Menu key	菜单键	メニューキー	Touche Menu	Tecla Menú	Menü tuşu	Menütaste
+mouse_wheel	Mouse wheel	鼠标滚轮	マウスホイール	Molette	Rueda del mouse	Fare tekerleği	Mausrad
+mouse_right_click	Right-click	右键点击	右クリック	Clic droit	Clic derecho	Sağ tık	Rechtsklick
+mouse_double_click	Double-click	双击	ダブルクリック	Double-clic	Doble clic	Çift tık	Doppelklick
+mouse_back_button	Mouse back button	鼠标后退键	マウスの戻るボタン	Bouton Retour de la souris	Botón Atrás del mouse	Farenin geri düğmesi	Zurück-Taste der Maus
+mouse_forward_button	Mouse forward button	鼠标前进键	マウスの進むボタン	Bouton Avancer de la souris	Botón Adelante del mouse	Farenin ileri düğmesi	Vorwärts-Taste der Maus

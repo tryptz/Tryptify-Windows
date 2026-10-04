@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.data.downloads.ActiveDownload
 import tf.monochrome.desktop.data.downloads.DownloadStatus
 import tf.monochrome.desktop.ui.components.CoverImage
+import tf.monochrome.desktop.ui.input.ColumnScrollbar
+import tf.monochrome.desktop.ui.input.overflows
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
@@ -177,10 +179,15 @@ fun DownloadsMonitorSheet(
             } else {
                 // Bounded, scrollable list so a big batch doesn't clip its
                 // trailing entries (the whole sheet was a fixed Column before).
+                // Desktop: a scrollbar while the list overflows, so the mouse
+                // can see and drag to what is below. The end padding keeps it
+                // off the rows' cancel buttons.
+                val listScroll = rememberScrollState()
+                Box(modifier = Modifier.heightIn(max = 360.dp)) {
                 Column(
                     modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(listScroll)
+                        .padding(end = if (listScroll.overflows) 12.dp else 0.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                 downloads.forEach { d ->
@@ -259,6 +266,8 @@ fun DownloadsMonitorSheet(
                         }
                     }
                 }
+                }
+                if (listScroll.overflows) ColumnScrollbar(listScroll)
                 }
             }
         }

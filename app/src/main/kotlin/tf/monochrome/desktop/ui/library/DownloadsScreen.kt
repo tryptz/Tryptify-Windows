@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -60,6 +61,9 @@ import tf.monochrome.desktop.ui.player.PlayerViewModel
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
 
 @Composable
 fun DownloadsScreen(
@@ -82,6 +86,7 @@ fun DownloadsScreen(
 
     val selection = rememberTrackSelectionState<Long>()
     BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
 
     var menuTrack by remember { mutableStateOf<UnifiedTrack?>(null) }
     UnifiedTrackContextMenuHost(
@@ -190,9 +195,18 @@ fun DownloadsScreen(
         )
     }
 
+    val listState = rememberLazyListState()
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding),
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            // Delete opens the same confirmation as the selection bar's trash icon.
+            .selectionKeys(
+                onSelectAll = { clicks.selectAll(downloadedTracks.map { it.id }) },
+                onDelete = { if (selection.active) showDeleteConfirm = true },
+            )
     ) {
         if (albumGroups.isNotEmpty()) {
             item {
@@ -205,20 +219,24 @@ fun DownloadsScreen(
                 }
             }
             item {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(albumGroups, key = { it.title + it.artistName }) { group ->
-                        AlbumCard(
-                            group = group,
-                            onClick = {
-                                val groupUnified = group.tracks.map { it.toUnifiedTrack() }
-                                groupUnified.firstOrNull()?.let { first ->
-                                    playerViewModel.playUnifiedTrack(first, groupUnified)
-                                }
-                            },
-                        )
+                val rowState = rememberLazyListState()
+                HoverScrollRow(state = rowState) {
+                    LazyRow(
+                        state = rowState,
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(albumGroups, key = { it.title + it.artistName }) { group ->
+                            AlbumCard(
+                                group = group,
+                                onClick = {
+                                    val groupUnified = group.tracks.map { it.toUnifiedTrack() }
+                                    groupUnified.firstOrNull()?.let { first ->
+                                        playerViewModel.playUnifiedTrack(first, groupUnified)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -238,19 +256,19 @@ fun DownloadsScreen(
             DownloadedTrackRow(
                 track = track,
                 onClick = {
-                    if (selection.active) {
-                        selection.toggle(track.id)
-                    } else {
+                    clicks.click(track.id, downloadedTracks.map { it.id }) {
                         val tappedUnified = track.toUnifiedTrack()
                         playerViewModel.playUnifiedTrack(tappedUnified, allUnified)
                     }
                 },
-                onLongClick = { selection.toggle(track.id) },
+                onLongClick = { clicks.toggle(track.id) },
                 onMoreClick = { menuTrack = track.toUnifiedTrack() },
                 selectionMode = selection.active,
                 selected = track.id in selection.selectedIds,
             )
         }
+    }
+    ListScrollbar(listState, Modifier.padding(bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current))
     }
     }
 }
@@ -310,6 +328,8 @@ private fun DownloadedTrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // Right-click is the long press, as on every other track row.
+            .contextClick(onContextClick = onLongClick)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically

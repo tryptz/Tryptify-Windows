@@ -94,7 +94,7 @@ class AppShortcuts {
             return true
         }
 
-        return when {
+        val handled = when {
             // ── Playback ──────────────────────────────────────────────
             event.key == Key.Spacebar && !ctrl && !alt && !shift && !typing -> run(a.playPause)
             event.key == Key.P && ctrl && !shift && !alt -> run(a.playPause)
@@ -130,6 +130,9 @@ class AppShortcuts {
             ctrl && !alt && !shift -> tabIndex(event.key)?.let { a.tabs.getOrNull(it) }?.let { run(it) } ?: false
             else -> false
         }
+        // An arrow that reached this far moved no focus, so it shows none.
+        if (handled && event.key in ARROWS) DesktopInput.keyWasShortcut()
+        return handled
     }
 
     private fun KeyEvent.hasModifiers() = isCtrlPressed || isMetaPressed || isAltPressed || isShiftPressed
@@ -140,6 +143,7 @@ class AppShortcuts {
         const val SEEK_MS = 5_000L
         const val SEEK_LONG_MS = 30_000L
         const val VOLUME_STEP = 0.05f
+        private val ARROWS = setOf(Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown)
         private val DIGITS = listOf(
             Key.One, Key.Two, Key.Three, Key.Four, Key.Five,
             Key.Six, Key.Seven, Key.Eight, Key.Nine,

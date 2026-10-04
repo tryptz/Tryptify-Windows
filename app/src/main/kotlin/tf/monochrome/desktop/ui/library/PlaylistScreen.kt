@@ -7,6 +7,7 @@ import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -80,6 +82,7 @@ import tf.monochrome.desktop.ui.components.SearchAction
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.ListScrollbar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,6 +118,9 @@ fun PlaylistScreen(
     }
     val selection = rememberTrackSelectionState<Long>()
     BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
+    // Registered after the selection's, so Escape closes the search first.
+    BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
 
     showContextMenuForTrack?.let { track ->
         TrackContextMenu(
@@ -296,8 +302,13 @@ fun PlaylistScreen(
             placeholder = stringResource(R.string.search_this_playlist),
             onClose = { searchOpen = false; listQuery = "" },
         ) { searchTopInset ->
+        val listState = rememberLazyListState()
+        Box(Modifier.fillMaxSize()) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .selectionKeys(onSelectAll = { clicks.selectAll(visibleTracks.map { it.id }) }),
             contentPadding = PaddingValues(
                         top = searchTopInset,
                         bottom = 80.dp + LocalBottomChromeInset.current,
@@ -413,10 +424,11 @@ fun PlaylistScreen(
                         isLiked = favoriteTrackIds.contains(track.id),
                         onLikeClick = { playerViewModel.toggleFavorite(track) },
                         onClick = {
-                            if (selection.active) selection.toggle(track.id)
-                            else playerViewModel.playTrack(track, visibleTracks)
+                            clicks.click(track.id, visibleTracks.map { it.id }) {
+                                playerViewModel.playTrack(track, visibleTracks)
+                            }
                         },
-                        onLongClick = { selection.toggle(track.id) },
+                        onLongClick = { clicks.toggle(track.id) },
                         onMoreClick = { showContextMenuForTrack = track },
                         onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
                         onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
@@ -427,6 +439,8 @@ fun PlaylistScreen(
                     )
                 }
             }
+        }
+        ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
         }
         }
     }

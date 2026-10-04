@@ -92,6 +92,10 @@ import tf.monochrome.desktop.ui.components.TrackSelectionBar
 import tf.monochrome.desktop.ui.components.bounceCombinedClick
 import tf.monochrome.desktop.ui.components.rememberTrackSelectionState
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.library.rememberSelectionClicks
+import tf.monochrome.desktop.ui.library.selectionKeys
 import tf.monochrome.desktop.ui.navigation.Screen
 import tf.monochrome.desktop.ui.navigation.openAlbum
 import tf.monochrome.desktop.ui.navigation.openArtist
@@ -217,6 +221,7 @@ fun SearchResultsContent(
     // UnifiedTrack ids are Strings ("api_…", "qobuz_…", "local_…").
     val selection = rememberTrackSelectionState<String>()
     BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
 
     showContextMenuForTrack?.let { track ->
         TrackContextMenu(
@@ -363,9 +368,12 @@ fun SearchResultsContent(
                     onAddToPlaylist = { showAddToPlaylistForSelection = true }
                 )
             }
+            Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = columnState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .selectionKeys(onSelectAll = { clicks.selectAll(tracks.map { it.id }) }),
                 contentPadding = PaddingValues(top = topInset, bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
             ) {
                 item(key = "filters", contentType = "filters") {
@@ -381,23 +389,25 @@ fun SearchResultsContent(
                 if (artists.isNotEmpty()) {
                     item(key = "header:artists", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_artists)) }
                     item(key = "row:artists", contentType = "artistRow") {
-                        LazyRow(
-                            state = artistsRowState,
-                            modifier = Modifier.nestedScroll(swallowHorizontal),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(artists, key = { it.id }) { artist ->
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    ArtistItem(
-                                        artist = artist,
-                                        onClick = {
-                                            navController.navigateSafe(
-                                                Screen.ArtistDetail.createRoute(artist.id)
-                                            )
-                                        }
-                                    )
-                                    artistSources[artist.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                        HoverScrollRow(state = artistsRowState) {
+                            LazyRow(
+                                state = artistsRowState,
+                                modifier = Modifier.nestedScroll(swallowHorizontal),
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(artists, key = { it.id }) { artist ->
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        ArtistItem(
+                                            artist = artist,
+                                            onClick = {
+                                                navController.navigateSafe(
+                                                    Screen.ArtistDetail.createRoute(artist.id)
+                                                )
+                                            }
+                                        )
+                                        artistSources[artist.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                                    }
                                 }
                             }
                         }
@@ -407,23 +417,25 @@ fun SearchResultsContent(
                 if (albums.isNotEmpty()) {
                     item(key = "header:albums", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_albums)) }
                     item(key = "row:albums", contentType = "albumRow") {
-                        LazyRow(
-                            state = albumsRowState,
-                            modifier = Modifier.nestedScroll(swallowHorizontal),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(albums, key = { it.id }) { album ->
-                                Column {
-                                    AlbumItem(
-                                        album = album,
-                                        onClick = {
-                                            navController.navigateSafe(
-                                                Screen.AlbumDetail.createRoute(album.id)
-                                            )
-                                        }
-                                    )
-                                    albumSources[album.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                        HoverScrollRow(state = albumsRowState) {
+                            LazyRow(
+                                state = albumsRowState,
+                                modifier = Modifier.nestedScroll(swallowHorizontal),
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(albums, key = { it.id }) { album ->
+                                    Column {
+                                        AlbumItem(
+                                            album = album,
+                                            onClick = {
+                                                navController.navigateSafe(
+                                                    Screen.AlbumDetail.createRoute(album.id)
+                                                )
+                                            }
+                                        )
+                                        albumSources[album.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                                    }
                                 }
                             }
                         }
@@ -462,10 +474,11 @@ fun SearchResultsContent(
                             isLiked = favoriteTrackIds.contains(track.toLegacyTrack().id),
                             onLikeClick = { playerViewModel.toggleFavorite(track.toLegacyTrack()) },
                             onClick = {
-                                if (selection.active) selection.toggle(track.id)
-                                else playerViewModel.playUnifiedTrack(track, tracks)
+                                clicks.click(track.id, tracks.map { it.id }) {
+                                    playerViewModel.playUnifiedTrack(track, tracks)
+                                }
                             },
-                            onLongClick = { selection.toggle(track.id) },
+                            onLongClick = { clicks.toggle(track.id) },
                             onArtistClick = { ref -> ref.id?.let { navController.openArtist(track.sourceType, it) } },
                             onAlbumClick = { navController.openAlbum(track.albumId) },
                             onMoreClick = if (track.sourceType == SourceType.API ||
@@ -530,6 +543,11 @@ fun SearchResultsContent(
                     }
                 }
             }
+            ListScrollbar(
+                columnState,
+                Modifier.padding(top = topInset, bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current),
+            )
+            }
             }
         }
     }
@@ -586,39 +604,47 @@ private fun SearchFilterRow(
             .padding(top = 4.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(SearchViewModel.SearchTypeFilter.entries) { type ->
-                FilterChip(
-                    selected = selectedType == type,
-                    onClick = { onTypeSelected(type) },
-                    label = { Text(stringResource(type.label)) }
-                )
-            }
-        }
-        if (showSourceFilter) {
+        val typeRowState = rememberLazyListState()
+        HoverScrollRow(state = typeRowState) {
             LazyRow(
+                state = typeRowState,
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(SearchViewModel.SearchSourceFilter.entries) { source ->
-                    val brand = source.sourceType?.brand()
-                    val brandColor = brand?.color()
+                items(SearchViewModel.SearchTypeFilter.entries) { type ->
                     FilterChip(
-                        selected = selectedSource == source,
-                        onClick = { onSourceSelected(source) },
-                        label = { Text(source.labelRes?.let { stringResource(it) } ?: source.label) },
-                        leadingIcon = brand?.let { { SourceBrandMark(it, size = FilterChipDefaults.IconSize) } },
-                        colors = if (brandColor != null) {
-                            FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = brandColor.copy(alpha = 0.22f),
-                                selectedLabelColor = brandColor,
-                                selectedLeadingIconColor = brandColor,
-                            )
-                        } else FilterChipDefaults.filterChipColors(),
+                        selected = selectedType == type,
+                        onClick = { onTypeSelected(type) },
+                        label = { Text(stringResource(type.label)) }
                     )
+                }
+            }
+        }
+        if (showSourceFilter) {
+            val sourceRowState = rememberLazyListState()
+            HoverScrollRow(state = sourceRowState) {
+                LazyRow(
+                    state = sourceRowState,
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(SearchViewModel.SearchSourceFilter.entries) { source ->
+                        val brand = source.sourceType?.brand()
+                        val brandColor = brand?.color()
+                        FilterChip(
+                            selected = selectedSource == source,
+                            onClick = { onSourceSelected(source) },
+                            label = { Text(source.labelRes?.let { stringResource(it) } ?: source.label) },
+                            leadingIcon = brand?.let { { SourceBrandMark(it, size = FilterChipDefaults.IconSize) } },
+                            colors = if (brandColor != null) {
+                                FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = brandColor.copy(alpha = 0.22f),
+                                    selectedLabelColor = brandColor,
+                                    selectedLeadingIconColor = brandColor,
+                                )
+                            } else FilterChipDefaults.filterChipColors(),
+                        )
+                    }
                 }
             }
         }

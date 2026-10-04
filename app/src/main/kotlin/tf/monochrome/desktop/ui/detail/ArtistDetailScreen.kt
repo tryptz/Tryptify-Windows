@@ -4,6 +4,7 @@ import tf.monochrome.desktop.ui.navigation.openTrackArtist
 import tf.monochrome.desktop.ui.navigation.trackAlbumAction
 import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -74,6 +77,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
 import androidx.compose.ui.platform.LocalContext
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.library.rememberSelectionClicks
+import tf.monochrome.desktop.ui.library.selectionKeys
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,6 +120,9 @@ fun ArtistDetailScreen(
 
     val selection = tf.monochrome.desktop.ui.components.rememberTrackSelectionState<Long>()
     androidx.activity.compose.BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
+    // Registered after the selection's, so Escape closes the search first.
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
     var showDownloadConfirm by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
     if (showDownloadConfirm) {
@@ -272,8 +282,17 @@ fun ArtistDetailScreen(
                     placeholder = stringResource(R.string.search_this_artist),
                     onClose = { searchOpen = false; listQuery = "" },
                 ) { searchTopInset ->
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .selectionKeys(onSelectAll = {
+                            val ordered = detail.topTracks.applySearchAndSort(listQuery, listSort)
+                            val shown = if (showAllTopTracks) ordered else ordered.take(5)
+                            clicks.selectAll(shown.map { it.id })
+                        }),
                     contentPadding = PaddingValues(
                         top = searchTopInset,
                         bottom = 80.dp + LocalBottomChromeInset.current,
@@ -342,10 +361,11 @@ fun ArtistDetailScreen(
                                 isLiked = favoriteTrackIds.contains(track.id),
                                 onLikeClick = { playerViewModel.toggleFavorite(track) },
                                 onClick = {
-                                    if (selection.active) selection.toggle(track.id)
-                                    else playerViewModel.playTrack(track, orderedTopTracks)
+                                    clicks.click(track.id, visibleTracks.map { it.id }) {
+                                        playerViewModel.playTrack(track, orderedTopTracks)
+                                    }
                                 },
-                                onLongClick = { selection.toggle(track.id) },
+                                onLongClick = { clicks.toggle(track.id) },
                                 onMoreClick = { showContextMenuForTrack = track },
                                 onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
                                 onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
@@ -368,7 +388,10 @@ fun ArtistDetailScreen(
                     if (detail.albums.isNotEmpty()) {
                         item { tf.monochrome.desktop.devedit.DevEditable("artist_section_albums", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.filter_albums)) } }
                         item {
+                            val rowState = rememberLazyListState()
+                            HoverScrollRow(state = rowState) {
                             LazyRow(
+                                state = rowState,
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
@@ -381,6 +404,7 @@ fun ArtistDetailScreen(
                                     )
                                 }
                             }
+                            }
                         }
                     }
 
@@ -388,7 +412,10 @@ fun ArtistDetailScreen(
                     if (epSingles.isNotEmpty()) {
                         item { tf.monochrome.desktop.devedit.DevEditable("artist_section_singles_eps", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.singles_and_eps)) } }
                         item {
+                            val rowState = rememberLazyListState()
+                            HoverScrollRow(state = rowState) {
                             LazyRow(
+                                state = rowState,
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
@@ -401,13 +428,17 @@ fun ArtistDetailScreen(
                                     )
                                 }
                             }
+                            }
                         }
                     }
 
                     if (detail.unreleasedTracks.isNotEmpty()) {
                         item { tf.monochrome.desktop.devedit.DevEditable("artist_section_unreleased", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.unreleased_artistgrid)) } }
                         item {
+                            val gridState = rememberLazyGridState()
+                            HoverScrollRow(state = gridState) {
                             androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
+                                state = gridState,
                                 rows = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
                                 modifier = Modifier.height(220.dp).fillMaxWidth(),
                                 contentPadding = PaddingValues(horizontal = 16.dp),
@@ -423,13 +454,17 @@ fun ArtistDetailScreen(
                                     )
                                 }
                             }
+                            }
                         }
                     }
 
                     if (detail.similarArtists.isNotEmpty()) {
                         item { tf.monochrome.desktop.devedit.DevEditable("artist_section_similar_artists", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.similar_artists)) } }
                         item {
+                            val rowState = rememberLazyListState()
+                            HoverScrollRow(state = rowState) {
                             LazyRow(
+                                state = rowState,
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
@@ -442,8 +477,11 @@ fun ArtistDetailScreen(
                                     )
                                 }
                             }
+                            }
                         }
                     }
+                }
+                ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
                 }
                 }
             }

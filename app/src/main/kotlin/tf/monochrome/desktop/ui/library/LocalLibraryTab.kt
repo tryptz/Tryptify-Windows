@@ -105,6 +105,7 @@ import tf.monochrome.desktop.ui.detail.LocalFacet
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.contextClick
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -146,6 +147,8 @@ fun LocalLibraryTab(
     // the composition and cannot swallow Back on any other page.
     BackHandler(enabled = openCategory != null) { openCategoryId = null }
     var showSearch by remember { mutableStateOf(false) }
+    // Registered after the category's, so Escape closes the search first.
+    BackHandler(enabled = showSearch) { showSearch = false; viewModel.setSearchQuery("") }
     val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     // Focus the field (and pop the IME) the moment search opens, so it doesn't
     // take a second tap.
@@ -666,6 +669,8 @@ private fun SongRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            // Right-click opens what the row's 3-dot opens.
+            .contextClick(onContextClick = { onMoreClick(track) })
             .bounceClick(onClick = onClick)
             .liquidGlass(shape = MonoDimens.shapeMd),
         shape = MonoDimens.shapeMd,
@@ -907,6 +912,28 @@ fun FolderList(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                     )
+                    // The long press, where a mouse and the keyboard can see it.
+                    // It only opens the menu: removing still asks first.
+                    Box {
+                        var menuOpen by remember { mutableStateOf(false) }
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = stringResource(R.string.action_more_options),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.remove_folder)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onFolderLongClick(path, name)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }

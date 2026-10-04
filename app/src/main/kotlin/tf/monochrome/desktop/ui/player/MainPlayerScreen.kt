@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -45,6 +46,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -101,6 +103,8 @@ import tf.monochrome.desktop.domain.usecase.uiArtistRefs
 import tf.monochrome.desktop.ui.components.ClickableArtists
 import tf.monochrome.desktop.ui.components.liquidGlass
 import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.desktopHover
 import tf.monochrome.desktop.R
 
 /** Flattened, design-ready snapshot of everything the main player renders. */
@@ -847,16 +851,23 @@ internal fun PlayerProgressSection(
             onSeekCommit(value)
             isSeeking = false
         },
+        durationMs = durationMs,
     )
 }
 
 @Composable
 private fun SwipeUpHandle(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    // Desktop: the grabber and its label brighten under the mouse, which has
+    // no swipe to discover the strip by.
+    val hovered by interaction.collectIsHoveredAsState()
+    val ink = if (hovered) 0.85f else 0.55f
     Column(
         modifier = Modifier
             .padding(bottom = 8.dp)
+            .desktopHover(interaction)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 onClick = onClick,
             ),
@@ -867,19 +878,19 @@ private fun SwipeUpHandle(onClick: () -> Unit) {
             modifier = Modifier
                 .width(40.dp)
                 .height(4.dp)
-                .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(999.dp)),
+                .background(Color.White.copy(alpha = if (hovered) 0.6f else 0.35f), RoundedCornerShape(999.dp)),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Default.KeyboardArrowUp,
                 contentDescription = null,
-                tint = Color.White.copy(alpha = 0.55f),
+                tint = Color.White.copy(alpha = ink),
                 modifier = Modifier.size(16.dp),
             )
             Text(
                 text = stringResource(R.string.audio_tools),
                 style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.55f),
+                color = Color.White.copy(alpha = ink),
             )
         }
     }
@@ -1116,6 +1127,9 @@ private fun ToggleRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
+            // Right-click, the Menu key and Shift+F10 open the tool page, as a
+            // long press does.
+            .contextClick(onContextClick = onLongPress)
             .combinedClickable(
                 onClick = { onCheckedChange(!checked) },
                 onLongClick = onLongPress,
@@ -1159,6 +1173,17 @@ private fun ToggleRow(
                     checkedTrackColor = accent,
                 ),
             )
+            // The long press made visible: a mouse never holds to find out,
+            // and Tab can land here where it cannot hold at all.
+            if (onLongPress != null) {
+                IconButton(onClick = onLongPress) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = stringResource(R.string.audio_tool_open_settings, label),
+                        tint = Color.White.copy(alpha = 0.7f),
+                    )
+                }
+            }
         }
         if (caution != null) {
             Text(

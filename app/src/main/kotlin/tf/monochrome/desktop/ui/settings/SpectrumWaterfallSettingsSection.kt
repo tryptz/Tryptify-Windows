@@ -23,6 +23,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,12 +53,22 @@ import tf.monochrome.desktop.audio.eq.WaterfallNative
 import tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings
 import tf.monochrome.desktop.domain.model.WaterfallStyle
 import tf.monochrome.desktop.ui.player.SpectrumOverlay
+import java.awt.Cursor
 import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.abs
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.runtime.mutableIntStateOf
+import kotlin.math.pow
+import tf.monochrome.desktop.ui.input.HoverScrollRow
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.width
@@ -198,23 +209,26 @@ internal fun SpectrumWaterfallSettingsSection(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(bottom = 6.dp),
     )
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        (listOf(SpectrumWaterfallSettings.FPS_DISPLAY) + SpectrumWaterfallSettings.FPS_CHOICES).forEach { fps ->
-            tf.monochrome.desktop.ui.mixer.GlassChoiceChip(
-                label = if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) stringResource(R.string.waterfall_max) else "$fps",
-                selected = draft.targetFps == fps,
-                accent = MaterialTheme.colorScheme.primary,
-                onClick = { onChange(draft.copy(targetFps = fps)) },
-                modifier = Modifier.width(if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) 64.dp else 52.dp),
-                description = if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) {
-                    stringResource(R.string.waterfall_every_refresh_desc)
-                } else {
-                    stringResource(R.string.waterfall_rate_clock, fps)
-                },
-            )
+    val fpsRow = rememberScrollState()
+    HoverScrollRow(state = fpsRow, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(fpsRow),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            (listOf(SpectrumWaterfallSettings.FPS_DISPLAY) + SpectrumWaterfallSettings.FPS_CHOICES).forEach { fps ->
+                tf.monochrome.desktop.ui.mixer.GlassChoiceChip(
+                    label = if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) stringResource(R.string.waterfall_max) else "$fps",
+                    selected = draft.targetFps == fps,
+                    accent = MaterialTheme.colorScheme.primary,
+                    onClick = { onChange(draft.copy(targetFps = fps)) },
+                    modifier = Modifier.width(if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) 64.dp else 52.dp),
+                    description = if (fps == SpectrumWaterfallSettings.FPS_DISPLAY) {
+                        stringResource(R.string.waterfall_every_refresh_desc)
+                    } else {
+                        stringResource(R.string.waterfall_rate_clock, fps)
+                    },
+                )
+            }
         }
     }
     SettingSwitchItem(
@@ -277,6 +291,30 @@ private fun WaterfallPreview(
         }
     }
 
+    // Ctrl+wheel moves the line weight live and saves once the wheel rests,
+    // as a pinch saves when the fingers lift.
+    var wheelTurns by remember { mutableIntStateOf(0) }
+    // Whether a notch has moved the weight and the save after it has not run.
+    val wheelUnsaved = remember { booleanArrayOf(false) }
+    LaunchedEffect(wheelTurns) {
+        if (wheelTurns == 0) return@LaunchedEffect
+        delay(WHEEL_SAVE_DELAY_MS)
+        wheelUnsaved[0] = false
+        adjustDone(current)
+    }
+    // Leaving the page inside that pause still saves.
+    DisposableEffect(Unit) {
+        onDispose {
+            if (wheelUnsaved[0]) {
+                wheelUnsaved[0] = false
+                adjustDone(current)
+            }
+        }
+    }
+    // Desktop: the pointer shows which drag a press would start — the fade
+    // line moves up and down, the rest of the picture every way.
+    var overFadeLine by remember { mutableStateOf(false) }
+
     val textMeasurer = rememberTextMeasurer()
     val guides = remember { FloatArray(3) }
     Box(
@@ -286,6 +324,48 @@ private fun WaterfallPreview(
             .then(reportVisibility)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF07090D))
+            .pointerHoverIcon(if (overFadeLine) FadeLineCursor else PreviewCursor)
+            .pointerInput(Unit) {
+                // Desktop: Ctrl+wheel is the pinch. The plain wheel is left
+                // alone, so it still scrolls the page past the preview.
+                awaitPointerEventScope {
+                    // What the last notch was handed and what it made of it,
+                    // so notches landing between two frames add up.
+                    var handed: SpectrumWaterfallSettings? = null
+                    var made = current
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Move || event.type == PointerEventType.Enter) {
+                            // Held still during a drag, so the pointer keeps
+                            // the shape of the drag it started.
+                            val at = event.changes.firstOrNull()
+                            if (at != null && at.type == PointerType.Mouse && !event.buttons.isPrimaryPressed) {
+                                overFadeLine = abs(at.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
+                            }
+                            continue
+                        }
+                        if (event.type != PointerEventType.Scroll) continue
+                        if (!event.keyboardModifiers.isCtrlPressed) continue
+                        val change = event.changes.firstOrNull() ?: continue
+                        val notches = change.scrollDelta.y
+                        if (notches == 0f || change.isConsumed) continue
+                        val base = if (handed == current) made else current
+                        val next = base.copy(
+                            lineWidthDp = (base.lineWidthDp * WHEEL_WEIGHT_FACTOR.pow(-notches)).coerceIn(
+                                SpectrumWaterfallSettings.MIN_LINE_WIDTH_DP,
+                                SpectrumWaterfallSettings.MAX_LINE_WIDTH_DP,
+                            ),
+                        )
+                        handed = current
+                        made = next
+                        change.consume()
+                        if (next != base) {
+                            adjust(next)
+                            wheelTurns++
+                        }
+                    }
+                }
+            }
             .pointerInput(Unit) {
                 // Touch control. One finger: up and down tilt the angle, left
                 // and right set the depth. Two: pinch for line weight. A
@@ -294,8 +374,12 @@ private fun WaterfallPreview(
                 // drag that started here.
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val grab = 28.dp.toPx()
-                    val onFadeLine = abs(down.position.y - guides[1]) < grab
+                    // A mouse drags with the primary button only; the others
+                    // are not this gesture.
+                    if (down.type == PointerType.Mouse && !currentEvent.buttons.isPrimaryPressed) {
+                        return@awaitEachGesture
+                    }
+                    val onFadeLine = abs(down.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
                     var s = current
                     var changed = false
                     while (true) {
@@ -369,7 +453,7 @@ private fun WaterfallPreview(
             drawGuides(textMeasurer, settings, guides, accent, guideLabels)
         }
         Text(
-            stringResource(R.string.waterfall_angle_depth_pinch_weight_drag_the_fade_line),
+            stringResource(R.string.waterfall_preview_hint_desktop),
             style = MaterialTheme.typography.labelSmall,
             color = Color.White.copy(alpha = 0.6f),
             modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
@@ -534,6 +618,7 @@ private fun WaterfallSlider(
             onValueChange = onDrag,
             onValueChangeFinished = onCommit,
             valueRange = range,
+            modifier = Modifier.sliderWheel(value = value, range = range, onCommit = onCommit, onValueChange = onDrag),
         )
     }
 }
@@ -582,6 +667,11 @@ private fun WaterfallAnalysisControls(
         kotlinx.coroutines.delay(KNOB_SAVE_DELAY_MS)
         onChange(pending)
         turning = null
+    }
+    // A turn by the wheel or the keys can end as the page closes; it still saves.
+    val save by rememberUpdatedState(onChange)
+    DisposableEffect(Unit) {
+        onDispose { turning?.let(save) }
     }
     val turn = { next: SpectrumWaterfallSettings ->
         onDraft(next)
@@ -653,7 +743,7 @@ private fun WaterfallAnalysisControls(
     }
     Text(
         stringResource(
-            if (timed) R.string.waterfall_knobs_hint else R.string.waterfall_avg_time_unused,
+            if (timed) R.string.waterfall_knobs_hint_desktop else R.string.waterfall_avg_time_unused,
         ),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -717,6 +807,18 @@ private fun WaterfallAnalysisControls(
 
 /** How long a knob has to rest before its value is saved. */
 private const val KNOB_SAVE_DELAY_MS = 350L
+
+/** How much one Ctrl+wheel notch over the preview thickens or thins the lines. */
+private const val WHEEL_WEIGHT_FACTOR = 1.12f
+
+/** How long the wheel has to rest over the preview before the weight is saved. */
+private const val WHEEL_SAVE_DELAY_MS = 400L
+
+/** How near the dashed fade line a press has to land to drag it. */
+private val FADE_LINE_GRAB = 28.dp
+
+private val FadeLineCursor = PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR))
+private val PreviewCursor = PointerIcon(Cursor(Cursor.MOVE_CURSOR))
 
 private fun analysisTypeLabel(type: SpectrumAnalysisType): StringKey = when (type) {
     SpectrumAnalysisType.RT_AVG -> R.string.waterfall_type_rt_avg

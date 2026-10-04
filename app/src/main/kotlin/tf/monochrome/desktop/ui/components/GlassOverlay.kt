@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,7 +26,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -147,13 +165,27 @@ fun BoxScope.GlassOverlayLayer(
 
     BackHandler(enabled = true) { entry.onDismiss() }
 
+    // Keyboard focus moves into the pane when it opens and cannot Tab back out
+    // to the page behind the scrim, as it could not leave a Dialog: Tab past the
+    // last control comes round to the first, and Shift+Tab past the first to the
+    // last. Focus lands on the pane itself rather than its first field, so
+    // opening one does not raise a soft keyboard on a phone; once it has moved
+    // on to a control the pane stops being a stop of its own, or Shift+Tab would
+    // land on an outline-less nothing between the first control and the last.
+    val paneFocus = remember { FocusRequester() }
+    var paneHoldsEntry by remember(entry) { mutableStateOf(true) }
+    LaunchedEffect(entry) { paneFocus.requestFocus() }
+    val focusManager = LocalFocusManager.current
+
     Box(
         modifier = Modifier
             .matchParentSize()
             .background(Color.Black.copy(alpha = 0.45f))
             // No ripple and no indication: this is a dismiss region, not a
             // button, and a ripple blooming across the whole screen reads as
-            // one.
+            // one. Not a Tab stop either: Escape and the pane's own buttons
+            // already dismiss it.
+            .focusProperties { canFocus = false }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -176,7 +208,34 @@ fun BoxScope.GlassOverlayLayer(
         GlassPanel(
             hazeState = hazeState,
             glass = glass,
-            modifier = Modifier.fillMaxWidth(0.94f),
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                // Bubbling, not preview: a control that uses Tab itself, such as
+                // a multi-line field, keeps it.
+                .onKeyEvent { event ->
+                    if (
+                        event.type != KeyEventType.KeyDown || event.key != Key.Tab ||
+                        event.isCtrlPressed || event.isAltPressed || event.isMetaPressed
+                    ) return@onKeyEvent false
+                    val back = event.isShiftPressed
+                    if (!focusManager.moveFocus(if (back) FocusDirection.Previous else FocusDirection.Next)) {
+                        // At an edge, where onExit below refused the way out.
+                        // Entering the pane from its bottom-right corner reaches
+                        // the last control; Next/Previous cannot enter a group.
+                        val held = paneHoldsEntry
+                        paneHoldsEntry = false
+                        if (!paneFocus.requestFocus(if (back) FocusDirection.Up else FocusDirection.Enter)) {
+                            paneHoldsEntry = held
+                        }
+                    }
+                    true
+                }
+                .focusProperties { onExit = { cancelFocusChange() } }
+                .focusGroup()
+                .focusProperties { canFocus = paneHoldsEntry }
+                .onFocusChanged { if (it.hasFocus && !it.isFocused) paneHoldsEntry = false }
+                .focusRequester(paneFocus)
+                .focusTarget(),
             // The layer already holds off the navigation bar; a second inset
             // here would push a centred pane visibly off-centre.
             avoidNavigationBar = false,

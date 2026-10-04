@@ -168,7 +168,7 @@ private fun ApiServerCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     server.services.isEmpty() -> Text(
-                        stringResource(R.string.api_serves_nothing_tryptify_can_use_right_now_check),
+                        stringResource(R.string.api_serves_nothing_check_then_click),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )

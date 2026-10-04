@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
@@ -70,6 +72,8 @@ import tf.monochrome.desktop.ui.components.SearchAction
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
 
 // LOCAL_SECTION and LIBRARY_SECTION_NAMES used to live here. Page identity and
 // page names belong to APP_PAGES in ui/navigation now, because Home and Discover
@@ -204,6 +208,9 @@ fun LibraryScreen(
     // LAST-composed enabled callback first, so an active selection still wins
     // the first back press and only then does back move the pager.
     BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
+    // Registered after the selection's, so Escape closes the search first.
+    BackHandler(enabled = likedSearchOpen) { likedSearchOpen = false; likedQuery = "" }
     // No "clear the selection when the section changes" effect any more: each
     // page is its own instance with its own selection state, so a selection
     // structurally cannot follow the user to another page.
@@ -381,9 +388,16 @@ fun LibraryScreen(
         // page, and the nav host's single pager wraps it in the
         // SaveableStateProvider that keeps its scroll position.
         when (sectionId) {
-            OVERVIEW_SECTION ->
+            OVERVIEW_SECTION -> {
+                val shownRecent = if (allRecentShown) recentTracks else recentTracks.take(RECENT_PREVIEW)
+                val shownLiked = favoriteTracks.take(5)
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .selectionKeys(onSelectAll = { clicks.selectAll((shownRecent + shownLiked).map { it.id }) }),
                     contentPadding = PaddingValues(bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
                 ) {
                     if (recentTracks.isNotEmpty()) {
@@ -403,7 +417,7 @@ fun LibraryScreen(
                             )
                         }
                         items(
-                            if (allRecentShown) recentTracks else recentTracks.take(RECENT_PREVIEW),
+                            shownRecent,
                             key = { LibraryKeys.recent(it.id) },
                             contentType = { LibraryContentType.TRACK },
                         ) { track ->
@@ -412,10 +426,11 @@ fun LibraryScreen(
                                 isLiked = favoriteTrackIds.contains(track.id),
                                 onLikeClick = { playerViewModel.toggleFavorite(track) },
                                 onClick = {
-                                    if (selection.active) selection.toggle(track.id)
-                                    else playerViewModel.playTrack(track, recentTracks)
+                                    clicks.click(track.id, shownRecent.map { it.id }) {
+                                        playerViewModel.playTrack(track, recentTracks)
+                                    }
                                 },
-                                onLongClick = { selection.toggle(track.id) },
+                                onLongClick = { clicks.toggle(track.id) },
                                 onMoreClick = { showContextMenuForTrack = track },
                                 onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
                                 onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
@@ -432,7 +447,7 @@ fun LibraryScreen(
                             SectionHeader(title = stringResource(R.string.liked_songs))
                         }
                         items(
-                            favoriteTracks.take(5),
+                            shownLiked,
                             key = { LibraryKeys.liked(it.id) },
                             contentType = { LibraryContentType.TRACK },
                         ) { track ->
@@ -441,10 +456,11 @@ fun LibraryScreen(
                                 isLiked = true,
                                 onLikeClick = { playerViewModel.toggleFavorite(track) },
                                 onClick = {
-                                    if (selection.active) selection.toggle(track.id)
-                                    else playerViewModel.playTrack(track, visibleFavorites)
+                                    clicks.click(track.id, shownLiked.map { it.id }) {
+                                        playerViewModel.playTrack(track, visibleFavorites)
+                                    }
                                 },
-                                onLongClick = { selection.toggle(track.id) },
+                                onLongClick = { clicks.toggle(track.id) },
                                 onMoreClick = { showContextMenuForTrack = track },
                                 onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
                                 onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
@@ -460,6 +476,9 @@ fun LibraryScreen(
                         item { EmptyState(stringResource(R.string.library_empty)) }
                     }
                 }
+                ListScrollbar(listState, Modifier.padding(bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current))
+                }
+            }
 
             "local" ->
                 LocalLibraryTab(
@@ -492,8 +511,11 @@ fun LibraryScreen(
                     playerViewModel = playerViewModel
                 )
 
-            "playlists" ->
+            "playlists" -> {
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
                 ) {
@@ -555,6 +577,9 @@ fun LibraryScreen(
                         }
                     }
                 }
+                ListScrollbar(listState, Modifier.padding(bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current))
+                }
+            }
 
             "favorites" ->
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -593,8 +618,13 @@ fun LibraryScreen(
                     placeholder = stringResource(R.string.search_liked_songs),
                     onClose = { likedSearchOpen = false; likedQuery = "" },
                 ) { searchTopInset ->
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .selectionKeys(onSelectAll = { clicks.selectAll(visibleFavorites.map { it.id }) }),
                     contentPadding = PaddingValues(top = searchTopInset, bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
                 ) {
                     if (favoriteTracks.isNotEmpty()) {
@@ -608,10 +638,11 @@ fun LibraryScreen(
                                 isLiked = true,
                                 onLikeClick = { playerViewModel.toggleFavorite(track) },
                                 onClick = {
-                                    if (selection.active) selection.toggle(track.id)
-                                    else playerViewModel.playTrack(track, favoriteTracks)
+                                    clicks.click(track.id, visibleFavorites.map { it.id }) {
+                                        playerViewModel.playTrack(track, favoriteTracks)
+                                    }
                                 },
-                                onLongClick = { selection.toggle(track.id) },
+                                onLongClick = { clicks.toggle(track.id) },
                                 onMoreClick = { showContextMenuForTrack = track },
                                 onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
                                 onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
@@ -675,6 +706,8 @@ fun LibraryScreen(
                         }
                     }
                 }
+                ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset.current))
+                }
                 }
                 }
 
@@ -699,18 +732,22 @@ private fun LibrarySectionSwitcher(
     onSelect: (String) -> Unit,
 ) {
     if (sections.size < 2) return
-    androidx.compose.foundation.lazy.LazyRow(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
-    ) {
-        items(sections, key = { it }) { id ->
-            tf.monochrome.desktop.ui.mixer.GlassChoiceChip(
-                label = tf.monochrome.desktop.ui.navigation.pageTitle(id),
-                selected = id == current,
-                accent = MaterialTheme.colorScheme.primary,
-                onClick = { if (id != current) onSelect(id) },
-            )
+    val rowState = rememberLazyListState()
+    HoverScrollRow(state = rowState) {
+        androidx.compose.foundation.lazy.LazyRow(
+            state = rowState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        ) {
+            items(sections, key = { it }) { id ->
+                tf.monochrome.desktop.ui.mixer.GlassChoiceChip(
+                    label = tf.monochrome.desktop.ui.navigation.pageTitle(id),
+                    selected = id == current,
+                    accent = MaterialTheme.colorScheme.primary,
+                    onClick = { if (id != current) onSelect(id) },
+                )
+            }
         }
     }
 }

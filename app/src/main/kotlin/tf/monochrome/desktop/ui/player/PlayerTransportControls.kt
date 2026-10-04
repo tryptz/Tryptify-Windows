@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import tf.monochrome.desktop.ui.input.desktopHover
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -151,6 +152,7 @@ fun PlayerTransportControls(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
+                    .desktopHover(interactionSource, CircleShape)
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null,
@@ -530,6 +532,7 @@ internal fun TransportIcon(
         modifier = Modifier
             .size(size + 40.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
+            .desktopHover(interactionSource, CircleShape)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,

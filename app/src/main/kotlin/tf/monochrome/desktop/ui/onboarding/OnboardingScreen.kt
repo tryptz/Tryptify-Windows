@@ -27,7 +27,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -35,11 +39,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import tf.monochrome.desktop.R
 import tf.monochrome.desktop.ui.onboarding.steps.AudioOutputStep
 import tf.monochrome.desktop.ui.onboarding.steps.DoneStep
 import tf.monochrome.desktop.ui.onboarding.steps.DownloadLocationStep
@@ -78,13 +84,36 @@ fun OnboardingScreen(
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-        StepProgressDots(
-            current = step.ordinal,
-            total = OnboardingStep.entries.size,
+        // A visible way back beside the dots: on a phone the system back
+        // gesture did this, and a mouse has no gesture to make. Always the
+        // button's height, so the dots and the step below do not jump when
+        // the arrow appears after the first step.
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = MonoDimens.spacingXl, bottom = MonoDimens.spacingSm)
-        )
+                .padding(top = MonoDimens.spacingXs)
+                .height(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            StepProgressDots(
+                current = step.ordinal,
+                total = OnboardingStep.entries.size,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (step != OnboardingStep.WELCOME) {
+                IconButton(
+                    onClick = { viewModel.back() },
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = MonoDimens.spacingSm)
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.action_back)
+                    )
+                }
+            }
+        }
 
         AnimatedContent(
             targetState = step,
@@ -118,7 +147,11 @@ fun OnboardingScreen(
                     onQobuzSetup = { finish("settings?tab=7") }
                 )
                 OnboardingStep.AUDIO_OUTPUT -> AudioOutputStep(viewModel)
-                OnboardingStep.TOUR -> FeatureTourStep(onDone = { viewModel.next() })
+                OnboardingStep.TOUR -> FeatureTourStep(
+                    onDone = { viewModel.next() },
+                    // Animating out, the tour's Back handler would still outrank this screen's.
+                    active = step == OnboardingStep.TOUR,
+                )
                 OnboardingStep.DONE -> DoneStep(
                     viewModel = viewModel,
                     onStartListening = { finish("library") }

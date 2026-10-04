@@ -16,6 +16,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import tf.monochrome.desktop.ui.input.HoverScrollRow
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -110,6 +114,7 @@ fun LocalArtistDetailScreen(
     var listSort by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = TrackSortSaver) {
         mutableStateOf(TrackSort())
     }
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
     val visibleTracks = remember(sortedTracks, listQuery, listSort) {
         sortedTracks.applyUnifiedSearchAndSort(listQuery, listSort)
     }
@@ -158,7 +163,10 @@ fun LocalArtistDetailScreen(
                     placeholder = stringResource(R.string.search_this_artist),
                     onClose = { searchOpen = false; listQuery = "" },
                 ) { searchTopInset ->
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         top = searchTopInset,
@@ -244,7 +252,10 @@ fun LocalArtistDetailScreen(
                     if (albums.isNotEmpty()) {
                         item { tf.monochrome.desktop.devedit.DevEditable("artist_albums_header", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.filter_albums)) } }
                         item {
+                            val rowState = rememberLazyListState()
+                            HoverScrollRow(state = rowState) {
                             LazyRow(
+                                state = rowState,
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
@@ -259,6 +270,7 @@ fun LocalArtistDetailScreen(
                                         }
                                     )
                                 }
+                            }
                             }
                         }
                     }
@@ -289,6 +301,8 @@ fun LocalArtistDetailScreen(
                             )
                         }
                     }
+                }
+                ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
                 }
                 }
             }
@@ -370,7 +384,9 @@ private fun ArtistTrackRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs),
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            // Right-click opens what the row's 3-dot opens.
+            .contextClick(onContextClick = onMoreClick),
         shape = MonoDimens.shapeMd,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = MonoDimens.cardAlpha),
         onClick = onClick

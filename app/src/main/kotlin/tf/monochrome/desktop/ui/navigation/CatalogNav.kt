@@ -108,7 +108,7 @@ fun NavController.popBackStackSafe(): Boolean {
     return popBackStack()
 }
 
-private fun NavController.isSettled(): Boolean =
+internal fun NavController.isSettled(): Boolean =
     currentBackStackEntry?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
 
 /** Open the artist page appropriate to [sourceType]. */

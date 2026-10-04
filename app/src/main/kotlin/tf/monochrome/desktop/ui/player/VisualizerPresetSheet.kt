@@ -76,6 +76,7 @@ import tf.monochrome.desktop.visualizer.VisualizerPresetIndex
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.ListScrollbar
 
 /**
  * Where the browser is looking. A path, not a filter, so Back walks it.
@@ -415,6 +416,9 @@ fun BoxScope.VisualizerPresetPanel(
                             }
                         }
                     }
+                    // Below the bar: the list runs nearly ten thousand rows,
+                    // and the wheel alone is a long way down it.
+                    ListScrollbar(listState, Modifier.padding(top = searchBarHeight))
 
                     GlassSearchBar(
                         query = query,
@@ -425,6 +429,10 @@ fun BoxScope.VisualizerPresetPanel(
                         // button has nothing to dismiss once the field is
                         // empty.
                         onClose = null,
+                        // The sheet opens on demand, and with nearly ten thousand
+                        // presets typing is the way in; Escape still clears
+                        // the field first, then closes the sheet.
+                        autoFocus = true,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(horizontal = 12.dp)

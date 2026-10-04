@@ -39,7 +39,8 @@ fun AddToPlaylistSheet(
     onCreateNew: () -> Unit,
     title: String = stringResource(R.string.add_to_playlist_title)
 ) {
-    val sheetState = rememberModalBottomSheetState()
+    // Fully open or closed: a half-open sheet needs a second Escape to close.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

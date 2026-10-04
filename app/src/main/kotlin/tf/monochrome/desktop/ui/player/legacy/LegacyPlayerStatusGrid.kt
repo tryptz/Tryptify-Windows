@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.desktopHover
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
 
@@ -131,6 +132,7 @@ private fun StatusCard(
     Surface(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
+            .desktopHover(interactionSource, RoundedCornerShape(PlayerDesignTokens.GlassCornerMedium))
             .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
             .liquidGlass(
                 shape = RoundedCornerShape(PlayerDesignTokens.GlassCornerMedium),

@@ -63,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -83,6 +84,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -104,6 +107,7 @@ import tf.monochrome.desktop.audio.dsp.model.BusLevels
 import tf.monochrome.desktop.audio.dsp.model.MixPreset
 import tf.monochrome.desktop.ui.components.bounceClick
 import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.input.HoverScrollRow
 import tf.monochrome.desktop.ui.player.AlbumColors
 import tf.monochrome.desktop.ui.player.DynamicAlbumGlow
 import tf.monochrome.desktop.ui.player.PlayerBlurredArtBackground
@@ -199,6 +203,9 @@ fun MixerScreen(
     LaunchedEffect(showSpatialMap) {
         if (showSpatialMap) viewModel.openSpatialMap() else viewModel.closeSpatialMap()
     }
+    // Escape closes the innermost layer first. The handler registered last wins,
+    // so the rack's goes in before the map's, which opens over it.
+    androidx.activity.compose.BackHandler(enabled = showInsertRack) { showInsertRack = false }
     androidx.activity.compose.BackHandler(enabled = showSpatialMap) { showSpatialMap = false }
     var showResetConfirm by remember { mutableStateOf(false) }
 
@@ -286,6 +293,13 @@ fun MixerScreen(
     // (which would cancel its scope and skip the settle).
     val composeCanvas by remember { derivedStateOf { progress > 0.0001f || dragging } }
     val composeMixer by remember { derivedStateOf { progress < 0.9999f || dragging } }
+    // Escape slides the DSP canvas back up, as its back arrow does. Registered
+    // after the rack and map handlers, because the canvas covers both. The lambda
+    // reads through a State so it stays the same object and is never re-added
+    // ahead of a handler the canvas itself opens later.
+    val fxChainOpen by remember { derivedStateOf { progress > 0.5f } }
+    val settleTo by rememberUpdatedState(animateProgressTo)
+    androidx.activity.compose.BackHandler(enabled = fxChainOpen) { settleTo(0f, 0f) }
 
     // ── Preset import / export (document pickers) ───────────────────────
     // Desktop: the picker shim opens the native Windows dialogs and returns file: URIs.
@@ -535,6 +549,7 @@ fun MixerScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .pointerHoverIcon(PointerIcon.Hand)
                             .clickable { animateProgressTo(1f, 0f) }
                             .padding(top = 2.dp, bottom = 7.dp),
                         contentAlignment = Alignment.Center
@@ -576,6 +591,14 @@ fun MixerScreen(
                                 viewModel.selectBus(index)
                             }
                         },
+                        onOpenInserts = { index ->
+                            viewModel.selectBus(index)
+                            showInsertRack = true
+                        },
+                        onOpenFxChain = { index ->
+                            viewModel.selectBus(index)
+                            animateProgressTo(1f, 0f)
+                        },
                         modifier = Modifier.weight(1f)
                     )
 
@@ -596,6 +619,7 @@ fun MixerScreen(
                                 onPluginReplace = { busIdx, slotIdx -> viewModel.showReplacePlugin(busIdx, slotIdx) },
                                 onPluginBypass = { busIdx, slotIdx -> viewModel.togglePluginBypass(busIdx, slotIdx) },
                                 onPluginRemove = { busIdx, slotIdx -> viewModel.removePlugin(busIdx, slotIdx) },
+                                onPluginMove = { busIdx, from, to -> viewModel.movePlugin(busIdx, from, to) },
                                 onParameterChange = { busIdx, slotIdx, paramIdx, value ->
                                     viewModel.setParameter(busIdx, slotIdx, paramIdx, value)
                                 },
@@ -788,6 +812,9 @@ private fun ChannelStripRow(
     /** The screen's backdrop, for the strips to frost. */
     hazeState: HazeState,
     onSelectBus: (Int) -> Unit,
+    /** The strip's right-click menu: select the bus and show its rack or chain. */
+    onOpenInserts: (Int) -> Unit,
+    onOpenFxChain: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val busLevels by viewModel.busLevels.collectAsStateWithLifecycle()
@@ -808,7 +835,9 @@ private fun ChannelStripRow(
         else buses.map { it.index }.filter { it != selectedBusIndex && viewModel.routeWouldLoop(it) }.toSet()
     }
     val accentFor = { b: BusConfig -> if (b.isMaster) accent else busAccent(channelDynamicColor, accent, b.index) }
-    Box(modifier = modifier.fillMaxHeight()) {
+    // Arrows page the strips: a mouse cannot drag them sideways, and a plain
+    // wheel over a strip turns the fader or knob under it.
+    HoverScrollRow(state = listState, modifier = modifier.fillMaxHeight()) {
     LazyRow(
         state = listState,
         modifier = Modifier.fillMaxHeight(),
@@ -834,6 +863,8 @@ private fun ChannelStripRow(
                     hazeState = hazeState,
                     onSelect = { onSelectBus(index) },
                     onLongPress = if (bus.isRemovable) ({ pendingRemoval = bus }) else null,
+                    onOpenInserts = { onOpenInserts(index) },
+                    onOpenFxChain = { onOpenFxChain(index) },
                     onGainChange = { viewModel.setBusGain(index, it) },
                     onPanChange = { viewModel.setBusPan(index, it) },
                     onToggleMute = { viewModel.toggleMute(index) },

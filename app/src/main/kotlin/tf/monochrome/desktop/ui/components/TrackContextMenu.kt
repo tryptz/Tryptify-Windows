@@ -27,8 +27,20 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,15 +70,36 @@ fun TrackContextMenu(
     onGoToArtist: (() -> Unit)? = null,
     onShowTrackInfo: (() -> Unit)? = null
 ) {
-    val sheetState = rememberModalBottomSheetState()
+    // Fully open or closed: a half-open sheet needs a second Escape to close.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // Focus lands on the menu itself, not its first action, so a menu opened
+    // by right-click or long-press shows no focus ring until a key is pressed.
+    val menuFocus = remember { FocusRequester() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = MonoDimens.cardAlpha)
     ) {
+        // Read inside the sheet: it composes in its own layer, with its own
+        // focus owner, after the code above has run.
+        val focusManager = LocalFocusManager.current
+        LaunchedEffect(Unit) { menuFocus.requestFocus() }
         Column(
             modifier = Modifier
+                // The arrows walk the actions the way they do in a desktop
+                // context menu; Tab alone would leave them unreachable by
+                // the keys a menu is expected to answer to.
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    when (event.key) {
+                        Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Next)
+                        Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Previous)
+                        else -> false
+                    }
+                }
+                .focusRequester(menuFocus)
+                .focusTarget()
                 // Scrollable so the bottom actions (Go to album/artist) stay
                 // reachable when the sheet is taller than a landscape window.
                 .verticalScroll(rememberScrollState())

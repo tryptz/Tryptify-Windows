@@ -11,6 +11,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +38,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -43,14 +47,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.focusRing
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -86,11 +103,27 @@ fun AutoEqTutorialDialog(
 ) {
     var currentStep by remember { mutableIntStateOf(0) }
     val isLastStep = currentStep == tutorialSteps.size - 1
+    // Desktop: the arrows need focus inside the dialog to arrive at all. From
+    // the keyboard it opens on Next, so Enter works too; for the mouse the card
+    // itself takes it, where a focused button would only show as a tint.
+    val nextFocus = remember { FocusRequester() }
+    val cardFocus = remember { FocusRequester() }
+    val cardInteraction = remember { MutableInteractionSource() }
+    val cardFocused by cardInteraction.collectIsFocusedAsState()
+    val cardShape = RoundedCornerShape(16.dp)
+    val takeFocus = {
+        runCatching {
+            if (DesktopInput.focusVisible) nextFocus.requestFocus() else cardFocus.requestFocus()
+        }
+        Unit
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        // Inside the dialog, so it runs once the card it focuses exists.
+        LaunchedEffect(Unit) { takeFocus() }
         Surface(
             modifier = Modifier
                 // Desktop: the dialog spans the window, which can be far wider
@@ -98,12 +131,31 @@ fun AutoEqTutorialDialog(
                 .widthIn(max = 560.dp)
                 .fillMaxWidth(0.9f)
                 .wrapContentHeight(),
-            shape = RoundedCornerShape(16.dp),
+            shape = cardShape,
             color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = MonoDimens.cardAlpha),
             tonalElevation = 6.dp
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .focusRequester(cardFocus)
+                    // Desktop: Left and Right step through the pages, as Back
+                    // and Next do, from anywhere in the dialog that holds focus.
+                    .onKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed || event.isShiftPressed) {
+                            return@onKeyEvent false
+                        }
+                        when (event.key) {
+                            Key.DirectionLeft -> currentStep = (currentStep - 1).coerceAtLeast(0)
+                            Key.DirectionRight -> currentStep = (currentStep + 1).coerceAtMost(tutorialSteps.size - 1)
+                            else -> return@onKeyEvent false
+                        }
+                        true
+                    }
+                    // Tab can land on the card too, so it shows the ring there.
+                    .focusRing(cardFocused, cardShape)
+                    .focusable(interactionSource = cardInteraction)
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Step content with slide animation
@@ -222,7 +274,12 @@ fun AutoEqTutorialDialog(
 
                     Row {
                         if (currentStep > 0) {
-                            TextButton(onClick = { currentStep-- }) {
+                            TextButton(onClick = {
+                                currentStep--
+                                // Back leaves with the first page; focus going with
+                                // it would leave the arrows nowhere to arrive.
+                                if (currentStep == 0) takeFocus()
+                            }) {
                                 Text(
                                     stringResource(R.string.eq_back),
                                     letterSpacing = 1.sp,
@@ -235,7 +292,8 @@ fun AutoEqTutorialDialog(
                         TextButton(
                             onClick = {
                                 if (isLastStep) onDismiss() else currentStep++
-                            }
+                            },
+                            modifier = Modifier.focusRequester(nextFocus)
                         ) {
                             Text(
                                 if (isLastStep) stringResource(R.string.eq_get_started_caps) else stringResource(R.string.eq_next_caps),

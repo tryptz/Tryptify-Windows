@@ -1,8 +1,15 @@
 package tf.monochrome.desktop.ui.player
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -31,6 +39,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -38,6 +47,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +55,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,7 +74,10 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import tf.monochrome.desktop.domain.model.Track
 import tf.monochrome.desktop.ui.components.CoverImage
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
 import tf.monochrome.desktop.ui.theme.MonoDimens
+import java.awt.Cursor
 import kotlin.math.abs
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
@@ -108,6 +132,17 @@ fun QueueSheet(
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
     val listState = rememberLazyListState()
+    // Desktop: true while a mouse drags a handle, so the touch long-press
+    // detector on the same handle keeps out of that drag.
+    var mouseReorder by remember { mutableStateOf(false) }
+    // The row Alt+Up/Down just moved, so it can keep itself on screen.
+    var keyMovedKey by remember { mutableStateOf<String?>(null) }
+
+    // Open on the playing row, not on the top of the history above it: that is
+    // where Tab and the wheel should start.
+    LaunchedEffect(Unit) {
+        if (currentIndex > 0) listState.scrollToItem(currentIndex)
+    }
 
     // Stable per-row keys so reorder/delete/radio-append animate the right rows
     // and don't scramble per-row state. A queue can hold the same track twice,
@@ -135,12 +170,26 @@ fun QueueSheet(
         selectedIndices = emptySet()
     }
 
+    // The keyboard's and the menu's reorder: one slot at a time, the way the
+    // handle moves a row a finger's width.
+    fun moveBy(index: Int, key: String, delta: Int) {
+        val target = index + delta
+        // Selection is held by index, so a move would shift what it holds.
+        if (selectionMode || draggingIndex != null || target !in queue.indices) return
+        keyMovedKey = key
+        playerViewModel.moveQueueItem(index, target)
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = MonoDimens.cardAlpha),
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
+        // Escape leaves selection before it closes the sheet. Registered inside
+        // the sheet so it outranks the sheet's own dismiss.
+        BackHandler(enabled = selectionMode) { exitSelection() }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -250,115 +299,194 @@ fun QueueSheet(
                     modifier = Modifier.padding(24.dp)
                 )
             } else {
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                    itemsIndexed(keyedQueue, key = { _, entry -> entry.first }) { index, entry ->
-                        val track = entry.second
-                        val isCurrent = index == currentIndex
-                        val isDragging = index == draggingIndex
-
-                        // One Column per row so the "Now Playing" / "Up Next"
-                        // labels stack with the row instead of overlapping it.
-                        Column {
-                            // "Now Playing" sits directly above the actual current
-                            // track — it used to be a fixed header pinned to the
-                            // top of the list, which was wrong whenever the current
-                            // track wasn't the first one.
-                            if (isCurrent) {
-                                Text(
-                                    text = stringResource(R.string.now_playing),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(bottom = 8.dp)
-                                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                        itemsIndexed(keyedQueue, key = { _, entry -> entry.first }) { index, entry ->
+                            val track = entry.second
+                            val isCurrent = index == currentIndex
+                            val isDragging = index == draggingIndex
+                            val rowKey = entry.first
+                            val bringIntoView = remember { BringIntoViewRequester() }
+                            // A row moved from the keyboard follows itself, so
+                            // holding Alt+Down walks it past the bottom edge.
+                            LaunchedEffect(index) {
+                                if (keyMovedKey == rowKey) {
+                                    keyMovedKey = null
+                                    bringIntoView.bringIntoView()
+                                }
                             }
 
-                            Box(
-                                modifier = Modifier
-                                    .zIndex(if (isDragging) 1f else 0f)
-                                    .graphicsLayer {
-                                        translationY = if (isDragging) dragOffsetY else 0f
-                                    }
-                            ) {
-                                QueueTrackItem(
-                                    track = track,
-                                    isCurrentTrack = isCurrent,
-                                    selectionMode = selectionMode,
-                                    isSelected = index in selectedIndices,
-                                    isDragging = isDragging,
-                                    onClick = {
-                                        if (selectionMode) {
-                                            selectedIndices =
-                                                if (index in selectedIndices) selectedIndices - index
-                                                else selectedIndices + index
-                                            if (selectedIndices.isEmpty()) selectionMode = false
-                                        } else {
-                                            playerViewModel.skipToQueueIndex(index)
+                            // One Column per row so the "Now Playing" / "Up Next"
+                            // labels stack with the row instead of overlapping it.
+                            Column {
+                                // "Now Playing" sits directly above the actual current
+                                // track — it used to be a fixed header pinned to the
+                                // top of the list, which was wrong whenever the current
+                                // track wasn't the first one.
+                                if (isCurrent) {
+                                    Text(
+                                        text = stringResource(R.string.now_playing),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(bottom = 8.dp)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .bringIntoViewRequester(bringIntoView)
+                                        .zIndex(if (isDragging) 1f else 0f)
+                                        .graphicsLayer {
+                                            translationY = if (isDragging) dragOffsetY else 0f
                                         }
-                                    },
-                                    onLongClick = {
-                                        // A long-press that started a reorder drag
-                                        // must not also pop the context menu.
-                                        if (!selectionMode && draggingIndex == null) menuIndex = index
-                                    },
-                                    dragHandleModifier = Modifier.pointerInput(index) {
-                                        detectDragGesturesAfterLongPress(
-                                            onDragStart = {
-                                                draggingIndex = index
-                                                dragOffsetY = 0f
-                                                // Close any menu the row's own
-                                                // long-press may have just opened.
-                                                menuIndex = null
-                                            },
-                                            onDragEnd = {
-                                                val from = draggingIndex
-                                                if (from != null) {
-                                                    val target = dropTargetIndex(
-                                                        listState, from, dragOffsetY, queue.lastIndex
-                                                    )
-                                                    if (target != from) {
-                                                        playerViewModel.moveQueueItem(from, target)
+                                ) {
+                                    QueueTrackItem(
+                                        track = track,
+                                        isCurrentTrack = isCurrent,
+                                        selectionMode = selectionMode,
+                                        isSelected = index in selectedIndices,
+                                        isDragging = isDragging,
+                                        onClick = {
+                                            if (selectionMode) {
+                                                selectedIndices =
+                                                    if (index in selectedIndices) selectedIndices - index
+                                                    else selectedIndices + index
+                                                if (selectedIndices.isEmpty()) selectionMode = false
+                                            } else {
+                                                playerViewModel.skipToQueueIndex(index)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            // A long-press that started a reorder drag
+                                            // must not also pop the context menu.
+                                            if (!selectionMode && draggingIndex == null) menuIndex = index
+                                        },
+                                        onMoveUp = { moveBy(index, rowKey, -1) },
+                                        onMoveDown = { moveBy(index, rowKey, +1) },
+                                        dragHandleModifier = Modifier
+                                            .pointerHoverIcon(PointerIcon(Cursor(Cursor.MOVE_CURSOR)))
+                                            .pointerInput(index) {
+                                                detectDragGesturesAfterLongPress(
+                                                    onDragStart = {
+                                                        if (!mouseReorder) {
+                                                            draggingIndex = index
+                                                            dragOffsetY = 0f
+                                                            // Close any menu the row's own
+                                                            // long-press may have just opened.
+                                                            menuIndex = null
+                                                        }
+                                                    },
+                                                    onDragEnd = {
+                                                        if (!mouseReorder) {
+                                                            val from = draggingIndex
+                                                            if (from != null) {
+                                                                val target = dropTargetIndex(
+                                                                    listState, from, dragOffsetY, queue.lastIndex
+                                                                )
+                                                                if (target != from) {
+                                                                    playerViewModel.moveQueueItem(from, target)
+                                                                }
+                                                            }
+                                                            draggingIndex = null
+                                                            dragOffsetY = 0f
+                                                        }
+                                                    },
+                                                    onDragCancel = {
+                                                        if (!mouseReorder) {
+                                                            draggingIndex = null
+                                                            dragOffsetY = 0f
+                                                        }
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        if (!mouseReorder) {
+                                                            change.consume()
+                                                            dragOffsetY += dragAmount.y
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                            // Desktop: a mouse has no scroll to tell a
+                                            // reorder apart from, so the handle grabs on
+                                            // press. Touch keeps the long press above.
+                                            // After it in the chain, so it sees each
+                                            // move first and the long press, finding
+                                            // them consumed, stands down.
+                                            .pointerInput(index) {
+                                                awaitEachGesture {
+                                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                                    // Left button only: a right-click here is
+                                                    // the row's menu, not a grab.
+                                                    if (down.type != PointerType.Mouse ||
+                                                        !currentEvent.buttons.isPrimaryPressed ||
+                                                        draggingIndex != null
+                                                    ) {
+                                                        return@awaitEachGesture
+                                                    }
+                                                    // Consumed, so the row under it does
+                                                    // not take the press as a click.
+                                                    down.consume()
+                                                    mouseReorder = true
+                                                    draggingIndex = index
+                                                    dragOffsetY = 0f
+                                                    menuIndex = null
+                                                    var dropped = false
+                                                    try {
+                                                        dropped = drag(down.id) { change ->
+                                                            dragOffsetY += change.positionChange().y
+                                                            change.consume()
+                                                        }
+                                                    } finally {
+                                                        val from = draggingIndex
+                                                        if (dropped && from != null) {
+                                                            val target = dropTargetIndex(
+                                                                listState, from, dragOffsetY, queue.lastIndex
+                                                            )
+                                                            if (target != from) {
+                                                                playerViewModel.moveQueueItem(from, target)
+                                                            }
+                                                        }
+                                                        draggingIndex = null
+                                                        dragOffsetY = 0f
+                                                        mouseReorder = false
                                                     }
                                                 }
-                                                draggingIndex = null
-                                                dragOffsetY = 0f
-                                            },
-                                            onDragCancel = {
-                                                draggingIndex = null
-                                                dragOffsetY = 0f
-                                            },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                dragOffsetY += dragAmount.y
                                             }
-                                        )
-                                    }
-                                )
+                                    )
 
-                                QueueTrackMenu(
-                                    expanded = menuIndex == index,
-                                    onDismiss = { menuIndex = null },
-                                    onPlayNext = { playerViewModel.playQueueItemNext(index) },
-                                    onStartRadio = { playerViewModel.startRadioFrom(track) },
-                                    onSelect = {
-                                        selectionMode = true
-                                        selectedIndices = setOf(index)
-                                    },
-                                    onDelete = { playerViewModel.removeFromQueue(index) }
-                                )
-                            }
+                                    QueueTrackMenu(
+                                        expanded = menuIndex == index,
+                                        onDismiss = { menuIndex = null },
+                                        onPlayNext = { playerViewModel.playQueueItemNext(index) },
+                                        onStartRadio = { playerViewModel.startRadioFrom(track) },
+                                        onSelect = {
+                                            selectionMode = true
+                                            selectedIndices = setOf(index)
+                                        },
+                                        onDelete = { playerViewModel.removeFromQueue(index) },
+                                        onMoveUp = if (index > 0) {
+                                            { moveBy(index, rowKey, -1) }
+                                        } else null,
+                                        onMoveDown = if (index < queue.lastIndex) {
+                                            { moveBy(index, rowKey, +1) }
+                                        } else null,
+                                    )
+                                }
 
-                            // Divider after the current track.
-                            if (isCurrent && index < queue.size - 1) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = stringResource(R.string.up_next),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(vertical = 8.dp)
-                                )
+                                // Divider after the current track.
+                                if (isCurrent && index < queue.size - 1) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = stringResource(R.string.up_next),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(vertical = 8.dp)
+                                    )
+                                }
                             }
                         }
                     }
+                    // In the sheet's side gutter, clear of the drag handles.
+                    ListScrollbar(listState, Modifier.offset(x = 12.dp))
                 }
             }
         }
@@ -399,6 +527,8 @@ private fun QueueTrackMenu(
     onStartRadio: () -> Unit,
     onSelect: () -> Unit,
     onDelete: () -> Unit,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
 ) {
     DropdownMenu(
         expanded = expanded,
@@ -411,6 +541,25 @@ private fun QueueTrackMenu(
                 onPlayNext()
             }
         )
+        // The handle's reorder for a pointer that cannot drag or a keyboard.
+        onMoveUp?.let { move ->
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.api_move_up)) },
+                onClick = {
+                    onDismiss()
+                    move()
+                }
+            )
+        }
+        onMoveDown?.let { move ->
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.queue_move_down)) },
+                onClick = {
+                    onDismiss()
+                    move()
+                }
+            )
+        }
         DropdownMenuItem(
             text = { Text(stringResource(R.string.start_radio_from_song)) },
             onClick = {
@@ -446,6 +595,8 @@ private fun QueueTrackItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     dragHandleModifier: Modifier,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -455,6 +606,20 @@ private fun QueueTrackItem(
             // real laid-out geometry, so a taller row no longer misplaces drops.
             .heightIn(min = QueueRowHeight)
             .graphicsLayer { alpha = if (isDragging) 0.85f else 1f }
+            // Desktop: Alt+Up/Down reorder the focused row, the keyboard's
+            // version of the drag handle.
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || !event.isAltPressed) return@onKeyEvent false
+                val move = when (event.key) {
+                    Key.DirectionUp -> onMoveUp
+                    Key.DirectionDown -> onMoveDown
+                    else -> null
+                } ?: return@onKeyEvent false
+                move()
+                true
+            }
+            // Right-click, the Menu key and Shift+F10 open what a long press does.
+            .contextClick(onContextClick = onLongClick)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -522,6 +687,18 @@ private fun QueueTrackItem(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // The row menu in plain sight, and a Tab stop of its own; a long press
+        // is nothing a mouse or a keyboard would think to try.
+        if (!selectionMode) {
+            IconButton(onClick = onLongClick, modifier = Modifier.padding(start = 4.dp)) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.action_more_options),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
         Icon(
             imageVector = Icons.Default.DragHandle,

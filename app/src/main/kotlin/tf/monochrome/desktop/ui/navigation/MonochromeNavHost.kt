@@ -3,7 +3,14 @@ package tf.monochrome.desktop.ui.navigation
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.compose.runtime.mutableFloatStateOf
 import tf.monochrome.desktop.ui.input.AppShortcutBindings
+import tf.monochrome.desktop.ui.input.BackStackMirror
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.ForwardHistory
 import tf.monochrome.desktop.ui.input.ShortcutActions
+import tf.monochrome.desktop.ui.input.LocalShowShortcutHelp
+import tf.monochrome.desktop.ui.input.ShortcutHelpDialog
+import tf.monochrome.desktop.ui.input.StackMove
+import tf.monochrome.desktop.ui.input.fillRoutePattern
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -40,6 +47,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -48,6 +56,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +73,8 @@ import tf.monochrome.desktop.ui.components.LocalGlassOverlayHost
 import tf.monochrome.desktop.ui.components.GlassOverlayLayer
 import tf.monochrome.desktop.ui.components.GlassOverlayHost
 import tf.monochrome.desktop.ui.components.liquidGlass
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -219,6 +230,28 @@ internal val chromeHiddenRoutes = setOf(
     Screen.CarMode.route,
 )
 
+/** A place Forward can return to: a pushed screen, or a page of the pager. */
+private sealed interface ForwardStep {
+    data class Route(val route: String) : ForwardStep
+    data class Page(val id: String) : ForwardStep
+}
+
+/**
+ * The route this entry was opened with, arguments filled in, so navigating to
+ * it opens the same screen again: `artist/42?name=Nina%20Simone`, not the
+ * pattern. Null when an argument cannot be read back.
+ */
+private fun NavBackStackEntry.concreteRoute(): String? {
+    val pattern = destination.route ?: return null
+    val values = arguments?.let { state ->
+        destination.arguments.entries.mapNotNull { (name, argument) ->
+            runCatching { argument.type.get(state, name) }.getOrNull()
+                ?.let { name to argument.type.serializeAsValue(it) }
+        }.toMap()
+    }.orEmpty()
+    return fillRoutePattern(pattern, values)
+}
+
 @Composable
 fun MonochromeNavHost(initialRoute: String? = null) {
     val navController = rememberNavController()
@@ -354,8 +387,32 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     }
     val selectPage: (String) -> Unit = { id -> selectPageWith(id, true) }
 
+    // ── Forward ──────────────────────────────────────────────────────────
+    // A desktop has Forward beside Back (Alt+Right, the mouse's Forward
+    // button), and it undoes the last Back, as in a browser. Backs are read off
+    // the NavController itself, so a screen's own arrow, Escape and the mouse's
+    // Back button are all remembered alike; the pager's Back to Home is handed
+    // over by its BackHandler below.
+    val forwardHistory = remember { ForwardHistory<ForwardStep>() }
+    // Set while Forward is navigating. Going somewhere from the player closes
+    // the player first (leavePlayerFor), and that pop is part of the step
+    // forward, not a Back to remember.
+    val forwardInFlight = remember { booleanArrayOf(false) }
+    DisposableEffect(navController) {
+        val mirror = BackStackMirror<ForwardStep>()
+        val listener = NavController.OnDestinationChangedListener { controller, _, _ ->
+            val top = controller.currentBackStackEntry ?: return@OnDestinationChangedListener
+            val place = top.concreteRoute()?.let { ForwardStep.Route(it) }
+            val move = mirror.moved(top.id, place, controller.previousBackStackEntry?.id)
+            if (!(forwardInFlight[0] && move is StackMove.Popped)) forwardHistory.follow(move)
+        }
+        navController.addOnDestinationChangedListener(listener)
+        onDispose { navController.removeOnDestinationChangedListener(listener) }
+    }
+
     // ── The tab bar ──────────────────────────────────────────────────────
     val currentPageId = pages.getOrNull(pagerState.currentPage)
+    LaunchedEffect(currentPageId) { currentPageId?.let { forwardHistory.arrived(ForwardStep.Page(it)) } }
     // The Library tab returns to the section that was open last, the way a tab
     // keeps its place. Saveable: it is navigation state, like the page itself.
     var lastLibrarySection by rememberSaveable { mutableStateOf<String?>(null) }
@@ -373,8 +430,41 @@ fun MonochromeNavHost(initialRoute: String? = null) {
         if (!isOnMainTab && !navController.popBackStack(Screen.Home.route, inclusive = false)) {
             navController.navigate(Screen.Home.route)
         }
+        // That pop was the tab's doing, not a Back: nothing it closed is
+        // somewhere Forward should go.
+        if (!isOnMainTab) forwardHistory.clear()
         if (tab == AppTab.SEARCH) focusSearch = true
         selectPageWith(pageForTab(tab, pages, lastLibrarySection, navBarSlots), false)
+    }
+
+    val goForward: () -> Unit = {
+        // Nothing comes off the history while a transition is still running:
+        // navigateSafe would drop the step, and Forward would skip it.
+        if (navController.isSettled()) when (val step = forwardHistory.forward()) {
+            is ForwardStep.Route -> {
+                forwardInFlight[0] = true
+                try {
+                    navController.navigateSafe(step.route)
+                } catch (e: IllegalArgumentException) {
+                    // No destination matches the route any more. A key press
+                    // must not take the app down for it; the trail is dropped.
+                    forwardHistory.clear()
+                } finally {
+                    forwardInFlight[0] = false
+                }
+            }
+            is ForwardStep.Page ->
+                if (isOnMainTab && step.id in pages) selectPage(step.id) else forwardHistory.clear()
+            null -> Unit
+        }
+    }
+    // The mouse's Forward button. It arrives from the AWT listener, so the step
+    // is posted to the UI's own coroutine scope like any other input.
+    val currentGoForward by rememberUpdatedState(goForward)
+    DisposableEffect(scope) {
+        val onForward: () -> Unit = { scope.launch { currentGoForward() } }
+        DesktopInput.onForward = onForward
+        onDispose { if (DesktopInput.onForward === onForward) DesktopInput.onForward = null }
     }
 
     // ── Keyboard shortcuts ───────────────────────────────────────────────
@@ -382,6 +472,8 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     // Ctrl+1 to Ctrl+9 follow the bar's own order, Search last, so the number
     // is the button's place on screen.
     var volumeBeforeMute by remember { mutableFloatStateOf(1f) }
+    var showShortcutHelp by remember { mutableStateOf(false) }
+    val openShortcutHelp: () -> Unit = remember { { showShortcutHelp = true } }
     AppShortcutBindings(
         ShortcutActions(
             playPause = playerViewModel::togglePlayPause,
@@ -413,8 +505,11 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             openNowPlaying = {
                 if (currentDestination?.route != Screen.NowPlaying.route) navController.navigateSafe(Screen.NowPlaying.route)
             },
+            forward = goForward,
+            showHelp = openShortcutHelp,
         ),
     )
+    if (showShortcutHelp) ShortcutHelpDialog(onDismiss = { showShortcutHelp = false })
 
     // The bar folds the mini player into itself while the listener scrolls down
     // through a page, and unfolds it when they scroll back up — measured from
@@ -483,10 +578,24 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     // Composed before the pager content below, so it registers first and
     // LibraryScreen's selection handler — composed later, inside a page — wins
     // the first back press while a selection is active.
+    //
+    // That order only holds while the handler stays registered. A BackHandler
+    // given a new onBack is removed and added again, at the front, ahead of
+    // every dialog, sheet and selection opened since — so Escape would change
+    // page under an open dialog instead of closing it. The lambda handed over
+    // is therefore created once and reads the current action when it runs.
     val homePage = homePageIndex(pages)
-    BackHandler(enabled = isOnMainTab && pagerState.currentPage != homePage) {
-        pages.getOrNull(homePage)?.let(selectPage)
+    val backToHome: () -> Unit = {
+        pages.getOrNull(homePage)?.let { home ->
+            // Forward returns to the page this Back leaves. The pager reports
+            // reaching Home after the jump, which is not a new navigation.
+            currentPageId?.let { forwardHistory.wentBack(listOf(ForwardStep.Page(it)), landing = ForwardStep.Page(home)) }
+            selectPage(home)
+        }
     }
+    val currentBackToHome by rememberUpdatedState(backToHome)
+    val onPageBack: () -> Unit = remember { { currentBackToHome() } }
+    BackHandler(enabled = isOnMainTab && pagerState.currentPage != homePage, onBack = onPageBack)
 
     val themeBackground = MaterialTheme.colorScheme.background
 
@@ -578,6 +687,9 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             // rather than the untouched defaults.
             LocalMiniPlayerGlass provides miniPlayerGlass,
             LocalGlassOverlayHost provides glassOverlayHost,
+            // So a screen can offer the shortcut list to the mouse, which F1 and
+            // ? cannot reach.
+            LocalShowShortcutHelp provides openShortcutHelp,
         ) {
         Box(modifier = Modifier.fillMaxSize().hazeSource(hazeState).nestedScroll(collapseOnScroll)) {
             // Pager for main tabs — fills entire screen
@@ -987,6 +1099,7 @@ fun MonochromeNavHost(initialRoute: String? = null) {
                                 // there can be (see leavePlayerFor), and Back walks
                                 // through it.
                                 onClick = { navController.navigateSafe(Screen.NowPlaying.route) },
+                                onSeek = { playerViewModel.seekToFraction(it) },
                                 modifier = mod,
                                 hazeState = hazeState,
                                 blendMillis = miniBlendMs,

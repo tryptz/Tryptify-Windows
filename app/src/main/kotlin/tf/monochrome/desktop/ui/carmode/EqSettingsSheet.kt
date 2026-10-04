@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
+import kotlin.math.roundToInt
 
 @Composable
 fun EqSettingsSheet(
@@ -75,8 +76,11 @@ fun EqSettingsSheet(
             ) {
                 Slider(
                     value = bandCount.toFloat(),
-                    onValueChange = { onBandCountChange(it.toInt()) },
+                    // Rounded and stepped: truncating made a keyboard step up
+                    // land back on the same count, so the arrows only went down.
+                    onValueChange = { onBandCountChange(it.roundToInt()) },
                     valueRange = 3f..32f,
+                    steps = 28,
                     modifier = Modifier.weight(1f)
                 )
                 Text(

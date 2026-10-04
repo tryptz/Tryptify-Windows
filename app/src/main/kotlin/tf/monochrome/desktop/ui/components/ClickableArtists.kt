@@ -1,16 +1,23 @@
 package tf.monochrome.desktop.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import tf.monochrome.desktop.domain.model.UnifiedArtistRef
 import tf.monochrome.desktop.domain.model.UnifiedTrack
@@ -56,10 +63,13 @@ fun ClickableArtists(
         artists.forEachIndexed { index, artist ->
             val isLink = artist.id != null && artist.id > 0L
             val separator = if (index < artists.lastIndex) ", " else ""
+            val linkSource = remember { MutableInteractionSource() }
+            val linkHovered by linkSource.collectIsHoveredAsState()
             Text(
                 text = artist.name,
                 style = style,
                 color = if (isLink) linkColor else color,
+                textDecoration = if (isLink && linkHovered) TextDecoration.Underline else null,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 // Inline link: a hard 48dp min-size would blow up the one-line
@@ -68,7 +78,7 @@ fun ClickableArtists(
                 modifier = if (isLink) {
                     Modifier
                         .linkHitBox()
-                        .clickable { onArtistClick(artist) }
+                        .linkClickable(linkSource) { onArtistClick(artist) }
                         .buttonSemantics(label = artist.name)
                 } else Modifier,
             )
@@ -114,23 +124,37 @@ fun TrackArtistAlbumLine(
             linkColor = linkColor,
         )
         if (albumTitle != null) {
+            val linkSource = remember { MutableInteractionSource() }
+            val linkHovered by linkSource.collectIsHoveredAsState()
             Text(text = " • ", style = style, color = color, maxLines = 1)
             Text(
                 text = albumTitle,
                 style = style,
                 color = if (albumLinkable) linkColor else color,
+                textDecoration = if (albumLinkable && linkHovered) TextDecoration.Underline else null,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = if (albumLinkable) {
                     Modifier
                         .linkHitBox()
-                        .clickable { onAlbumClick() }
+                        .linkClickable(linkSource) { onAlbumClick() }
                         .buttonSemantics(label = albumTitle)
                 } else Modifier,
             )
         }
     }
 }
+
+/**
+ * An inline link's click, with the hand pointer a mouse expects over a link.
+ * Its hover arrives through [interactionSource], for the caller to underline
+ * the text with: colour alone did not tell a mouse user the text was a link.
+ */
+internal fun Modifier.linkClickable(
+    interactionSource: MutableInteractionSource,
+    onClick: () -> Unit,
+): Modifier = pointerHoverIcon(PointerIcon.Hand)
+    .clickable(interactionSource = interactionSource, onClick = onClick)
 
 /**
  * Shrinks an inline link's touch target to slightly *inside* its own glyphs.

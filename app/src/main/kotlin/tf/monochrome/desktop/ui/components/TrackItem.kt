@@ -1,7 +1,8 @@
 package tf.monochrome.desktop.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,12 +25,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import tf.monochrome.desktop.data.downloads.DownloadStatus
@@ -193,6 +197,8 @@ fun TrackItem(
                     )
                 }
                 if (track.album != null && effectiveOnAlbumClick != null) {
+                    val albumLinkSource = remember { MutableInteractionSource() }
+                    val albumLinkHovered by albumLinkSource.collectIsHoveredAsState()
                     Text(
                         text = " • ",
                         style = MaterialTheme.typography.bodySmall,
@@ -202,6 +208,7 @@ fun TrackItem(
                         text = track.album.title,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
+                        textDecoration = if (albumLinkHovered) TextDecoration.Underline else null,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         // weight(fill=false) so a long album title ellipsizes and
@@ -212,7 +219,7 @@ fun TrackItem(
                         modifier = Modifier
                             .weight(1f, fill = false)
                             .padding(horizontal = 3.dp, vertical = 4.dp)
-                            .clickable(onClick = effectiveOnAlbumClick)
+                            .linkClickable(albumLinkSource, onClick = effectiveOnAlbumClick)
                     )
                 } else if (track.album != null) {
                     Text(

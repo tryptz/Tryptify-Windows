@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -27,17 +28,26 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.withContext
 import tf.monochrome.desktop.domain.model.LyricLine
 import tf.monochrome.desktop.domain.model.Lyrics
+import tf.monochrome.desktop.ui.input.ListScrollbar
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R
@@ -108,6 +118,7 @@ fun LyricsSheet(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun SyncedLyrics(
     lines: List<LyricLine>,
@@ -145,64 +156,91 @@ private fun SyncedLyrics(
             }
         }
     }
+    // A wheel, the scrollbar and Page Up/Down read ahead too, and none of them
+    // emits a DragInteraction: on a desktop the list was pulled back to the
+    // current line on every line change. The scrollbar and the paging keys
+    // jump without suspending, so isScrollInProgress flips on and off inside
+    // one snapshot and is never seen; the position is what moves. Any move
+    // this list did not make itself counts as the user's.
+    val autoScrolls = remember { intArrayOf(0) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .drop(1)
+            .collect { if (autoScrolls[0] == 0) lastUserScrollMs = System.currentTimeMillis() }
+    }
 
     // Auto-scroll to current line, unless the user scrolled in the last few
     // seconds.
     LaunchedEffect(currentLineIndex) {
         if (currentLineIndex >= 0 && System.currentTimeMillis() - lastUserScrollMs > 4_000L) {
-            listState.animateScrollToItem(
-                index = currentLineIndex,
-                scrollOffset = -200 // Offset to center the line
-            )
+            autoScrolls[0]++
+            try {
+                listState.animateScrollToItem(
+                    index = currentLineIndex,
+                    scrollOffset = -200 // Offset to center the line
+                )
+            } finally {
+                // The flow above reads the last step after it is applied, a
+                // moment after the animation returns; wait it out so that step
+                // is not taken for the user's.
+                withContext(NonCancellable) { withFrameNanos { } }
+                autoScrolls[0]--
+            }
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .fxaa()
-            .liquidGlass(),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        itemsIndexed(lines) { index, line ->
-            val isActive = index == currentLineIndex
-            
-            if (line.words.isNotEmpty()) {
-                KaraokeLine(
-                    line = line,
-                    isActive = isActive,
-                    position = position - syncDelayMs,
-                    onClick = { onSeekTo(line.timeMs) }
-                )
-            } else {
-                val textColor by animateColorAsState(
-                    targetValue = when {
-                        isActive -> MaterialTheme.colorScheme.primary
-                        index < currentLineIndex -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    },
-                    label = "lyricColor"
-                )
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                // A wheel turn that cuts into an auto-scroll moves the list
+                // while the flow above is ignoring moves.
+                .onPointerEvent(PointerEventType.Scroll) { lastUserScrollMs = System.currentTimeMillis() }
+                .fxaa()
+                .liquidGlass(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            itemsIndexed(lines) { index, line ->
+                val isActive = index == currentLineIndex
+                
+                if (line.words.isNotEmpty()) {
+                    KaraokeLine(
+                        line = line,
+                        isActive = isActive,
+                        position = position - syncDelayMs,
+                        onClick = { onSeekTo(line.timeMs) }
+                    )
+                } else {
+                    val textColor by animateColorAsState(
+                        targetValue = when {
+                            isActive -> MaterialTheme.colorScheme.primary
+                            index < currentLineIndex -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        },
+                        label = "lyricColor"
+                    )
 
-                Text(
-                    text = line.text.ifBlank { "♪" },
-                    // Fixed size: the active line is marked by colour/weight only,
-                    // so the list never reflows mid-song (see LyricsHero.kt).
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = 23.sp,
-                        lineHeight = 29.sp,
-                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-                    ).withLyricFont(lyricFont),
-                    color = textColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSeekTo(line.timeMs) }
-                        .padding(vertical = 3.dp)
-                )
+                    Text(
+                        text = line.text.ifBlank { "♪" },
+                        // Fixed size: the active line is marked by colour/weight only,
+                        // so the list never reflows mid-song (see LyricsHero.kt).
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = 23.sp,
+                            lineHeight = 29.sp,
+                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                        ).withLyricFont(lyricFont),
+                        color = textColor,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSeekTo(line.timeMs) }
+                            .padding(vertical = 3.dp)
+                    )
+                }
             }
         }
+        ListScrollbar(listState, Modifier.offset(x = 14.dp))
     }
 }
 
@@ -253,24 +291,29 @@ private fun KaraokeLine(
 @Composable
 private fun UnsyncedLyrics(lines: List<LyricLine>) {
     val lyricFont = rememberLyricFontFamily(LocalLyricsFx.current)
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .fxaa()
-            .liquidGlass(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        itemsIndexed(lines) { _, line ->
-            Text(
-                text = line.text.ifBlank { "" },
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 23.sp, lineHeight = 29.sp)
-                    .withLyricFont(lyricFont),
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 2.dp)
-            )
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .fxaa()
+                .liquidGlass(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            itemsIndexed(lines) { _, line ->
+                Text(
+                    text = line.text.ifBlank { "" },
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 23.sp, lineHeight = 29.sp)
+                        .withLyricFont(lyricFont),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                )
+            }
         }
+        ListScrollbar(listState, Modifier.offset(x = 14.dp))
     }
 }

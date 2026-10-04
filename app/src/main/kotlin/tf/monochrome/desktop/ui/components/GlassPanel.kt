@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -144,13 +145,24 @@ fun GlassPanel(
         // handles the touch, which is exactly the case it was written for — and
         // being a hit at all is what keeps the event inside this panel, so the
         // full-bleed map underneath never sees it.
+        //
+        // Desktop: the mouse wheel is left unconsumed, so it carries on up to
+        // the panel's *ancestors*: a scrolling container the panel sits in,
+        // which consuming it stopped the moment the pointer crossed the panel's
+        // margins. Only ancestors. A list drawn beside the panel, such as the
+        // one a floating search bar covers, is a sibling and never sees the
+        // event, so SearchOverlay hands it on to that list itself. Being hit at
+        // all still keeps it from the map.
         Box(
             Modifier
                 .matchParentSize()
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
-                            awaitPointerEvent().changes.forEach { it.consume() }
+                            val event = awaitPointerEvent()
+                            if (event.type != PointerEventType.Scroll) {
+                                event.changes.forEach { it.consume() }
+                            }
                         }
                     }
                 },

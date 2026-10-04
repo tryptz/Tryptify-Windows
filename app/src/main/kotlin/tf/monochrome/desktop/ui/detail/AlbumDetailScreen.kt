@@ -3,6 +3,7 @@ package tf.monochrome.desktop.ui.detail
 import tf.monochrome.desktop.ui.navigation.trackArtistAction
 import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
@@ -35,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -62,6 +66,9 @@ import tf.monochrome.desktop.ui.components.SearchAction
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.input.ListScrollbar
+import tf.monochrome.desktop.ui.library.rememberSelectionClicks
+import tf.monochrome.desktop.ui.library.selectionKeys
 import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -86,6 +93,7 @@ fun AlbumDetailScreen(
 
     val selection = tf.monochrome.desktop.ui.components.rememberTrackSelectionState<Long>()
     androidx.activity.compose.BackHandler(enabled = selection.active) { selection.clear() }
+    val clicks = rememberSelectionClicks(selection)
 
     // How this album is being looked at right now — not anything about the
     // album, so it lives here rather than in the ViewModel.
@@ -94,6 +102,8 @@ fun AlbumDetailScreen(
     var listSort by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = TrackSortSaver) {
         androidx.compose.runtime.mutableStateOf(TrackSort())
     }
+    // Registered after the selection's, so Escape closes the search first.
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false; listQuery = "" }
 
     showContextMenuForTrack?.let { track ->
         TrackContextMenu(
@@ -209,8 +219,13 @@ fun AlbumDetailScreen(
                     placeholder = stringResource(R.string.search_this_album),
                     onClose = { searchOpen = false; listQuery = "" },
                 ) { searchTopInset ->
+                val listState = rememberLazyListState()
+                Box(Modifier.fillMaxSize()) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .selectionKeys(onSelectAll = { clicks.selectAll(visibleTracks.map { it.id }) }),
                     contentPadding = PaddingValues(
                         top = searchTopInset,
                         bottom = 80.dp + LocalBottomChromeInset.current,
@@ -253,7 +268,9 @@ fun AlbumDetailScreen(
                                 text = detail.album.displayArtist,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.clickable(enabled = detail.album.artist?.id != null) {
+                                modifier = Modifier
+                                    .then(if (detail.album.artist?.id != null) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+                                    .clickable(enabled = detail.album.artist?.id != null) {
                                     detail.album.artist?.id?.let { artistId ->
                                         navController.navigateSafe(Screen.ArtistDetail.createRoute(artistId))
                                     }
@@ -343,10 +360,11 @@ fun AlbumDetailScreen(
                             isLiked = favoriteTrackIds.contains(track.id),
                             onLikeClick = { playerViewModel.toggleFavorite(track) },
                             onClick = {
-                                if (selection.active) selection.toggle(track.id)
-                                else playerViewModel.playTrack(track, visibleTracks)
+                                clicks.click(track.id, visibleTracks.map { it.id }) {
+                                    playerViewModel.playTrack(track, visibleTracks)
+                                }
                             },
-                            onLongClick = { selection.toggle(track.id) },
+                            onLongClick = { clicks.toggle(track.id) },
                             onMoreClick = { showContextMenuForTrack = track },
                             onArtistClick = { artistId -> navController.openCatalogArtist(artistId) },
                             showCover = false,
@@ -356,6 +374,8 @@ fun AlbumDetailScreen(
                             selected = track.id in selection.selectedIds
                         )
                     }
+                }
+                ListScrollbar(listState, Modifier.padding(top = searchTopInset, bottom = LocalBottomChromeInset.current))
                 }
                 }
             }

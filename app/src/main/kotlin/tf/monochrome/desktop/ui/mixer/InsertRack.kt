@@ -2,16 +2,22 @@ package tf.monochrome.desktop.ui.mixer
 
 import tf.monochrome.desktop.ui.mixer.fxchain.FxPreset
 import tf.monochrome.desktop.ui.mixer.fxchain.FxPresetRow
+import tf.monochrome.desktop.ui.input.ColumnScrollbar
+import tf.monochrome.desktop.ui.input.contextClick
+import tf.monochrome.desktop.ui.input.focusRing
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -23,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -75,6 +82,8 @@ fun InsertRack(
     onPluginReplace: (busIndex: Int, slotIndex: Int) -> Unit = { _, _ -> },
     onPluginBypass: (busIndex: Int, slotIndex: Int) -> Unit,
     onPluginRemove: (busIndex: Int, slotIndex: Int) -> Unit,
+    /** Moves a slot one place, from the slot's menu; the FX chain page drags instead. */
+    onPluginMove: (busIndex: Int, from: Int, to: Int) -> Unit = { _, _, _ -> },
     onParameterChange: (busIndex: Int, slotIndex: Int, paramIndex: Int, value: Float) -> Unit,
     onApplyPreset: (busIndex: Int, slotIndex: Int, preset: FxPreset) -> Unit = { _, _, _ -> },
     onPluginDryWet: (busIndex: Int, slotIndex: Int, dryWet: Float) -> Unit = { _, _, _ -> },
@@ -89,6 +98,10 @@ fun InsertRack(
     // Show one empty "add" slot past the current plugins, capped at the engine max.
     val plugins = bus?.plugins ?: emptyList()
     val maxSlots = (plugins.size + 1).coerceAtMost(DspEngineManager.MAX_PLUGINS_PER_BUS)
+    // Escape closes the open editor before the rack itself.
+    val editorOpen = editingPlugin != null && editingPlugin.first == busIndex &&
+        plugins.getOrNull(editingPlugin.second) != null
+    androidx.activity.compose.BackHandler(enabled = editorOpen) { onDismissEditor() }
 
     Column(
         modifier = modifier
@@ -134,9 +147,10 @@ fun InsertRack(
         )
 
         // ── Slot list ──────────────────────────────────────────────────
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .weight(1f)
+                .fillMaxSize()
                 .verticalScroll(scrollState)
                 .padding(MonoDimens.spacingXs),
             verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -160,7 +174,13 @@ fun InsertRack(
                         if (plugin != null) onPluginDryWet(busIndex, slotIndex, dw)
                     },
                     onReplace = { onPluginReplace(busIndex, slotIndex) },
-                    onRemove  = { onPluginRemove(busIndex, slotIndex) }
+                    onRemove  = { onPluginRemove(busIndex, slotIndex) },
+                    onMoveUp  = if (plugin != null && slotIndex > 0) {
+                        { onPluginMove(busIndex, slotIndex, slotIndex - 1) }
+                    } else null,
+                    onMoveDown = if (plugin != null && slotIndex < plugins.size - 1) {
+                        { onPluginMove(busIndex, slotIndex, slotIndex + 1) }
+                    } else null
                 )
 
                 // Inline plugin editor (expands below the slot)
@@ -175,6 +195,8 @@ fun InsertRack(
                     )
                 }
             }
+        }
+        ColumnScrollbar(scrollState)
         }
 
         // ── Output routing (mix buses) ──────────────────────────────
@@ -420,7 +442,9 @@ private fun InsertSlot(
     onBypass: () -> Unit,
     onDryWetChange: (Float) -> Unit,
     onReplace: () -> Unit = {},
-    onRemove: () -> Unit = {}
+    onRemove: () -> Unit = {},
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null
 ) {
     val bgAlpha = if (isEditing) 0.15f else 0.08f
     var showContextMenu by remember { mutableStateOf(false) }
@@ -439,6 +463,9 @@ private fun InsertSlot(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    // Right-click, the Menu key or Shift+F10 open the menu a
+                    // long press opens; before the clickable so Tab focus hears them.
+                    .contextClick(enabled = plugin != null) { showContextMenu = true }
                     .combinedClickable(
                         onClick = onTap,
                         onLongClick = { if (plugin != null) showContextMenu = true }
@@ -489,6 +516,24 @@ private fun InsertSlot(
                         modifier = Modifier.size(14.dp)
                     )
                 }
+                // Desktop: the menu a long press or right-click opens, where a
+                // mouse can see it is there.
+                val moreInteraction = remember { MutableInteractionSource() }
+                val moreFocused by moreInteraction.collectIsFocusedAsState()
+                IconButton(
+                    onClick  = { showContextMenu = true },
+                    modifier = Modifier
+                        .size(20.dp)
+                        .focusRing(moreFocused, CircleShape),
+                    interactionSource = moreInteraction
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = stringResource(R.string.action_more_options),
+                        tint     = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             } else {
                 // Add hint for empty slots
                 Icon(
@@ -514,6 +559,24 @@ private fun InsertSlot(
                         onReplace()
                     }
                 )
+                if (onMoveUp != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.api_move_up)) },
+                        onClick = {
+                            showContextMenu = false
+                            onMoveUp()
+                        }
+                    )
+                }
+                if (onMoveDown != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.mixer_move_down)) },
+                        onClick = {
+                            showContextMenu = false
+                            onMoveDown()
+                        }
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.api_remove)) },
                     onClick = {
