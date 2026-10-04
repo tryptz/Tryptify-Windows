@@ -578,10 +578,10 @@ WASAPI_JNI(jboolean, nativeStart)(JNIEnv*, jobject, jlong handle) {
     if (s->exclusive && s->writtenFrames.load() == 0) {
         // The engine needs a primed buffer before Start in exclusive mode;
         // whatever is staged goes out, silence-padded if short.
-        if (s->stagedBytes > 0) {
-            const size_t bufferBytes = static_cast<size_t>(s->bufferFrames) * s->bytesPerFrame;
-            std::memset(s->staging.data() + s->stagedBytes, 0, bufferBytes - s->stagedBytes);
-        }
+        // Zeroed from stagedBytes even when nothing is staged: after a reset
+        // the buffer still holds the previous position's audio.
+        const size_t bufferBytes = static_cast<size_t>(s->bufferFrames) * s->bytesPerFrame;
+        std::memset(s->staging.data() + s->stagedBytes, 0, bufferBytes - s->stagedBytes);
         if (pushFrames(*s, s->staging.data(), s->bufferFrames) < 0) return JNI_FALSE;
         s->stagedBytes = 0;
     }

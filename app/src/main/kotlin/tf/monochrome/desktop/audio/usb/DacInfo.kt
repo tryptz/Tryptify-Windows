@@ -4,11 +4,13 @@ package tf.monochrome.desktop.audio.usb
  * Who the DAC actually is, known the moment the driver owns it.
  *
  * On Android everything here came off the framework's cached descriptors
- * (`UsbDevice`); the desktop reads the device through libusb, and the JNI
- * surface exports the numeric identity today -- vendor, product, bus address
- * -- but not yet the string descriptors or `bcdUSB` / device class, so those
- * fields are null or [UNKNOWN] until the native side grows a descriptor read.
- * The display degrades gracefully (VID:PID is the fallback it always had).
+ * (`UsbDevice`). The desktop asks the device through libusb
+ * ([LibusbUacNative.deviceInfo]): the device descriptor (bcdUSB, class
+ * triple) is always readable, but the manufacturer, product and serial are
+ * string descriptors that need the device open, and on Windows a DAC still
+ * bound to the Windows audio driver cannot be opened -- so before the WinUSB
+ * binding those three are null and the display falls back to VID:PID, as it
+ * always did for DACs that ship empty strings.
  *
  * It is available the instant [LibusbUacDriver.open] succeeds and is safe to
  * show before any stream is negotiated. The negotiated stream itself
@@ -22,7 +24,7 @@ data class DacInfo(
     val vendorId: Int,
     val productId: Int,
     val deviceId: Int,
-    /** USB standard version the device advertises, e.g. "2.00" / "1.10"; null when not read. */
+    /** USB standard version the device advertises (bcdUSB), e.g. "2.00" / "1.10"; null when not read. */
     val usbVersion: String?,
     /** bDeviceClass, or [UNKNOWN] when not read. */
     val deviceClass: Int,
@@ -33,8 +35,8 @@ data class DacInfo(
      * The name to show. "Focal Bathys" from manufacturer + product, with
      * graceful fallbacks for DACs that ship empty string descriptors (they
      * exist -- some cheap dongles report neither, in which case VID:PID is
-     * the only honest identity we have), and for the desktop until the
-     * strings are read at all.
+     * the only honest identity we have), and for a DAC whose strings could
+     * not be read (see the class KDoc).
      */
     val displayName: String
         get() = listOf(manufacturer?.takeIf { it.isNotBlank() },
@@ -71,21 +73,40 @@ data class DacInfo(
         const val UNKNOWN = -1
 
         /**
-         * Identity from the libusb enumeration alone: VID, PID and the bus
-         * address. Strings, USB version and class come later, when the JNI
-         * exports the device descriptor; see the class KDoc.
+         * Everything libusb will tell about [device]: the enumeration's
+         * VID/PID/bus address plus the descriptor read. Any part that cannot
+         * be read degrades the display rather than failing (class KDoc).
+         * Reads the device, so call it off the UI thread.
          */
-        fun fromAttached(device: UsbAttachedDevice): DacInfo = DacInfo(
-            manufacturer = null,
-            product = null,
-            serialNumber = null,
-            vendorId = device.vendorId,
-            productId = device.productId,
-            deviceId = device.deviceId,
-            usbVersion = null,
-            deviceClass = UNKNOWN,
-            deviceSubClass = UNKNOWN,
-            deviceProtocol = UNKNOWN,
-        )
+        fun fromAttached(device: UsbAttachedDevice): DacInfo =
+            fromDescriptor(
+                device,
+                LibusbUacNative.deviceInfo(device.vendorId, device.productId, device.bus, device.address),
+            )
+
+        /**
+         * [device] with `nativeDeviceInfo`'s seven fields (manufacturer,
+         * product, serial, bcdUSB "x.yz", class, subclass, protocol) laid
+         * over it. Blank strings become null, an unparseable number
+         * [UNKNOWN]; null or short [fields] -- no such device, no library --
+         * leave the enumeration's identity alone.
+         */
+        fun fromDescriptor(device: UsbAttachedDevice, fields: Array<String>?): DacInfo {
+            val f = fields?.takeIf { it.size >= LibusbUacNative.DEVICE_INFO_FIELDS }
+            fun text(i: Int): String? = f?.get(i)?.trim()?.takeIf { it.isNotEmpty() }
+            fun number(i: Int): Int = f?.get(i)?.trim()?.toIntOrNull() ?: UNKNOWN
+            return DacInfo(
+                manufacturer = text(0),
+                product = text(1),
+                serialNumber = text(2),
+                vendorId = device.vendorId,
+                productId = device.productId,
+                deviceId = device.deviceId,
+                usbVersion = text(3),
+                deviceClass = number(4),
+                deviceSubClass = number(5),
+                deviceProtocol = number(6),
+            )
+        }
     }
 }

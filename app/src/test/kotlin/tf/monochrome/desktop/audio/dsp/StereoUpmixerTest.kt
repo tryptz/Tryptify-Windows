@@ -176,7 +176,7 @@ class StereoUpmixerTest {
         val out = p.configure(AudioFormat(rate, 2, C.ENCODING_PCM_16BIT))
         assertEquals(16, out.channelCount)
         assertEquals(C.ENCODING_PCM_16BIT, out.encoding)
-        assertTrue(p.isActive)
+        assertTrue(p.isActive())
         assertTrue(AudioProcessor.EMPTY_BUFFER === p.getOutput())
     }
 

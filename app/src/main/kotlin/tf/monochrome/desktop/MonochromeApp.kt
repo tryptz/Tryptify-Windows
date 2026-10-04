@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.usb.UsbExclusiveController
 import tf.monochrome.desktop.data.auth.SupabaseAuthManager
 import tf.monochrome.desktop.data.device.DeviceRegistry
 import tf.monochrome.desktop.data.local.coil.AudioFileCoverFetcher
@@ -90,6 +91,7 @@ class AppLifecycle @Inject constructor(
     private val engineController: EngineController,
     private val audioOutput: AudioOutputController,
     private val scanRunner: ScanRunner,
+    private val usbExclusiveController: UsbExclusiveController,
     // Providers: these are only warmed on a background coroutine, so building
     // them here would move their cost onto the startup path the warm-up clears.
     private val genreGraph: Provider<GenreGraphRepository>,
@@ -131,6 +133,9 @@ class AppLifecycle @Inject constructor(
         engineController.start()
         // The persisted output device and mode (WASAPI shared or exclusive).
         audioOutput.start()
+        // The Exclusive USB DAC toggle: claims a WinUSB-bound DAC and routes
+        // the engine to it while on; without this the toggle does nothing.
+        usbExclusiveController.start()
         appScope.launch {
             runCatching { preferencesProvider.get().retireRemovedKeys() }
         }

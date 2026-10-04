@@ -45,7 +45,7 @@ class AutoEqResponseTest {
             phaseIdx += chunk
             buf.flip()
             proc.queueInput(buf)
-            val o = proc.output
+            val o = proc.getOutput()
             while (o.remaining() >= 8 && written < frames) {
                 out[written++] = o.getFloat()
                 o.getFloat()  // skip R
@@ -146,7 +146,7 @@ class AutoEqResponseTest {
         }
         buf.flip()
         proc.queueInput(buf)
-        val o = proc.output
+        val o = proc.getOutput()
         var i = 0
         while (o.remaining() >= 8) {
             val l = o.getFloat(); o.getFloat()

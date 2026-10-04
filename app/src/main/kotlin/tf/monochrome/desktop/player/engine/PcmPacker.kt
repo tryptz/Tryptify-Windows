@@ -35,15 +35,15 @@ class PcmPacker(private val input: AudioFormat, private val output: AudioFormat)
         when (output.encoding) {
             C.ENCODING_PCM_16BIT -> for (i in 0 until samples) {
                 val v = readSample(s) * gain
-                scratch.putShort((v * 32767f).coerceIn(-32768f, 32767f).let { Math.round(it) }.toShort())
+                scratch.putShort(toInt(v, 32768f).toShort())
             }
             C.ENCODING_PCM_24BIT -> for (i in 0 until samples) {
-                val v = (readSample(s) * gain * 8388607f).coerceIn(-8388608f, 8388607f).let { Math.round(it) }
+                val v = toInt(readSample(s) * gain, 8388608f)
                 scratch.put((v and 0xFF).toByte()).put(((v shr 8) and 0xFF).toByte()).put(((v shr 16) and 0xFF).toByte())
             }
             C.ENCODING_PCM_32BIT -> for (i in 0 until samples) {
                 // 24 valid bits left-justified in a 32-bit container, the common DAC subslot.
-                val v = (readSample(s) * gain * 8388607f).coerceIn(-8388608f, 8388607f).let { Math.round(it) }
+                val v = toInt(readSample(s) * gain, 8388608f)
                 scratch.putInt(v shl 8)
             }
             C.ENCODING_PCM_FLOAT -> for (i in 0 until samples) scratch.putFloat(readSample(s) * gain)
@@ -52,6 +52,15 @@ class PcmPacker(private val input: AudioFormat, private val output: AudioFormat)
         scratch.flip()
         return scratch
     }
+
+    /**
+     * Float to an n-bit integer with full scale 2^(n-1), the decoder's own
+     * mapping (it produces x / 2^(n-1)), so a 16- or 24-bit source survives the
+     * float round trip bit-exact; scaling by 2^(n-1) - 1 moved every sample at
+     * or above half scale by one LSB. +1.0 clamps to the largest code.
+     */
+    private fun toInt(v: Float, fullScale: Float): Int =
+        Math.round(v * fullScale).coerceIn(-fullScale.toInt(), fullScale.toInt() - 1)
 
     private fun readSample(s: ByteBuffer): Float =
         if (inFloat) s.getFloat() else s.getShort() / 32768f

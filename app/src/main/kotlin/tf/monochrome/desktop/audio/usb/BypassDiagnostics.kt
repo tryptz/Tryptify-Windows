@@ -138,15 +138,17 @@ data class ClockRateRange(
 enum class StartError(val code: Int) {
     Ok(0),
 
-    /** start() called before open() — driver bug or torn-down state. */
+    /** start() called before open() — the DAC went away, or the driver was
+     *  closed under a stream (toggle off, unplug). */
     NoDevice(1),
 
     /** Descriptor walk found no AS alt with the requested rate/bits/channels. */
     NoMatchingAlt(2),
 
-    /** libusb_claim_interface failed — usually the kernel UAC driver
-     *  still owns the streaming interface. Fix: Developer Options →
-     *  Disable USB audio routing → ON. */
+    /** libusb_claim_interface failed — the operating system's USB audio
+     *  driver still owns the streaming interface. On Windows that is
+     *  usbaudio2.sys until the interface is bound to WinUSB (Zadig); on
+     *  Linux, the /dev/bus/usb permissions. */
     ClaimInterfaceFailed(3),
 
     /** libusb_set_interface_alt_setting failed — rare, suggests the
@@ -161,9 +163,9 @@ enum class StartError(val code: Int) {
     /** libusb_alloc_transfer returned null — OOM or libusb internal failure. */
     IsoPumpAllocFailed(6),
 
-    /** Initial libusb_submit_transfer failed — broken endpoint
-     *  configuration on the device, or the kernel reclaimed the
-     *  interface between claim and submit. */
+    /** Initial libusb_submit_transfer failed — the device went away
+     *  between claim and submit, the endpoint configuration is broken, or
+     *  (on Windows) the WinUSB in use has no isochronous support. */
     IsoPumpSubmitFailed(7);
 
     companion object {
@@ -180,37 +182,46 @@ data class StartFailure(
     val code: StartError,
     val detail: String,
 ) {
-    /** User-facing one-liner derived purely from the category. */
+    /**
+     * User-facing one-liner derived purely from the category.
+     *
+     * Desktop: reworded for Windows. Android's advice (Developer Options →
+     * Disable USB audio routing, the framework-routing toggle) has no
+     * counterpart; what stands between libusb and a DAC on Windows is the
+     * driver binding, which Zadig changes. A track the DAC refuses is not
+     * silenced here: it plays on the output picked under Audio output, so
+     * the rate messages say so.
+     */
     fun actionableMessage(): String = when (code) {
         StartError.Ok ->
             ""
         StartError.NoDevice ->
-            "DAC handle isn't open yet — re-toggle Exclusive USB DAC " +
-            "after the DAC is plugged in."
+            "The DAC isn't open — it was unplugged, or exclusive mode was " +
+            "switched off. Plug it in and turn Exclusive USB DAC back on."
         StartError.NoMatchingAlt ->
-            "Your DAC doesn't advertise this track's sample rate at " +
-            "this bit depth. Try a track at a rate the DAC supports " +
-            "(see the supported-rates list below), or fall back to " +
-            "the framework router which will resample."
+            "Your DAC doesn't offer this track's sample rate at any bit " +
+            "depth it supports, so the track is playing on your selected " +
+            "audio output instead. The supported rates are listed below."
         StartError.ClaimInterfaceFailed ->
-            "Android's audio HAL still owns the streaming interface. " +
-            "Turn ON Developer Options → Disable USB audio routing, " +
-            "then re-toggle Exclusive USB DAC. If the framework " +
-            "routing toggle (above) is on, turn that off too — they " +
-            "fight each other for the DAC."
+            "Windows' USB audio driver still owns the DAC. Bind the DAC's " +
+            "audio interfaces (AudioControl and AudioStreaming) to WinUSB " +
+            "with Zadig, then turn Exclusive USB DAC off and on. The DAC " +
+            "then disappears from Windows' sound devices until you put " +
+            "its driver back in Device Manager."
         StartError.SetAltFailed ->
             "USB negotiation failed mid-handshake. Unplug and re-plug " +
-            "the DAC, then re-toggle Exclusive USB DAC."
+            "the DAC, then turn Exclusive USB DAC off and on."
         StartError.SetSampleRateFailed ->
-            "Your DAC's clock won't accept this rate. It probably runs " +
-            "at a fixed hardware clock. Try a track at the DAC's " +
-            "native rate (see supported rates below)."
+            "Your DAC's clock won't accept this rate (it may run at a " +
+            "fixed clock), so the track is playing on your selected audio " +
+            "output instead. The supported rates are listed below."
         StartError.IsoPumpAllocFailed ->
-            "Couldn't allocate USB transfers (memory pressure?). Close " +
-            "background apps and try again."
+            "Couldn't allocate USB transfers. Close other audio software " +
+            "and try again."
         StartError.IsoPumpSubmitFailed ->
-            "USB transfer submission failed — the device may have " +
-            "been unplugged or the kernel reclaimed the interface. " +
-            "Re-plug the DAC and re-toggle."
+            "The DAC didn't accept the audio stream — it may have been " +
+            "unplugged, or the WinUSB driver bound to it can't stream " +
+            "audio (it needs Windows 8.1 or later). Re-plug the DAC and " +
+            "turn Exclusive USB DAC off and on."
     }
 }

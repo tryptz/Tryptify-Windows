@@ -1,0 +1,2 @@
+- `widget/` (home-screen Now Playing widget) and `auto/` (Android Auto media browser service): home-screen widgets and Android Auto have no Windows counterpart; Windows media controls are `platform/windows/MediaTransportControls`.
+- `ui/onboarding/steps/PermissionsStep.kt`: the media-permission gate. A desktop app holds no runtime permissions, so onboarding skips the step and goes from Welcome straight to Folders.

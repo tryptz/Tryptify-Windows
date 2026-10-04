@@ -9,6 +9,7 @@ import dagger.Module
 import dagger.Provides
 import javax.inject.Singleton
 import tf.monochrome.desktop.audio.atmos.AtmosAudioProcessor
+import tf.monochrome.desktop.audio.atmos.AtmosFrameBuffer
 import tf.monochrome.desktop.audio.dsp.ChannelDetectorProcessor
 import tf.monochrome.desktop.audio.dsp.DownmixProcessor
 import tf.monochrome.desktop.audio.dsp.MixBusProcessor
@@ -84,8 +85,11 @@ object PlaybackModule {
         qobuzCache: QobuzStreamCacheManager,
         deezerCache: DeezerStreamCacheManager,
         paths: AppPaths,
+        atmosFrames: AtmosFrameBuffer,
     ): PlaybackEngine {
-        val engine = PlaybackEngine(processors.list, sinkFactory = { selection.createSink() })
+        // The frame buffer is the one AtmosAudioProcessor reads: the engine's
+        // E-AC-3 tap fills it, as AtmosTapMediaSourceFactory did on Android.
+        val engine = PlaybackEngine(processors.list, sinkFactory = { selection.createSink() }, atmosFrames = atmosFrames)
         engine.sourceOpener = streamOpener(engine, qobuzCache, deezerCache, paths)
         return engine
     }
@@ -111,16 +115,16 @@ object PlaybackModule {
             SchemeRoutingDataSource(FileDataSource(), qobuz.createDataSource(), deezer.createDataSource())
         }
         val direct = engine.sourceOpener
-        return PlaybackEngine.SourceOpener { item ->
+        return PlaybackEngine.SourceOpener { item, floatOutput ->
             val uri = item.localConfiguration?.uri ?: throw IllegalArgumentException("MediaItem without a uri: $item")
             when (uri.scheme?.lowercase()) {
-                "qobuz", "deezer" -> FfmpegDecoder.open(routed.createDataSource(), uri)
+                "qobuz", "deezer" -> FfmpegDecoder.open(routed.createDataSource(), uri, floatOutput)
                 "data" -> {
                     val manifest = inlineDashManifest(uri.toString())
-                    if (manifest != null) FfmpegDecoder.openDash(manifest, paths.cacheDir.resolve("dash"), engine.userAgent)
-                    else direct.open(item)
+                    if (manifest != null) FfmpegDecoder.openDash(manifest, paths.cacheDir.resolve("dash"), engine.userAgent, floatOutput)
+                    else direct.open(item, floatOutput)
                 }
-                else -> direct.open(item)
+                else -> direct.open(item, floatOutput)
             }
         }
     }

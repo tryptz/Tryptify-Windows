@@ -39,7 +39,7 @@ class LoudnessReadingTest {
 
     @Test
     fun `the Kotlin floor matches the native one`() {
-        val header = java.io.File("src/main/cpp/dsp/meter/loudness_meter.h").readText()
+        val header = java.io.File("../native/dsp/meter/loudness_meter.h").readText()
         val floor = Regex("""kFloorLufs\s*=\s*(-?[\d.]+)f""").find(header)!!.groupValues[1].toFloat()
         val noneValue = Regex("""kNone\s*=\s*(-?[\d.]+)f""").find(header)!!.groupValues[1].toFloat()
         assertEquals(floor, LoudnessReading.SILENCE)

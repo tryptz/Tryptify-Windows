@@ -7,6 +7,7 @@
 #include <libusb.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #define TAG "LibusbUacDriver"
@@ -903,7 +904,7 @@ bool LibusbUacDriver::start(int sampleRateHz, int bitsPerSample, int channels) {
     }
     if (!device_) {
         err(StartError::NoDevice, "start() called before open() — "
-            "no UsbDeviceConnection wrapped yet");
+            "no USB device is open");
         return false;
     }
     if (streaming_.load(std::memory_order_acquire)) {
@@ -939,19 +940,23 @@ bool LibusbUacDriver::start(int sampleRateHz, int bitsPerSample, int channels) {
         int rc = libusb_claim_interface(device_, fmt.interfaceNumber);
         if (rc != LIBUSB_SUCCESS) {
             const char* libErr = libusb_strerror(rc);
-            LOGE("claim_interface(%u) -> %d (%s) — Developer Options "
-                 "'Disable USB audio routing' must be ON, AND the "
-                 "older 'USB DAC bit-perfect routing' toggle must be "
-                 "OFF (it grabs the device via the framework and "
-                 "fights us for the claim)",
+            // Desktop: the operating system's audio driver, not Android's
+            // HAL, is what holds the interface. On Windows that is
+            // usbaudio2.sys until the interface is bound to WinUSB; on
+            // Linux it is a /dev/bus/usb permission (snd-usb-audio itself
+            // is detached automatically on claim).
+            LOGE("claim_interface(%u) -> %d (%s) — on Windows the "
+                 "interface must be bound to WinUSB (Zadig), not the "
+                 "Windows USB audio driver; on Linux check the udev "
+                 "permissions on /dev/bus/usb",
                  fmt.interfaceNumber, rc, libErr);
             err(StartError::ClaimInterfaceFailed,
                 std::string("libusb_claim_interface(") +
                 std::to_string(fmt.interfaceNumber) + ") -> " +
-                libErr + ". Most likely Android's audio HAL still " +
-                "owns the streaming interface — turn ON Developer " +
-                "Options → Disable USB audio routing, and ensure " +
-                "the framework-routing toggle (above) is OFF.");
+                libErr + ". The streaming interface still belongs to " +
+                "the system's USB audio driver: on Windows, bind the " +
+                "DAC's audio interfaces to WinUSB with Zadig; on " +
+                "Linux, allow access to /dev/bus/usb.");
             return false;
         }
         interfaceClaimed_ = true;
@@ -1031,6 +1036,8 @@ bool LibusbUacDriver::start(int sampleRateHz, int bitsPerSample, int channels) {
     // Reset the ring before priming the pump.
     ringHead_.store(0, std::memory_order_relaxed);
     ringTail_.store(0, std::memory_order_relaxed);
+    discardTo_.store(0, std::memory_order_relaxed);
+    paused_.store(false, std::memory_order_relaxed);
     writtenFrames_.store(0, std::memory_order_relaxed);
     playedFrames_.store(0, std::memory_order_relaxed);
     stopRequested_.store(false, std::memory_order_relaxed);
@@ -1052,16 +1059,14 @@ bool LibusbUacDriver::start(int sampleRateHz, int bitsPerSample, int channels) {
 }
 
 void LibusbUacDriver::flushRing() {
-    // Lockless reset of the SPSC ring. Producer + consumer both
-    // observe head==tail meaning empty on the very next access.
-    // Ordering: store tail first, then head — between the two
-    // moments, drainRing sees fewer bytes than actually present
-    // (worst case: it pads with silence, which is what we want
-    // anyway). Other order (head, then tail) could briefly let
-    // drainRing think there are huge ring contents that are
-    // actually stale.
-    ringTail_.store(0, std::memory_order_release);
-    ringHead_.store(0, std::memory_order_release);
+    // Lockless discard of everything written so far. Only the producer
+    // calls this (it is the producer's own data being dropped), so the
+    // head it reads is final; the consumer adopts it as its tail on its
+    // next packet (drainRing), and writePcm counts the discarded bytes as
+    // free straight away (effectiveTail). Desktop: this replaced zeroing
+    // both cursors, which raced the consumer's tail store — see discardTo_.
+    discardTo_.store(ringHead_.load(std::memory_order_relaxed),
+                     std::memory_order_release);
     // Position counters reset too — flushRing is called between
     // tracks (Media3 flush()), and stale frame counts would let
     // getCurrentPositionUs report frames from the previous track.
@@ -1077,6 +1082,7 @@ bool LibusbUacDriver::isStreamingFormat(int sampleRate, int bitsPerSample, int c
 }
 
 void LibusbUacDriver::stop() {
+    paused_.store(false, std::memory_order_release);
     bool was = streaming_.exchange(false, std::memory_order_acq_rel);
     if (!was && transfers_.empty() && !interfaceClaimed_ && !controlInterfaceClaimed_) return;
 
@@ -1401,10 +1407,10 @@ void LibusbUacDriver::onIso(libusb_transfer* xfr) {
     if ((++isoCallbacks_ % kIsoLogEvery) == 0) {
         uint64_t head = ringHead_.load(std::memory_order_acquire);
         uint64_t tail = ringTail_.load(std::memory_order_acquire);
-        LOGI("iso heartbeat: cb=%u played=%ld written=%ld ring=%llu inflight=%d",
+        LOGI("iso heartbeat: cb=%u played=%lld written=%lld ring=%llu inflight=%d",
              isoCallbacks_,
-             playedFrames_.load(std::memory_order_relaxed),
-             writtenFrames_.load(std::memory_order_relaxed),
+             static_cast<long long>(playedFrames_.load(std::memory_order_relaxed)),
+             static_cast<long long>(writtenFrames_.load(std::memory_order_relaxed)),
              static_cast<unsigned long long>(head - tail),
              inflight_.load(std::memory_order_relaxed));
     }
@@ -1421,6 +1427,23 @@ void LibusbUacDriver::onIso(libusb_transfer* xfr) {
 int LibusbUacDriver::drainRing(uint8_t* dst, int bytes) {
     uint64_t head = ringHead_.load(std::memory_order_acquire);
     uint64_t tail = ringTail_.load(std::memory_order_relaxed);
+    // A flush the producer asked for since the last packet: skip what it
+    // discarded. discardTo_ is a head the producer has already published,
+    // so it never passes `head`.
+    const uint64_t discard = discardTo_.load(std::memory_order_acquire);
+    if (discard > tail) {
+        tail = discard;
+        ringTail_.store(tail, std::memory_order_release);
+    }
+    if (paused_.load(std::memory_order_acquire)) {
+        // Desktop pause: the packet ships, silent, and the queue stays put.
+        std::memset(dst, 0, bytes);
+        int stride = format_.channels * format_.bytesPerSample;
+        if (stride > 0) {
+            playedFrames_.fetch_add(bytes / stride, std::memory_order_acq_rel);
+        }
+        return 0;
+    }
     uint64_t available = head - tail;
     int n = static_cast<int>(std::min<uint64_t>(available, static_cast<uint64_t>(bytes)));
     if (n > 0) {
@@ -1451,7 +1474,7 @@ int LibusbUacDriver::writePcm(const uint8_t* data, int frames) {
     if (frames <= 0 || format_.channels == 0) return 0;
     int bytes = frames * format_.channels * format_.bytesPerSample;
     uint64_t head = ringHead_.load(std::memory_order_relaxed);
-    uint64_t tail = ringTail_.load(std::memory_order_acquire);
+    uint64_t tail = effectiveTail();
     uint64_t free = ringBytes_ - (head - tail);
     int writable = static_cast<int>(std::min<uint64_t>(free, static_cast<uint64_t>(bytes)));
     // Round down to whole frames to avoid splitting a frame across
@@ -1473,12 +1496,169 @@ int LibusbUacDriver::writePcm(const uint8_t* data, int frames) {
 }
 
 int LibusbUacDriver::writableFrames() const {
-    if (format_.channels == 0) return 0;
-    uint64_t head = ringHead_.load(std::memory_order_relaxed);
-    uint64_t tail = ringTail_.load(std::memory_order_acquire);
-    uint64_t free = ringBytes_ - (head - tail);
     int frameStride = format_.channels * format_.bytesPerSample;
+    if (frameStride <= 0) return 0;
+    uint64_t head = ringHead_.load(std::memory_order_relaxed);
+    uint64_t tail = effectiveTail();
+    uint64_t free = ringBytes_ - (head - tail);
     return static_cast<int>(free / frameStride);
+}
+
+int64_t LibusbUacDriver::dispatchedAudioFrames() const {
+    int frameStride = format_.channels * format_.bytesPerSample;
+    if (frameStride <= 0) return 0;
+    // Read the discard mark first: a flush landing between the two loads
+    // then shows as "nothing dispatched yet", never as a negative count.
+    const uint64_t discard = discardTo_.load(std::memory_order_acquire);
+    const uint64_t tail = ringTail_.load(std::memory_order_acquire);
+    if (tail <= discard) return 0;
+    return static_cast<int64_t>((tail - discard) / frameStride);
+}
+
+int64_t LibusbUacDriver::queuedAudioFrames() const {
+    int frameStride = format_.channels * format_.bytesPerSample;
+    if (frameStride <= 0) return 0;
+    const uint64_t tail = effectiveTail();
+    const uint64_t head = ringHead_.load(std::memory_order_acquire);
+    if (head <= tail) return 0;
+    return static_cast<int64_t>((head - tail) / frameStride);
+}
+
+int LibusbUacDriver::inFlightFrames() const {
+    if (!streaming_.load(std::memory_order_acquire)) return 0;
+    if (microframesPerSec_ <= 0 || format_.sampleRateHz <= 0) return 0;
+    // Every data transfer is resubmitted as it completes, so kNumTransfers
+    // of them are always queued at the host controller ahead of the one
+    // being refilled from the ring.
+    const int64_t packets = static_cast<int64_t>(kNumTransfers) * kPacketsPerTransfer;
+    return static_cast<int>(packets * format_.sampleRateHz / microframesPerSec_);
+}
+
+namespace {
+
+// "2.00" from 0x0200, "1.10" from 0x0110: bcdUSB is binary-coded decimal,
+// JJ.M.N with the major version in the high byte. The same form Android's
+// UsbDevice.getVersion() gave the Settings card.
+std::string bcdVersion(uint16_t bcd) {
+    const int major = ((bcd >> 12) & 0x0F) * 10 + ((bcd >> 8) & 0x0F);
+    const int minor = (bcd >> 4) & 0x0F;
+    const int sub = bcd & 0x0F;
+    char out[16];
+    std::snprintf(out, sizeof(out), "%d.%d%d", major, minor, sub);
+    return out;
+}
+
+std::string stringDescriptor(libusb_device_handle* handle, uint8_t index) {
+    if (handle == nullptr || index == 0) return std::string();
+    unsigned char buf[256];
+    const int n = libusb_get_string_descriptor_ascii(handle, index, buf, sizeof(buf));
+    if (n <= 0) return std::string();
+    return std::string(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+}
+
+const char* audioSubclassName(uint8_t subclass) {
+    return subclass == SUBCLASS_AUDIOCONTROL ? "AudioControl" : "AudioStreaming";
+}
+
+// An AudioStreaming interface that plays (an isochronous OUT endpoint on some
+// alternate setting), as opposed to the microphone side of a headset DAC.
+bool isPlaybackStreaming(const libusb_interface& iface) {
+    for (int a = 0; a < iface.num_altsetting; ++a) {
+        const libusb_interface_descriptor& alt = iface.altsetting[a];
+        for (uint8_t e = 0; e < alt.bNumEndpoints; ++e) {
+            const libusb_endpoint_descriptor& ep = alt.endpoint[e];
+            const bool out = (ep.bEndpointAddress & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT;
+            const bool iso = (ep.bmAttributes & LIBUSB_TRANSFER_TYPE_MASK) == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS;
+            if (out && iso) return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<std::string> LibusbUacDriver::deviceInfo(uint16_t vendorId, uint16_t productId,
+                                                     int busNumber, int deviceAddress) {
+    std::vector<std::string> out;
+    if (!ensureContext()) return out;
+    std::lock_guard<std::mutex> lock(mutex_);
+    libusb_device** list = nullptr;
+    const ssize_t count = libusb_get_device_list(ctx_, &list);
+    if (count < 0 || list == nullptr) return out;
+    libusb_device* match = nullptr;
+    libusb_device_descriptor desc{};
+    for (ssize_t i = 0; i < count; ++i) {
+        libusb_device_descriptor d{};
+        if (libusb_get_device_descriptor(list[i], &d) != LIBUSB_SUCCESS) continue;
+        if (d.idVendor != vendorId || d.idProduct != productId) continue;
+        if (busNumber >= 0 && libusb_get_bus_number(list[i]) != busNumber) continue;
+        if (deviceAddress >= 0 && libusb_get_device_address(list[i]) != deviceAddress) continue;
+        match = list[i];
+        desc = d;
+        break;
+    }
+    if (match != nullptr) {
+        // Our own handle when we hold this device: a second open of a
+        // WinUSB device from the same process is refused on Windows.
+        libusb_device_handle* handle = nullptr;
+        bool opened = false;
+        if (device_ != nullptr && libusb_get_device(device_) == match) {
+            handle = device_;
+        } else if (libusb_open(match, &handle) == LIBUSB_SUCCESS) {
+            opened = true;
+        } else {
+            handle = nullptr;
+        }
+        out.push_back(stringDescriptor(handle, desc.iManufacturer));
+        out.push_back(stringDescriptor(handle, desc.iProduct));
+        out.push_back(stringDescriptor(handle, desc.iSerialNumber));
+        out.push_back(bcdVersion(desc.bcdUSB));
+        out.push_back(std::to_string(desc.bDeviceClass));
+        out.push_back(std::to_string(desc.bDeviceSubClass));
+        out.push_back(std::to_string(desc.bDeviceProtocol));
+        if (opened) libusb_close(handle);
+    }
+    libusb_free_device_list(list, 1);
+    return out;
+}
+
+std::string LibusbUacDriver::probeClaim() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (device_ == nullptr) return "no USB device is open";
+    // A running stream already holds them, which answers the question.
+    if (interfaceClaimed_) return std::string();
+    libusb_config_descriptor* config = nullptr;
+    int rc = libusb_get_active_config_descriptor(libusb_get_device(device_), &config);
+    if (rc != LIBUSB_SUCCESS) {
+        rc = libusb_get_config_descriptor(libusb_get_device(device_), 0, &config);
+    }
+    if (rc != LIBUSB_SUCCESS || config == nullptr) {
+        return std::string("could not read the configuration descriptor: ") + libusb_strerror(rc);
+    }
+    std::string failures;
+    for (uint8_t i = 0; i < config->bNumInterfaces; ++i) {
+        const libusb_interface& iface = config->interface[i];
+        if (iface.num_altsetting <= 0) continue;
+        const libusb_interface_descriptor& alt = iface.altsetting[0];
+        if (alt.bInterfaceClass != USB_CLASS_AUDIO) continue;
+        // AudioControl (the clock requests go to it) and the streaming
+        // interfaces that play; a capture interface left on another driver
+        // does not stand in the way of playback.
+        const bool control = alt.bInterfaceSubClass == SUBCLASS_AUDIOCONTROL;
+        const bool playback = alt.bInterfaceSubClass == SUBCLASS_AUDIOSTREAM && isPlaybackStreaming(iface);
+        if (!control && !playback) continue;
+        rc = libusb_claim_interface(device_, alt.bInterfaceNumber);
+        if (rc == LIBUSB_SUCCESS) {
+            libusb_release_interface(device_, alt.bInterfaceNumber);
+            continue;
+        }
+        if (!failures.empty()) failures += "; ";
+        failures += "interface " + std::to_string(alt.bInterfaceNumber) + " (" +
+                    audioSubclassName(alt.bInterfaceSubClass) + "): " + libusb_strerror(rc);
+    }
+    libusb_free_config_descriptor(config);
+    if (!failures.empty()) LOGW("claim probe: %s", failures.c_str());
+    return failures;
 }
 
 } // namespace monotrypt::usb

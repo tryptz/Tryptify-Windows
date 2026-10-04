@@ -5,6 +5,7 @@ import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -28,13 +29,19 @@ class StretchAudioProcessorTest {
 
     @Test
     fun `is inactive without the native library`() {
+        // Behaviour without the native engine. Android's JVM tests never had
+        // it; the desktop test JVM loads the real library, so skip there.
+        assumeFalse(StretchNative.isAvailable)
         val p = configured()
         p.setSemitones(7f)
-        assertFalse("must not claim to be active when it cannot process", p.isActive)
+        assertFalse("must not claim to be active when it cannot process", p.isActive())
     }
 
     @Test
     fun `reports no latency when not engaged`() {
+        // Behaviour without the native engine. Android's JVM tests never had
+        // it; the desktop test JVM loads the real library, so skip there.
+        assumeFalse(StretchNative.isAvailable)
         val p = configured()
         assertEquals(0, p.latencyFrames())
         p.setSemitones(7f)
@@ -56,9 +63,9 @@ class StretchAudioProcessorTest {
         // agree, so no future edit reintroduces a pitch-dependent gate.
         val p = configured()
         p.setSemitones(0f)
-        val atZero = p.isActive
+        val atZero = p.isActive()
         p.setSemitones(7f)
-        assertEquals("isActive must not change with the pitch", atZero, p.isActive)
+        assertEquals("isActive must not change with the pitch", atZero, p.isActive())
     }
 
     @Test
@@ -86,7 +93,7 @@ class StretchAudioProcessorTest {
         repeat(1024) { buf.putFloat(0.25f); buf.putFloat(0.25f) }
         buf.flip()
         p.queueInput(buf)
-        assertEquals(1024 * 8, p.output.remaining())
+        assertEquals(1024 * 8, p.getOutput().remaining())
     }
 
     @Test
@@ -108,7 +115,7 @@ class StretchAudioProcessorTest {
         input.flip()
 
         p.queueInput(input)
-        val out = p.output
+        val out = p.getOutput()
         val got = FloatArray(out.remaining() / 4) { out.getFloat(it * 4) }
 
         assertEquals("every frame must come back", source.size, got.size)

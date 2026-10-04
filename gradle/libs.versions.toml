@@ -104,6 +104,12 @@ jaudiotagger = { group = "net.jthink", name = "jaudiotagger", version.ref = "jau
 javacpp = { group = "org.bytedeco", name = "javacpp", version.ref = "javacpp" }
 ffmpeg = { group = "org.bytedeco", name = "ffmpeg", version.ref = "ffmpeg" }
 
+# The projectM visualizer's offscreen OpenGL 3.3 core context: a hidden GLFW
+# window and the GL calls for the composite pass and the pixel readback.
+lwjgl = { group = "org.lwjgl", name = "lwjgl", version.ref = "lwjgl" }
+lwjgl-glfw = { group = "org.lwjgl", name = "lwjgl-glfw", version.ref = "lwjgl" }
+lwjgl-opengl = { group = "org.lwjgl", name = "lwjgl-opengl", version.ref = "lwjgl" }
+
 # Album-art palette (pure Kotlin port of androidx.palette) and Windows DPAPI for secrets
 kmpalette-androidx-palette = { group = "com.materialkolor.palette", name = "androidx-palette", version.ref = "kmpalette" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }

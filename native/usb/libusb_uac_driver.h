@@ -136,6 +136,9 @@ public:
     // libusb_claim_interface, meaning the kernel UAC driver still
     // owns the interface and the user needs to enable Developer
     // Options → "Disable USB audio routing").
+    // Desktop: on Windows the claim fails with LIBUSB_ERROR_NOT_SUPPORTED /
+    // NOT_FOUND / ACCESS while the interface is bound to usbaudio2.sys rather
+    // than WinUSB; on Linux it fails on /dev/bus/usb permissions.
     bool start(int sampleRateHz, int bitsPerSample, int channels);
 
     // Cancels in-flight transfers, waits for the event thread to
@@ -155,6 +158,8 @@ public:
     // playback dies until the user re-plugs the DAC. The pump keeps
     // running, sending silence iso packets, until the next handleBuffer
     // resumes feeding the ring.
+    // Desktop: the discard is handed to the consumer (see discardTo_), so a
+    // flush racing an iso completion can no longer corrupt the cursors.
     void flushRing();
 
     // Returns true when the iso pump is already streaming a stream
@@ -174,6 +179,50 @@ public:
     // How many frames can be written right now without blocking.
     int writableFrames() const;
 
+    // Desktop: holds the stream without dropping it. While paused the iso
+    // pump keeps running (a USB audio stream that stops being fed is torn
+    // down by some DACs, and restarting it costs a re-negotiation), but every
+    // packet carries silence and nothing is taken from the ring, so what was
+    // queued plays on resume exactly where it stopped. Android flushed the
+    // ring on pause instead, because Media3 re-presented the audio; the
+    // desktop engine does not, and dropping it put the position up to a ring
+    // behind the music. Cleared by start() and stop().
+    void setPaused(bool paused) { paused_.store(paused, std::memory_order_release); }
+    bool isPaused() const { return paused_.load(std::memory_order_acquire); }
+
+    // Desktop: frames of *written* audio the pump has taken from the ring
+    // since start() or the last flushRing(), and frames still queued in it.
+    // Unlike playedFrames()/writtenFrames(), silence the pump pads with on an
+    // underrun or while paused is not counted, so dispatched + queued is
+    // exactly what was written since the flush: the position cannot run
+    // ahead of the music and a drain cannot end with audio still queued.
+    int64_t dispatchedAudioFrames() const;
+    int64_t queuedAudioFrames() const;
+
+    // Desktop: frames in the iso transfers kept in flight, i.e. how far the
+    // DAC's output trails a frame leaving the ring. 0 when not streaming.
+    int inFlightFrames() const;
+
+    // Desktop: the device descriptor of the device matching the ids (bus and
+    // address may be -1 for any), for the Settings card: manufacturer,
+    // product and serial string descriptors, bcdUSB as "x.yz", and the
+    // class/subclass/protocol triple as decimal strings -- seven entries.
+    // Strings need the device open; the one this driver holds is read
+    // through its own handle, any other is opened briefly, and a string that
+    // cannot be read (on Windows: a device still on usbaudio2.sys) is "".
+    // Empty when no attached device matches.
+    std::vector<std::string> deviceInfo(uint16_t vendorId, uint16_t productId,
+                                        int busNumber, int deviceAddress);
+
+    // Desktop: whether the audio interfaces of the open device can be
+    // claimed, tried (and released again) without starting a stream. Empty
+    // when the AudioControl interface and every playback AudioStreaming
+    // interface claimed, or when a running stream already holds them;
+    // otherwise one line per interface that refused. On Windows a refusal
+    // means the interface is still bound to the Windows audio driver rather
+    // than WinUSB.
+    std::string probeClaim();
+
     // Total PCM frames the iso pump has drained from the ring since
     // [start] — i.e. the frames the device has actually been told to
     // play. Used by LibusbAudioSink for getCurrentPositionUs / hasPendingData
@@ -181,12 +230,12 @@ public:
     // to think a track had finished within seconds (the renderer fills
     // the ring much faster than realtime), which manifested as 5-second
     // playbacks followed by an early skip to the next track.
-    long playedFrames() const {
+    int64_t playedFrames() const {
         return playedFrames_.load(std::memory_order_acquire);
     }
 
     // Total PCM frames the host has pushed into the ring since [start].
-    long writtenFrames() const {
+    int64_t writtenFrames() const {
         return writtenFrames_.load(std::memory_order_acquire);
     }
 
@@ -262,6 +311,22 @@ private:
     // 64-bit counters restore that for free (~190,000 years at 384k).
     std::atomic<uint64_t> ringHead_{0};  // producer cursor (writePcm)
     std::atomic<uint64_t> ringTail_{0};  // consumer cursor (onIso)
+    // Desktop: flushRing() used to zero both cursors from the producer's
+    // thread while the consumer might be between its load of the tail and
+    // its store of tail + n; the late store then left tail ahead of head and
+    // the next drain read a wrapped, enormous "available". Now the producer
+    // publishes the head it wants discarded up to, and both sides treat
+    // max(tail, discardTo_) as the tail: the consumer adopts it on its next
+    // packet, and nothing ever moves a cursor backwards. Reset by start().
+    std::atomic<uint64_t> discardTo_{0};
+    std::atomic<bool> paused_{false};
+
+    // Tail as both sides see it once a pending flush is accounted for.
+    uint64_t effectiveTail() const {
+        const uint64_t tail = ringTail_.load(std::memory_order_acquire);
+        const uint64_t discard = discardTo_.load(std::memory_order_acquire);
+        return tail > discard ? tail : discard;
+    }
 
     mutable std::mutex mutex_;          // guards open/start/stop only
     libusb_context* ctx_ = nullptr;
@@ -297,8 +362,11 @@ private:
     std::atomic<int> inflight_{0};     // active transfers (data + fb)
     // Cumulative frame counters used for honest position reporting
     // (see playedFrames() / writtenFrames()). Reset on start().
-    std::atomic<long> writtenFrames_{0};
-    std::atomic<long> playedFrames_{0};
+    // Desktop: int64_t, not long. long is 32 bits on Windows (LLP64), which
+    // wrapped these after 2^31 frames -- 12 h at 48 kHz, 93 min at 384 kHz
+    // of gapless playback, which never flushes.
+    std::atomic<int64_t> writtenFrames_{0};
+    std::atomic<int64_t> playedFrames_{0};
     std::thread eventThread_;
 
     // Per-packet frame count is computed from a 16.16 fixed-point

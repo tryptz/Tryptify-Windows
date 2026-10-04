@@ -1,3 +1,5 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
@@ -107,10 +109,67 @@ dependencies {
         implementation(variantOf(libs.ffmpeg) { classifier(platform) })
     }
 
+    // Visualizer: projectM renders into an OpenGL 3.3 core context on a hidden
+    // GLFW window, read back into a Compose ImageBitmap (visualizer/gl/).
+    implementation(libs.lwjgl)
+    implementation(libs.lwjgl.glfw)
+    implementation(libs.lwjgl.opengl)
+    for (platform in listOf("natives-windows", "natives-linux")) {
+        runtimeOnly(variantOf(libs.lwjgl) { classifier(platform) })
+        runtimeOnly(variantOf(libs.lwjgl.glfw) { classifier(platform) })
+        runtimeOnly(variantOf(libs.lwjgl.opengl) { classifier(platform) })
+    }
+
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+// Packs the ~9.8k raw .milk presets in src/main/projectm-assets/presets into a
+// single assets/projectm/presets.zip on the classpath, where the AssetManager
+// shim opens it for ProjectMAssetInstaller. The Android app's task, unchanged
+// but for where the archive lands: there an asset root, here a resources root,
+// so the archive carries the assets/ prefix itself. One archive instead of
+// ~10k loose resources is what lets the first-run install extract everything
+// in a single ZipInputStream pass; never put the presets under
+// src/main/resources, where each would be copied into the jar on its own.
+@CacheableTask
+abstract class PackProjectMPresetsTask : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val presetDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun pack() {
+        val root = presetDir.get().asFile
+        val outFile = outputDir.get().asFile.resolve("assets/projectm/presets.zip")
+        outFile.parentFile.mkdirs()
+        ZipOutputStream(outFile.outputStream().buffered()).use { zip ->
+            root.walkTopDown()
+                .filter { it.isFile }
+                // Lexicographic order keeps the archive reproducible and matches
+                // the ordering the runtime catalog generator relies on for
+                // stable preset ids.
+                .sortedBy { it.relativeTo(root).invariantSeparatorsPath }
+                .forEach { file ->
+                    val entry = ZipEntry(file.relativeTo(root).invariantSeparatorsPath)
+                    entry.time = 0L
+                    zip.putNextEntry(entry)
+                    file.inputStream().use { it.copyTo(zip, 64 * 1024) }
+                    zip.closeEntry()
+                }
+        }
+    }
+}
+
+val packProjectMPresets = tasks.register<PackProjectMPresetsTask>("packProjectMPresets") {
+    presetDir.set(layout.projectDirectory.dir("src/main/projectm-assets/presets"))
+    outputDir.set(layout.buildDirectory.dir("generated/projectm-resources"))
+}
+sourceSets["main"].resources.srcDir(packProjectMPresets.flatMap { it.outputDir })
 
 compose.resources {
     publicResClass = false

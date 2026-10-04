@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.visualizer
 
+import tf.monochrome.desktop.platform.NativeLibraries
 import android.util.Log
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -182,13 +183,10 @@ class ProjectMNativeBridge {
 
         val isLibraryLoaded: Boolean by lazy {
             runCatching {
-                // Load deps in link order: core → playlist → our JNI bridge.
-                // CMakeLists.txt pins DEBUG_POSTFIX="" on these, so one name
-                // works for both debug and release and there's no scary
-                // `dlopen failed` probe in logcat on launch.
-                System.loadLibrary("projectM-4")
-                System.loadLibrary("projectM-4-playlist")
-                System.loadLibrary("monochrome_visualizer")
+                // Desktop: projectM and its playlist library are linked
+                // statically into the bridge (native/CMakeLists.txt), so there
+                // is one library to load where Android loaded three.
+                NativeLibraries.load("monochrome_visualizer")
                 true
             }.getOrElse { error ->
                 Log.w(TAG, "Native projectM bridge unavailable", error)

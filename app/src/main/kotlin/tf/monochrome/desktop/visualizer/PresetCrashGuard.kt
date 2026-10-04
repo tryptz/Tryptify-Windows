@@ -1,11 +1,9 @@
 package tf.monochrome.desktop.visualizer
 
-import android.app.ActivityManager
-import android.app.ApplicationExitInfo
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Notices a preset that crashed this device, so it is never loaded again.
@@ -19,41 +17,58 @@ import java.io.File
  * with that preset on screen.
  *
  * Died is not the same as crashed. On Android 11 and later the exit record for
- * the dead process says why, and only a native crash or an ANR (a preset that
- * hangs the render thread) flags anything; a swipe from recents, a low-memory
- * kill or an app update does not. Older versions keep no record, so there the
- * file alone decides. That is less certain, but a clean exit there still
- * releases the surface, and with it the file, before the process goes.
+ * the dead process said why, and only a native crash or an ANR (a preset that
+ * hangs the render thread) flagged anything; a swipe from recents, a low-memory
+ * kill or an app update did not.
+ *
+ * Desktop: there is no exit record to ask (Android's
+ * `ActivityManager.getHistoricalProcessExitReasons`), so that half is dropped
+ * and the sentinel alone decides, as it did on Android 10 and older. What keeps
+ * an ordinary quit from reading as a crash is a JVM shutdown hook that clears
+ * the sentinel: the JVM runs its hooks on every orderly exit (window closed,
+ * `System.exit`, Ctrl+C, Windows log-off) and runs none when a native fault
+ * aborts it or the process is ended from Task Manager — which are the two cases
+ * Android flagged, a native crash and a hang. The hook is installed only once
+ * the previous process's sentinel has been judged, so a short session cannot
+ * erase the evidence of the crash before it.
  */
-internal class PresetCrashGuard(private val context: Context, val sentinel: File) {
+internal class PresetCrashGuard(
+    // Desktop: kept so the constructor matches Android's call site; the exit
+    // record it was used to read does not exist here.
+    @Suppress("unused") private val context: Context,
+    val sentinel: File,
+) {
+    private val exitHookInstalled = AtomicBoolean(false)
 
     /**
-     * The preset the previous process died on, if it crashed — as the absolute
-     * path the bridge wrote. Consumes the sentinel either way, so the same death
-     * is only ever judged once.
+     * The preset the previous process died on — as the absolute path the bridge
+     * wrote. Consumes the sentinel either way, so the same death is only ever
+     * judged once.
      */
     fun takeCrashedPreset(): String? {
-        if (!sentinel.exists()) return null
-        val text = runCatching { sentinel.readText() }.getOrNull()
-        sentinel.delete()
-        val record = parseSentinel(text) ?: return null
-        val reason = exitReasonOf(record.pid)
-        val crashed = isCrashExit(reason, Build.VERSION.SDK_INT)
-        Log.w(
-            TAG,
-            "Process ${record.pid} ended on ${record.presetPath} (exit reason $reason): " +
-                if (crashed) "flagging it" else "not a crash, leaving it",
-        )
-        return record.presetPath.takeIf { crashed }
+        try {
+            if (!sentinel.exists()) return null
+            val text = runCatching { sentinel.readText() }.getOrNull()
+            sentinel.delete()
+            val record = parseSentinel(text) ?: return null
+            Log.w(
+                TAG,
+                "Process ${record.pid} ended on ${record.presetPath} without an orderly exit: flagging it",
+            )
+            return record.presetPath
+        } finally {
+            clearSentinelOnOrderlyExit()
+        }
     }
 
-    /** Why process [pid] of this app ended, or null when the platform keeps no record. */
-    private fun exitReasonOf(pid: Int): Int? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        val am = context.getSystemService(ActivityManager::class.java) ?: return null
-        return runCatching {
-            am.getHistoricalProcessExitReasons(context.packageName, pid, 1).firstOrNull()?.reason
-        }.getOrNull()
+    /** From here on, an orderly JVM exit deletes whatever the bridge last wrote. */
+    private fun clearSentinelOnOrderlyExit() {
+        if (!exitHookInstalled.compareAndSet(false, true)) return
+        runCatching {
+            Runtime.getRuntime().addShutdownHook(
+                Thread({ runCatching { sentinel.delete() } }, "PresetCrashGuard-exit"),
+            )
+        }.onFailure { Log.w(TAG, "Could not install the exit hook: ${it.message}") }
     }
 
     data class SentinelRecord(val pid: Int, val presetPath: String)
@@ -67,24 +82,6 @@ internal class PresetCrashGuard(private val context: Context, val sentinel: File
             val pid = lines.getOrNull(0)?.trim()?.toIntOrNull() ?: return null
             val path = lines.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             return SentinelRecord(pid, path)
-        }
-
-        /**
-         * Whether a process that ended with exit [reason] crashed, on [sdk].
-         *
-         * A Java crash ([ApplicationExitInfo.REASON_CRASH]) is not counted: a
-         * preset runs in native code and cannot throw one, so a Java crash while
-         * the visualizer happened to be open is somebody else's bug, and blaming
-         * the preset would hide it for good.
-         */
-        fun isCrashExit(reason: Int?, sdk: Int): Boolean {
-            if (sdk < Build.VERSION_CODES.R) return true
-            // Android 11+ but no record for that pid: the record is gone (the
-            // log is bounded) or was never written. Same footing as an old
-            // platform.
-            if (reason == null) return true
-            return reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
-                reason == ApplicationExitInfo.REASON_ANR
         }
     }
 }

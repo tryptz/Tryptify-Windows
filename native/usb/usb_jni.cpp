@@ -2,6 +2,7 @@
 // JNI surface for the libusb-backed USB Audio Class driver.
 
 #include <jni.h>
+#include <string>
 #include <vector>
 #include <android/log.h>
 
@@ -151,8 +152,8 @@ Java_tf_monochrome_desktop_audio_usb_LibusbUacDriver_nativePlayedFrames(
 JNIEXPORT jlong JNICALL
 Java_tf_monochrome_desktop_audio_usb_LibusbUacDriver_nativePendingFrames(
     JNIEnv*, jobject) {
-    long w = driver().writtenFrames();
-    long p = driver().playedFrames();
+    const int64_t w = driver().writtenFrames();
+    const int64_t p = driver().playedFrames();
     return static_cast<jlong>(w > p ? w - p : 0);
 }
 
@@ -250,6 +251,76 @@ Java_tf_monochrome_desktop_audio_usb_LibusbUacDriver_nativeActiveStream(
     if (!arr) return nullptr;
     env->SetLongArrayRegion(arr, 0, 13, packed);
     return arr;
+}
+
+// --- Desktop additions ------------------------------------------------
+//
+// Bound to the Kotlin object tf.monochrome.desktop.audio.usb.LibusbUacNative
+// rather than to LibusbUacDriver, so LibusbUacDriver.kt keeps the Android
+// file's JNI surface and stays a diff away from it. Same driver() instance:
+// these act on the device LibusbUacDriver opened.
+
+// [manufacturer, product, serial, bcdUSB "x.yz", class, subclass, protocol];
+// null when no attached device matches. See LibusbUacDriver::deviceInfo.
+JNIEXPORT jobjectArray JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeDeviceInfo(
+    JNIEnv* env, jclass, jint vendorId, jint productId, jint bus, jint address) {
+    const auto fields = driver().deviceInfo(static_cast<uint16_t>(vendorId),
+                                            static_cast<uint16_t>(productId),
+                                            static_cast<int>(bus), static_cast<int>(address));
+    if (fields.empty()) return nullptr;
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass == nullptr) return nullptr;
+    jobjectArray out = env->NewObjectArray(static_cast<jsize>(fields.size()), stringClass, nullptr);
+    if (out == nullptr) return nullptr;
+    for (size_t i = 0; i < fields.size(); ++i) {
+        // Descriptor strings come through libusb_get_string_descriptor_ascii,
+        // which substitutes '?' for anything outside ASCII, so they are valid
+        // modified UTF-8 as NewStringUTF requires.
+        jstring value = env->NewStringUTF(fields[i].c_str());
+        if (value == nullptr) return nullptr;
+        env->SetObjectArrayElement(out, static_cast<jsize>(i), value);
+        env->DeleteLocalRef(value);
+    }
+    return out;
+}
+
+JNIEXPORT void JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeSetPaused(
+    JNIEnv*, jclass, jboolean paused) {
+    driver().setPaused(paused == JNI_TRUE);
+}
+
+JNIEXPORT jlong JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeDispatchedFrames(
+    JNIEnv*, jclass) {
+    return static_cast<jlong>(driver().dispatchedAudioFrames());
+}
+
+JNIEXPORT jlong JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeQueuedFrames(
+    JNIEnv*, jclass) {
+    return static_cast<jlong>(driver().queuedAudioFrames());
+}
+
+JNIEXPORT jint JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeWritableFrames(
+    JNIEnv*, jclass) {
+    return static_cast<jint>(driver().writableFrames());
+}
+
+JNIEXPORT jint JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeInFlightFrames(
+    JNIEnv*, jclass) {
+    return static_cast<jint>(driver().inFlightFrames());
+}
+
+// "" when every audio interface could be claimed; see LibusbUacDriver::probeClaim.
+JNIEXPORT jstring JNICALL
+Java_tf_monochrome_desktop_audio_usb_LibusbUacNative_nativeProbeClaim(
+    JNIEnv* env, jclass) {
+    const std::string failures = driver().probeClaim();
+    return env->NewStringUTF(failures.c_str());
 }
 
 } // extern "C"

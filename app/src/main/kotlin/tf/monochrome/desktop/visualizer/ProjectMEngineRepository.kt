@@ -122,6 +122,16 @@ class ProjectMEngineRepository @Inject constructor(
     private var targetFps: Int = 60
     @Volatile var vsyncEnabled: Boolean = true
         private set
+
+    /**
+     * The Target FPS setting, for a render loop that paces itself.
+     *
+     * Desktop: the visualizer renders offscreen and never swaps, so there is
+     * no vblank to wait on and the render thread keeps the rate itself; with
+     * vsync off it paces to this, which is what keeps the cap in [renderFrame]
+     * from ever seeing a frame too early. See visualizer/gl/ProjectMGlHost.
+     */
+    internal val targetFrameRate: Int get() = targetFps
     private var preferredPresetId: String? = null
     private var beatSensitivity: Int = 50
     private var brightness: Int = 80
@@ -221,7 +231,15 @@ class ProjectMEngineRepository @Inject constructor(
                 }
                 synchronized(engineLock) {
                     if (!enabled) {
-                        releaseNativeLocked()
+                        // Desktop: while a surface is attached the engine is
+                        // released on the render thread instead, by
+                        // onSurfaceDetached once the visualizer composables
+                        // leave, which they do as soon as the status below says
+                        // FALLBACK; renderFrame draws nothing meanwhile.
+                        // projectM's destructor deletes GL objects, and on this
+                        // thread no context is current: a no-op under Android's
+                        // EGL, undefined behaviour under Windows' WGL.
+                        if (attachedSurfaceCount == 0) releaseNativeLocked()
                         updateStatus(
                             phase = VisualizerEnginePhase.FALLBACK,
                             message = "projectM disabled in settings. Showing fallback visualizer."

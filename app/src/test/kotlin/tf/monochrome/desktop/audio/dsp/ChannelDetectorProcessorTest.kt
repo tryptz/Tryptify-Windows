@@ -48,7 +48,7 @@ class ChannelDetectorProcessorTest {
         val p = ChannelDetectorProcessor()
         val fmt = AudioFormat(96000, 16, C.ENCODING_PCM_FLOAT)
         assertEquals(fmt, p.configure(fmt))
-        assertTrue(p.isActive)
+        assertTrue(p.isActive())
     }
 
     @Test

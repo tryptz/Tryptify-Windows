@@ -38,7 +38,7 @@ class MultichannelEqTest {
 
     private fun run(p: AudioProcessor, channels: Int): Array<FloatArray> {
         p.queueInput(sine(channels))
-        val out = p.output
+        val out = p.getOutput()
         val n = out.remaining() / 4 / channels
         return Array(channels) { c -> FloatArray(n) { i -> out.getFloat((i * channels + c) * 4) } }
     }

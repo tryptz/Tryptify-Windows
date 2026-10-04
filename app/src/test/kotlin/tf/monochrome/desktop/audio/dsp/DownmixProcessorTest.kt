@@ -178,9 +178,9 @@ class DownmixProcessorTest {
     fun `stereo and mono input leave the processor inactive`() {
         val p = processor()
         assertEquals(AudioFormat.NOT_SET, p.configure(AudioFormat(48000, 2, C.ENCODING_PCM_16BIT)))
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
         assertEquals(AudioFormat.NOT_SET, p.configure(AudioFormat(48000, 1, C.ENCODING_PCM_FLOAT)))
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
     }
 
     @Test
@@ -189,17 +189,17 @@ class DownmixProcessorTest {
         // Regression for Media3's AudioProcessingPipeline checkState():
         // an inactive processor must not linger active from a prior format.
         val out1 = configureAndFlush(p, 48000, 6, C.ENCODING_PCM_FLOAT)
-        assertTrue(p.isActive)
+        assertTrue(p.isActive())
         assertEquals(2, out1.channelCount)
 
         val out2 = p.configure(AudioFormat(44100, 2, C.ENCODING_PCM_FLOAT))
         assertEquals(AudioFormat.NOT_SET, out2)
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
         p.flush()
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
 
         val out3 = configureAndFlush(p, 96000, 6, C.ENCODING_PCM_FLOAT)
-        assertTrue(p.isActive)
+        assertTrue(p.isActive())
         assertEquals(2, out3.channelCount)
         assertEquals(96000, out3.sampleRate)
         // And it still mixes correctly after the round trip.
@@ -212,7 +212,7 @@ class DownmixProcessorTest {
         val p = processor()
         configureAndFlush(p, 48000, 6, C.ENCODING_PCM_FLOAT)
         p.flush() // seek: flush() with no configure()
-        assertTrue(p.isActive)
+        assertTrue(p.isActive())
         val out = drainFloats(p, floatBuffer(soloFrame(6, 0)))
         assertEquals(1f, out[0], floatTol)
     }
@@ -221,7 +221,7 @@ class DownmixProcessorTest {
     fun `disabled processor is inactive for multichannel (passthrough mode)`() {
         val p = processor(enabled = false)
         assertEquals(AudioFormat.NOT_SET, p.configure(AudioFormat(48000, 6, C.ENCODING_PCM_16BIT)))
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
     }
 
     // ── Unsupported formats ──────────────────────────────────────────────
@@ -235,7 +235,7 @@ class DownmixProcessorTest {
     fun `9 channels (no known layout) passes through inactive`() {
         val p = processor()
         assertEquals(AudioFormat.NOT_SET, p.configure(AudioFormat(48000, 9, C.ENCODING_PCM_FLOAT)))
-        assertFalse(p.isActive)
+        assertFalse(p.isActive())
     }
 
     @Test(expected = AudioProcessor.UnhandledAudioFormatException::class)

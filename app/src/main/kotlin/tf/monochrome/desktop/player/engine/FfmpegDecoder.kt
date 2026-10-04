@@ -54,7 +54,13 @@ data class DecodedStreamInfo(
  * or float PCM and ExoPlayer drove the chain; here [decode] produces the same
  * two formats — 16-bit when the codec's native format is 16-bit integer (so a
  * CD-quality FLAC stays bit-exact), float for everything else — and the engine
- * drives the chain.
+ * drives the chain. An opener can ask for float from every codec: a crossfade
+ * sums two tracks in float, and 16-bit widens to float exactly.
+ *
+ * The conversion is a sample-format change only: the stream's own channel
+ * layout is kept on both sides, so libswresample never builds a remix matrix
+ * (a 5.1(side) E-AC-3 bed reached the chain relabelled as 5.1(back) through
+ * one) and every channel comes out as the codec decoded it.
  *
  * Input is either a URL libavformat opens itself (files, http/https with the
  * app's headers, Icecast/HLS radio, DASH) or one of the app's [DataSource]
@@ -78,7 +84,12 @@ class FfmpegDecoder private constructor(
     private val avio: AvioBridge?,
 ) : AutoCloseable {
 
-    /** Receives every compressed packet before decoding (the Atmos JOC side-data tap). */
+    /**
+     * Receives every compressed packet of the audio stream before it is
+     * decoded, with its presentation time in microseconds (C.TIME_UNSET when
+     * the container gave none): the Atmos JOC side-data tap. Called on the
+     * decoding thread; the bytes are a copy the receiver may keep.
+     */
     var packetTap: ((ptsUs: Long, bytes: ByteArray) -> Unit)? = null
 
     /** Presentation time of the first frame in the last [decode] call, microseconds, or C.TIME_UNSET. */
@@ -114,7 +125,11 @@ class FfmpegDecoder private constructor(
                 break
             }
             val n = convertFrame(dst, roomFrames - produced)
-            if (n < 0) break      // frame fully consumed but nothing fit yet; keep it pending
+            // -1: the whole frame lay before a seek target and was trimmed. Pull
+            // the next one; returning here with nothing produced would read as
+            // end of stream, and a seek that lands a few frames early (FLAC seek
+            // points, MP3 byte estimates) would end the track.
+            if (n < 0) continue
             produced += n
             if (pendingFrameAvailable) break   // dst is full, rest of the frame stays pending
         }
@@ -377,6 +392,7 @@ class FfmpegDecoder private constructor(
             userAgent: String? = null,
             formatName: String? = null,
             protocolWhitelist: String? = null,
+            floatOutput: Boolean = false,
         ): FfmpegDecoder {
             val format = avformat.avformat_alloc_context() ?: throw IOException("avformat_alloc_context failed")
             val options = AVDictionary(null as Pointer?)
@@ -395,7 +411,7 @@ class FfmpegDecoder private constructor(
             val rc = avformat.avformat_open_input(format, url, inputFormat, options)
             avutil.av_dict_free(options)
             if (rc < 0) throw IOException("cannot open ${url.take(200)}: ${errorString(rc)}")
-            return finishOpen(format, null)
+            return finishOpen(format, null, floatOutput)
         }
 
         /**
@@ -408,12 +424,12 @@ class FfmpegDecoder private constructor(
          * whitelisted. A static manifest is read once, during open, so the file
          * is deleted as soon as that returns.
          */
-        fun openDash(manifest: String, scratchDir: File, userAgent: String?): FfmpegDecoder {
+        fun openDash(manifest: String, scratchDir: File, userAgent: String?, floatOutput: Boolean = false): FfmpegDecoder {
             scratchDir.mkdirs()
             val file = File.createTempFile("stream-", ".mpd", scratchDir)
             return try {
                 file.writeText(manifest)
-                open(file.absolutePath, userAgent = userAgent, formatName = "dash", protocolWhitelist = DASH_PROTOCOLS)
+                open(file.absolutePath, userAgent = userAgent, formatName = "dash", protocolWhitelist = DASH_PROTOCOLS, floatOutput = floatOutput)
             } finally {
                 file.delete()
             }
@@ -425,7 +441,7 @@ class FfmpegDecoder private constructor(
         private const val DASH_PROTOCOLS = "file,http,https,tcp,tls,crypto"
 
         /** Opens through one of the app's DataSources (partial caches, decrypting sources). */
-        fun open(source: DataSource, uri: Uri): FfmpegDecoder {
+        fun open(source: DataSource, uri: Uri, floatOutput: Boolean = false): FfmpegDecoder {
             val length = source.open(DataSpec(uri, 0))
             val bridge = AvioBridge(source, uri, length)
             val format = avformat.avformat_alloc_context() ?: run { bridge.close(); throw IOException("avformat_alloc_context failed") }
@@ -433,10 +449,10 @@ class FfmpegDecoder private constructor(
             format.flags(format.flags() or AVFMT_FLAG_CUSTOM_IO)
             val rc = avformat.avformat_open_input(format, "", null, null as AVDictionary?)
             if (rc < 0) { bridge.close(); throw IOException("cannot open ${uri}: ${errorString(rc)}") }
-            return finishOpen(format, bridge)
+            return finishOpen(format, bridge, floatOutput)
         }
 
-        private fun finishOpen(format: AVFormatContext, avio: AvioBridge?): FfmpegDecoder {
+        private fun finishOpen(format: AVFormatContext, avio: AvioBridge?, floatOutput: Boolean): FfmpegDecoder {
             try {
                 var rc = avformat.avformat_find_stream_info(format, null as PointerPointer<*>?)
                 if (rc < 0) throw IOException("avformat_find_stream_info: ${errorString(rc)}")
@@ -456,20 +472,34 @@ class FfmpegDecoder private constructor(
                 val channels = par.ch_layout().nb_channels()
                 val sampleRate = par.sample_rate()
                 if (channels <= 0 || sampleRate <= 0) throw IOException("stream has no usable format")
-                // 16-bit integer sources stay 16-bit (bit-exact); everything else becomes float.
-                val wantS16 = inFmt == avutil.AV_SAMPLE_FMT_S16 || inFmt == avutil.AV_SAMPLE_FMT_S16P
+                // 16-bit integer sources stay 16-bit (bit-exact) unless the opener
+                // asked for float; everything else becomes float.
+                val nativeS16 = inFmt == avutil.AV_SAMPLE_FMT_S16 || inFmt == avutil.AV_SAMPLE_FMT_S16P
+                val wantS16 = nativeS16 && !floatOutput
                 val outFmt = if (wantS16) avutil.AV_SAMPLE_FMT_S16 else avutil.AV_SAMPLE_FMT_FLT
                 val encoding = if (wantS16) C.ENCODING_PCM_16BIT else C.ENCODING_PCM_FLOAT
                 var swr: SwrContext? = null
                 if (inFmt != outFmt) {
-                    val outLayout = AVChannelLayout()
-                    avutil.av_channel_layout_default(outLayout, channels)
-                    val holder = SwrContext(null as Pointer?)
-                    rc = swresample.swr_alloc_set_opts2(holder, outLayout, outFmt, sampleRate, par.ch_layout(), inFmt, sampleRate, 0, null)
-                    if (rc < 0 || holder.isNull) throw IOException("swr_alloc_set_opts2: ${errorString(rc)}")
-                    rc = swresample.swr_init(holder)
-                    if (rc < 0) throw IOException("swr_init: ${errorString(rc)}")
-                    swr = holder
+                    // The same layout in and out, so this is a format change and
+                    // nothing else. A stream that names no layout gets the default
+                    // one for its channel count, on both sides.
+                    val layout = AVChannelLayout()
+                    if (par.ch_layout().order() == avutil.AV_CHANNEL_ORDER_UNSPEC) {
+                        avutil.av_channel_layout_default(layout, channels)
+                    } else {
+                        rc = avutil.av_channel_layout_copy(layout, par.ch_layout())
+                        if (rc < 0) throw IOException("av_channel_layout_copy: ${errorString(rc)}")
+                    }
+                    try {
+                        val holder = SwrContext(null as Pointer?)
+                        rc = swresample.swr_alloc_set_opts2(holder, layout, outFmt, sampleRate, layout, inFmt, sampleRate, 0, null)
+                        if (rc < 0 || holder.isNull) throw IOException("swr_alloc_set_opts2: ${errorString(rc)}")
+                        rc = swresample.swr_init(holder)
+                        if (rc < 0) throw IOException("swr_init: ${errorString(rc)}")
+                        swr = holder
+                    } finally {
+                        avutil.av_channel_layout_uninit(layout)   // swr keeps its own copy
+                    }
                 }
                 val codecId = par.codec_id()
                 val durationUs = when {
@@ -483,7 +513,7 @@ class FfmpegDecoder private constructor(
                     sampleRate = sampleRate,
                     channelCount = channels,
                     bitrate = par.bit_rate().takeIf { it > 0 }?.toInt(),
-                    bitsPerRawSample = par.bits_per_raw_sample().takeIf { it > 0 } ?: if (wantS16) 16 else null,
+                    bitsPerRawSample = par.bits_per_raw_sample().takeIf { it > 0 } ?: if (nativeS16) 16 else null,
                     outputIsFloat = !wantS16,
                     durationUs = durationUs,
                     isEac3 = codecId == avcodec.AV_CODEC_ID_EAC3,
