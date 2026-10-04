@@ -18,7 +18,7 @@ import java.io.File
 class WorldRadioTest {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-    private val assets = File("src/main/assets")
+    private val assets = File("src/main/resources/assets")
 
     private val globe: WorldRadioData by lazy {
         json.decodeFromString(

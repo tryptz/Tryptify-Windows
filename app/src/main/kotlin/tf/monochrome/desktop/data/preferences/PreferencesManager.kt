@@ -618,7 +618,7 @@ class PreferencesManager @Inject constructor(
      * build wrote here when this followed "Blend Between Tracks".
      */
     val colorTransitionMs: Flow<Int> = dataStore.data.map { prefs ->
-        prefs[COLOR_TRANSITION_MS] ?: COLOR_TRANSITION_DEFAULT_MS
+        prefs[COLOR_TRANSITION_MS] ?: tf.monochrome.desktop.ui.theme.ColorBlend.DEFAULT_MS
     }
 
     suspend fun setColorTransitionMs(millis: Int) {
@@ -1981,7 +1981,7 @@ class PreferencesManager @Inject constructor(
 
     /** The nav bar's two middle buttons, always two different pages it can hold. */
     val navBarSlots: Flow<List<String>> = dataStore.data.map { prefs ->
-        sanitizeStoredNavBarSlots(prefs[NAV_BAR_SLOTS]?.split(','))
+        tf.monochrome.desktop.ui.navigation.sanitizeNavBarSlots(prefs[NAV_BAR_SLOTS]?.split(','))
     }
     suspend fun setNavBarSlots(slots: List<String>) {
         dataStore.edit { it[NAV_BAR_SLOTS] = slots.joinToString(",") }
@@ -2449,35 +2449,4 @@ class PreferencesManager @Inject constructor(
     suspend fun clearAllData() {
         dataStore.edit { it.clear() }
     }
-}
-
-// Desktop: TEMPORARY stand-ins for two ui-package symbols this file reads on
-// Android. ui/theme/ColorBlend.kt and ui/navigation/AppTabs.kt are still in
-// port/pending, and the data layer has to compile before the UI moves. Once
-// they are in the compiled tree, put back
-//   `tf.monochrome.desktop.ui.theme.ColorBlend.DEFAULT_MS` in colorTransitionMs and
-//   `tf.monochrome.desktop.ui.navigation.sanitizeNavBarSlots(...)` in navBarSlots,
-// and delete these two (they duplicate the UI's values and must not drift).
-
-/** Mirrors `ColorBlend.DEFAULT_MS`. */
-private const val COLOR_TRANSITION_DEFAULT_MS = 500
-
-/**
- * Mirrors `sanitizeNavBarSlots` over `NAV_BAR_CHOICES` / `DEFAULT_NAV_BAR_SLOTS`
- * (AppTabs.kt, AppPages.kt): two different pages the bar can hold, falling back
- * to the defaults slot by slot.
- */
-private fun sanitizeStoredNavBarSlots(stored: List<String>?): List<String> {
-    val defaults = listOf("discover", "radio")
-    val choices = defaults + listOf("local", "playlists", "favorites", "downloads")
-    val picked = mutableListOf<String>()
-    for (id in stored.orEmpty()) {
-        if (id in choices && id !in picked) picked += id
-        if (picked.size == 2) break
-    }
-    for (id in defaults + choices) {
-        if (picked.size == 2) break
-        if (id !in picked) picked += id
-    }
-    return picked
 }

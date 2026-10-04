@@ -52,6 +52,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.skia.Bitmap
 import tf.monochrome.desktop.data.preferences.PreferencesManager
+import tf.monochrome.desktop.ui.theme.DynamicColorExtractor
 import tf.monochrome.desktop.data.repository.GenreGraphRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -73,11 +74,6 @@ import kotlin.random.Random
  */
 @Singleton
 class DiscordPresenceManager @Inject constructor(
-    // Desktop: nothing reads this yet. Coil takes PlatformContext.INSTANCE on
-    // the JVM rather than a Context, and the cover palette comes from
-    // PresencePalette until ui/theme's DynamicColorExtractor (which takes this
-    // Context) is ported. Kept so the constructor and the injection graph
-    // match Android's.
     @ApplicationContext private val context: Context,
     private val httpClient: HttpClient,
     private val preferences: PreferencesManager,
@@ -490,9 +486,7 @@ class DiscordPresenceManager @Inject constructor(
             ?: return null
         val coverUrl = now.artworkUrl ?: return null
 
-        // Desktop: DynamicColorExtractor.extract(context, coverUrl) on Android;
-        // see PresencePalette for why and for when to switch back.
-        val palette = PresencePalette.extract(coverUrl)
+        val palette = DynamicColorExtractor.extract(context, coverUrl)
         val tint = (palette?.vibrant ?: palette?.dominant)?.let {
             val argb = it.value.toULong() shr 32
             org.jetbrains.skia.Color.makeRGB(
@@ -658,8 +652,7 @@ class DiscordPresenceManager @Inject constructor(
         // back inside PresenceBadge, so every track gets a spectrum rather than
         // the card gaining and losing a graphic depending on how much the app
         // happens to know about what is playing.
-        // Desktop: DynamicColorExtractor.extract(context, …) on Android.
-        val palette = PresencePalette.extract(now.artworkUrl)
+        val palette = DynamicColorExtractor.extract(context, now.artworkUrl)
         val colour = palette?.vibrant ?: palette?.dominant
         val rgb = colour?.let {
             val argb = it.value.toULong() shr 32

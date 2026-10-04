@@ -12,7 +12,7 @@ import tf.monochrome.desktop.audio.eq.WaterfallNative
  */
 class SpectrumWaterfallSettingsTest {
 
-    private val header = java.io.File("src/main/cpp/dsp/scope/spectrum_waterfall.h").readText()
+    private val header = java.io.File("../native/dsp/scope/spectrum_waterfall.h").readText()
 
     private fun constant(name: String): Float =
         Regex("""\b$name\s*=\s*(-?[\d.]+)f?\b""").find(header)!!.groupValues[1].toFloat()

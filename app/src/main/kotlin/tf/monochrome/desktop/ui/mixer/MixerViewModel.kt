@@ -1,0 +1,394 @@
+package tf.monochrome.desktop.ui.mixer
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import tf.monochrome.desktop.audio.dsp.DspEngineManager
+import tf.monochrome.desktop.audio.dsp.SnapinType
+import tf.monochrome.desktop.audio.dsp.model.BusConfig
+import tf.monochrome.desktop.audio.dsp.model.BusLevels
+import tf.monochrome.desktop.audio.dsp.model.MixPreset
+import tf.monochrome.desktop.audio.dsp.model.MixPresetFile
+import tf.monochrome.desktop.data.preferences.PreferencesManager
+import tf.monochrome.desktop.data.repository.MixPresetRepository
+import javax.inject.Inject
+
+@HiltViewModel
+class MixerViewModel @Inject constructor(
+    private val dspManager: DspEngineManager,
+    private val presetRepository: MixPresetRepository,
+    private val preferencesManager: PreferencesManager,
+    private val spatialStore: tf.monochrome.desktop.audio.dsp.spatial.SpatialPlacementStore,
+    private val channelDetector: tf.monochrome.desktop.audio.dsp.ChannelDetectorProcessor,
+    atmosProcessor: tf.monochrome.desktop.audio.atmos.AtmosAudioProcessor,
+) : ViewModel() {
+
+    // ── Spatial map ─────────────────────────────────────────────────────
+
+    /** Where each channel of a multichannel bed sits; drags land here live. */
+    val spatialPlacement: StateFlow<tf.monochrome.desktop.audio.dsp.spatial.SpatialPlacement> = spatialStore.state
+
+    /** The playing stream's channels and live per-channel levels, while the map is open. */
+    val channelState: StateFlow<tf.monochrome.desktop.audio.dsp.ChannelDetectorProcessor.ChannelState?> =
+        channelDetector.state
+
+    /** False when multichannel goes to the output device whole: the map has nothing to fold then. */
+    val stereoFoldEnabled: StateFlow<Boolean> = preferencesManager.multichannelDownmixEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /** Set while Atmos objects are being rendered, which places the track by itself. */
+    val atmosRenderingObjects: StateFlow<Boolean> = atmosProcessor.outcome
+        .map { it == tf.monochrome.desktop.audio.atmos.AtmosAudioProcessor.Outcome.OBJECTS_BINAURAL }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // The detector only measures while someone is watching; the map is.
+    private var detectorHeld = false
+
+    fun openSpatialMap() {
+        if (!detectorHeld) {
+            channelDetector.acquire()
+            detectorHeld = true
+        }
+    }
+
+    fun closeSpatialMap() {
+        if (detectorHeld) {
+            channelDetector.release()
+            detectorHeld = false
+        }
+    }
+
+    fun setSpatialEnabled(on: Boolean) = spatialStore.update { it.copy(enabled = on) }
+
+    fun setSpatialBinaural(binaural: Boolean) = spatialStore.update { it.copy(binaural = binaural) }
+
+    /** AutoEQ's targets, offered for the headphone render. */
+    val headphoneTargets: List<Pair<String, String>> by lazy { spatialStore.targets.map { it.id to it.label } }
+
+    fun setSpatialTarget(id: String) = spatialStore.update { it.copy(targetId = id) }
+
+    fun moveChannel(count: Int, index: Int, placement: tf.monochrome.desktop.audio.dsp.spatial.ChannelPlacement) =
+        spatialStore.update { it.withChannel(count, index, placement) }
+
+    fun resetSpatialLayout(count: Int) = spatialStore.update { it.resetLayout(count) }
+
+    override fun onCleared() {
+        closeSpatialMap()
+        super.onCleared()
+    }
+
+    val enabled: StateFlow<Boolean> = dspManager.enabled
+    val buses: StateFlow<List<BusConfig>> = dspManager.buses
+    val busLevels: StateFlow<List<BusLevels>> = dspManager.busLevels
+
+    // Live audio tap (per-plugin meters + scope waveform) for the FX chain.
+    val fxTap = dspManager.fxTap
+
+    /** Channel coloring mode: false = curated palette, true = album/theme-derived. */
+    val channelDynamicColor: StateFlow<Boolean> = preferencesManager.mixerChannelDynamic
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setChannelDynamicColor(enabled: Boolean) {
+        viewModelScope.launch { preferencesManager.setMixerChannelDynamic(enabled) }
+    }
+
+    /** Wide streams: one bus per channel group (true) or all through bus 1. */
+    val spreadChannels: StateFlow<Boolean> = dspManager.spreadChannels
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setSpreadChannels(spread: Boolean) = dspManager.setSpreadChannels(spread)
+
+    val presets: StateFlow<List<MixPreset>> = presetRepository.getAllPresets()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private val _currentPresetName = MutableStateFlow<String?>(null)
+    val currentPresetName: StateFlow<String?> = _currentPresetName.asStateFlow()
+
+    private val _selectedBusIndex = MutableStateFlow(0)
+    val selectedBusIndex: StateFlow<Int> = _selectedBusIndex.asStateFlow()
+
+    /**
+     * One meter + FX-tap poll (cheap native reads). Called by the mixer UI
+     * once per display frame, so meters and visuals run at the panel's native
+     * refresh rate — 120 Hz where the device permits — and polling stops
+     * entirely while the mixer is off screen.
+     */
+    fun pollTick() {
+        dspManager.pollLevels()
+        dspManager.pollFxTap(_selectedBusIndex.value)
+    }
+
+    private val _showPluginPicker = MutableStateFlow(false)
+    val showPluginPicker: StateFlow<Boolean> = _showPluginPicker.asStateFlow()
+
+    private val _editingPlugin = MutableStateFlow<Pair<Int, Int>?>(null) // busIndex, slotIndex
+    val editingPlugin: StateFlow<Pair<Int, Int>?> = _editingPlugin.asStateFlow()
+
+    // When set, the next picker selection replaces the plugin at this
+    // (busIndex, slotIndex) instead of appending. Nothing is removed until the
+    // user actually picks a replacement — cancelling the picker leaves the
+    // original plugin (and its settings) intact.
+    private val _pendingReplaceSlot = MutableStateFlow<Pair<Int, Int>?>(null)
+
+    fun setEnabled(enabled: Boolean) = dspManager.setEnabled(enabled)
+
+    /**
+     * Back to a bare mixer. Clears the loaded preset name too — what is on the
+     * buses is no longer that preset, and leaving its name in the bar would
+     * claim otherwise.
+     */
+    fun resetToDefaults() {
+        dspManager.resetToDefaults()
+        _currentPresetName.value = null
+        keepSelectionValid()
+    }
+
+    fun selectBus(index: Int) { _selectedBusIndex.value = index }
+
+    // ── Adding and removing buses ───────────────────────────────────────
+
+    /** Adds a bus after the last one and selects it; false at 48 buses. */
+    fun addBus(): Boolean {
+        val index = dspManager.addBus() ?: return false
+        _selectedBusIndex.value = index
+        return true
+    }
+
+    /** Removes bus [busIndex] (bus 5 and up); the ones above move down one. */
+    fun removeBus(busIndex: Int) {
+        if (!dspManager.removeBus(busIndex)) return
+        val selected = _selectedBusIndex.value
+        if (selected == busIndex) _selectedBusIndex.value = 0
+        else if (selected > busIndex) _selectedBusIndex.value = selected - 1
+    }
+
+    /**
+     * A preset or a reset can leave fewer buses than before; a selection past
+     * the last one would point at nothing, so it goes back to bus 1.
+     */
+    private fun keepSelectionValid() {
+        if (_selectedBusIndex.value >= buses.value.size) _selectedBusIndex.value = 0
+    }
+
+    // ── Bus controls ────────────────────────────────────────────────────
+
+    fun setBusGain(busIndex: Int, gainDb: Float) = dspManager.setBusGain(busIndex, gainDb)
+    fun setBusPan(busIndex: Int, pan: Float) = dspManager.setBusPan(busIndex, pan)
+    fun setBusInputEnabled(busIndex: Int, enabled: Boolean) = dspManager.setBusInputEnabled(busIndex, enabled)
+
+    fun toggleMute(busIndex: Int) {
+        val bus = buses.value.getOrNull(busIndex) ?: return
+        dspManager.setBusMute(busIndex, !bus.muted)
+    }
+    fun toggleSolo(busIndex: Int) {
+        val bus = buses.value.getOrNull(busIndex) ?: return
+        dspManager.setBusSolo(busIndex, !bus.soloed)
+    }
+
+    // ── Routing ─────────────────────────────────────────────────────────
+
+    /**
+     * FL's route arrow: routes the SELECTED bus to [dstIndex], or unroutes it
+     * if it already goes there. False when refused — [dstIndex] already feeds
+     * the selected bus, so the route would loop.
+     */
+    fun toggleRouteTo(dstIndex: Int): Boolean {
+        val src = _selectedBusIndex.value
+        val bus = buses.value.firstOrNull { it.index == src } ?: return false
+        if (bus.isMaster || dstIndex == src) return false
+        val routed = (bus.sends[dstIndex] ?: 0f) > 0f
+        return dspManager.setSend(src, dstIndex, if (routed) 0f else 1f)
+    }
+
+    fun setSendLevel(src: Int, dst: Int, level: Float) = dspManager.setSend(src, dst, level)
+
+    /** Whether routing the selected bus to [dstIndex] would make a loop. */
+    fun routeWouldLoop(dstIndex: Int): Boolean =
+        dstIndex != BusConfig.MASTER_INDEX && dspManager.routeReaches(dstIndex, _selectedBusIndex.value)
+
+    // ── Plugin chain ────────────────────────────────────────────────────
+
+    fun showAddPlugin() { _showPluginPicker.value = true }
+
+    /** Open the picker in "replace this slot" mode (no removal happens yet). */
+    fun showReplacePlugin(busIndex: Int, slotIndex: Int) {
+        _pendingReplaceSlot.value = busIndex to slotIndex
+        _showPluginPicker.value = true
+    }
+
+    fun dismissPluginPicker() {
+        _showPluginPicker.value = false
+        _pendingReplaceSlot.value = null
+    }
+
+    fun addPlugin(type: SnapinType) {
+        val pending = _pendingReplaceSlot.value
+        if (pending != null) {
+            val (busIndex, slotIndex) = pending
+            _pendingReplaceSlot.value = null
+            _showPluginPicker.value = false
+            val bus = buses.value.getOrNull(busIndex) ?: return
+            // Remove the old plugin and insert the replacement at the same slot
+            // so the chain's processing order is preserved.
+            if (slotIndex in bus.plugins.indices) dspManager.removePlugin(busIndex, slotIndex)
+            dspManager.addPlugin(busIndex, slotIndex, type)
+            return
+        }
+        val busIndex = _selectedBusIndex.value
+        val bus = buses.value.getOrNull(busIndex) ?: return
+        if (bus.plugins.size >= DspEngineManager.MAX_PLUGINS_PER_BUS) {
+            _showPluginPicker.value = false
+            return
+        }
+        dspManager.addPlugin(busIndex, bus.plugins.size, type)
+        _showPluginPicker.value = false
+    }
+
+    fun movePlugin(busIndex: Int, fromSlot: Int, toSlot: Int) {
+        val bus = buses.value.getOrNull(busIndex) ?: return
+        if (fromSlot == toSlot) return
+        if (fromSlot !in bus.plugins.indices || toSlot !in bus.plugins.indices) return
+        dspManager.movePlugin(busIndex, fromSlot, toSlot)
+        _editingPlugin.value = _editingPlugin.value?.let { editing ->
+            val (b, s) = editing
+            when {
+                b != busIndex -> editing
+                s == fromSlot -> b to toSlot
+                s in minOf(fromSlot, toSlot)..maxOf(fromSlot, toSlot) ->
+                    b to (if (fromSlot < toSlot) s - 1 else s + 1)
+                else -> editing
+            }
+        }
+    }
+
+    fun removePlugin(busIndex: Int, slotIndex: Int) {
+        dspManager.removePlugin(busIndex, slotIndex)
+        if (_editingPlugin.value == Pair(busIndex, slotIndex)) {
+            _editingPlugin.value = null
+        }
+    }
+
+    fun togglePluginBypass(busIndex: Int, slotIndex: Int) {
+        val bus = buses.value.getOrNull(busIndex) ?: return
+        val plugin = bus.plugins.getOrNull(slotIndex) ?: return
+        dspManager.setPluginBypassed(busIndex, slotIndex, !plugin.bypassed)
+    }
+
+    fun editPlugin(busIndex: Int, slotIndex: Int) {
+        _editingPlugin.value = Pair(busIndex, slotIndex)
+    }
+
+    fun dismissPluginEditor() { _editingPlugin.value = null }
+
+    fun setParameter(busIndex: Int, slotIndex: Int, paramIndex: Int, value: Float) {
+        dspManager.setParameter(busIndex, slotIndex, paramIndex, value)
+    }
+
+    /** Applies [preset] to the effect in [slotIndex], every parameter at once. */
+    fun applyFxPreset(busIndex: Int, slotIndex: Int, preset: tf.monochrome.desktop.ui.mixer.fxchain.FxPreset) {
+        val plugin = dspManager.buses.value.firstOrNull { it.index == busIndex }
+            ?.plugins?.getOrNull(slotIndex) ?: return
+        val type = plugin.type ?: return
+        val defs = getParamDefs(type)
+        dspManager.setParameters(busIndex, slotIndex, preset.resolved(defs), preset.dryWet)
+    }
+
+    fun setPluginDryWet(busIndex: Int, slotIndex: Int, dryWet: Float) {
+        dspManager.setPluginDryWet(busIndex, slotIndex, dryWet)
+    }
+
+    fun setPluginOversampling(busIndex: Int, slotIndex: Int, factor: Int) {
+        dspManager.setPluginOversampling(busIndex, slotIndex, factor)
+    }
+
+    // ── Presets ──────────────────────────────────────────────────────────
+
+    fun savePreset(name: String) {
+        viewModelScope.launch {
+            val stateJson = dspManager.getStateJson()
+            presetRepository.savePreset(MixPreset(name = name, stateJson = stateJson))
+            _currentPresetName.value = name
+        }
+    }
+
+    fun loadPreset(preset: MixPreset) {
+        // Off the main thread: loadStateJson parses the preset and builds a
+        // whole plugin set on the calling thread. The engine no longer holds
+        // the audio lock while it does that, but it is still milliseconds of
+        // allocation, and running it inline from a tap blocked the UI for the
+        // duration -- long enough to drop frames on a full five-bus preset.
+        viewModelScope.launch(Dispatchers.Default) {
+            dspManager.loadStateJson(preset.stateJson)
+            keepSelectionValid()
+        }
+        _currentPresetName.value = preset.name
+    }
+
+    fun deletePreset(id: Long) {
+        if (id < 0) return // built-in presets are read-only
+        viewModelScope.launch {
+            presetRepository.deletePreset(id)
+            if (presets.value.find { it.id == id }?.name == _currentPresetName.value) {
+                _currentPresetName.value = null
+            }
+        }
+    }
+
+    // ── Preset sharing (export to / import from a .json file) ─────────────
+
+    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+
+    /** Serialize a preset to the shareable on-disk file format. */
+    fun exportPayload(preset: MixPreset): String =
+        json.encodeToString(
+            MixPresetFile.serializer(),
+            MixPresetFile.of(name = preset.name, stateJson = preset.stateJson)
+        )
+
+    /**
+     * Import preset file [text]: parse the [MixPresetFile] envelope (falling
+     * back to treating the text as raw engine state JSON), persist it as a
+     * custom preset, and apply it live.
+     */
+    fun importPreset(text: String, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val trimmed = text.trim()
+            val file = runCatching {
+                json.decodeFromString(MixPresetFile.serializer(), trimmed)
+            }.getOrNull()
+
+            // Only accept a valid MixPresetFile envelope or a bare engine-state
+            // JSON *object*. Rejecting anything else stops the old behavior of
+            // saving arbitrary files as a junk preset and resetting the mixer,
+            // then falsely toasting success.
+            val stateJson = when {
+                file?.stateJson?.takeIf { it.isNotBlank() } != null -> file.stateJson
+                runCatching { json.parseToJsonElement(trimmed) }.getOrNull()
+                    is kotlinx.serialization.json.JsonObject -> trimmed
+                else -> null
+            }
+            if (stateJson == null) {
+                onResult(false)
+                return@launch
+            }
+
+            val name = file?.name?.takeIf { it.isNotBlank() } ?: "Imported Preset"
+            presetRepository.savePreset(
+                MixPreset(name = name, stateJson = stateJson, isCustom = true)
+            )
+            dspManager.loadStateJson(stateJson)
+            keepSelectionValid()
+            _currentPresetName.value = name
+            onResult(true)
+        }
+    }
+}

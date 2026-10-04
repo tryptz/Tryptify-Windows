@@ -1,0 +1,1451 @@
+package tf.monochrome.desktop.ui.player
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Player
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.stretch.PitchEngine
+import tf.monochrome.desktop.audio.stretch.PitchQuality
+import tf.monochrome.desktop.data.downloads.DownloadManager
+import tf.monochrome.desktop.data.repository.LibraryRepository
+import tf.monochrome.desktop.data.repository.MusicRepository
+import tf.monochrome.desktop.data.preferences.PreferencesManager
+import tf.monochrome.desktop.domain.model.SourceType
+import tf.monochrome.desktop.domain.model.Lyrics
+import tf.monochrome.desktop.domain.model.LyricsFxSettings
+import tf.monochrome.desktop.domain.model.NowPlayingViewMode
+import tf.monochrome.desktop.domain.model.PlaybackSource
+import tf.monochrome.desktop.domain.model.RepeatMode
+import tf.monochrome.desktop.domain.model.Track
+import tf.monochrome.desktop.domain.model.UnifiedTrack
+import tf.monochrome.desktop.domain.model.VisualizerEngineStatus
+import tf.monochrome.desktop.domain.model.VisualizerPreset
+import tf.monochrome.desktop.player.QueueManager
+import tf.monochrome.desktop.player.StreamResolver
+import tf.monochrome.desktop.player.engine.AudioOutputController
+import tf.monochrome.desktop.player.engine.EngineController
+import tf.monochrome.desktop.radio.RadioQueueManager
+import tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap
+import tf.monochrome.desktop.visualizer.AmbientVisualizerSettings
+import tf.monochrome.desktop.visualizer.ProjectMEngineRepository
+import javax.inject.Inject
+import tf.monochrome.desktop.R
+import tf.monochrome.desktop.res.StringKey
+
+@HiltViewModel
+class PlayerViewModel @Inject constructor(
+    // Desktop: the engine lives in-process, so there is no service to connect to.
+    private val engineController: EngineController,
+    private val audioOutputController: AudioOutputController,
+    private val queueManager: QueueManager,
+    private val streamResolver: StreamResolver,
+    private val repository: MusicRepository,
+    private val libraryRepository: LibraryRepository,
+    private val downloadManager: DownloadManager,
+    private val preferences: PreferencesManager,
+    private val projectMEngineRepository: ProjectMEngineRepository,
+    private val unifiedTrackRegistry: tf.monochrome.desktop.player.UnifiedTrackRegistry,
+    private val qobuzIdRegistry: tf.monochrome.desktop.data.api.QobuzIdRegistry,
+    private val apiClient: tf.monochrome.desktop.data.api.HiFiApiClient,
+    private val trackShareHelper: tf.monochrome.desktop.share.TrackShareHelper,
+    private val radioQueueManager: RadioQueueManager,
+    val spectrumAnalyzer: SpectrumAnalyzerTap,
+    private val bypassVolumeController: tf.monochrome.desktop.audio.usb.BypassVolumeController,
+    private val inflatorEffect: tf.monochrome.desktop.audio.dsp.oxford.InflatorEffect,
+    private val compressorEffect: tf.monochrome.desktop.audio.dsp.oxford.CompressorEffect,
+    private val crossfeedEffect: tf.monochrome.desktop.audio.dsp.crossfeed.CrossfeedEffect,
+    private val nowPlayingLyrics: tf.monochrome.desktop.player.NowPlayingLyricsHolder,
+    private val playbackState: tf.monochrome.desktop.player.PlaybackStateRepository,
+    private val bpmTap: tf.monochrome.desktop.audio.tempo.BpmTapProcessor,
+    private val sourceConsent: tf.monochrome.desktop.player.SourceConsent,
+) : ViewModel() {
+
+    /**
+     * Reference-counted spectrum tap subscription. Screens call acquire on
+     * mount and release on dispose; the analyzer keeps running as long as any
+     * one subscriber holds a stake.
+     */
+    fun acquireSpectrum() = spectrumAnalyzer.acquire()
+    fun releaseSpectrum() = spectrumAnalyzer.release()
+
+    // --- State from QueueManager (runs in-process, no IPC needed) ---
+    val currentTrack: StateFlow<Track?> = queueManager.currentTrack
+
+    // The full UnifiedTrack for the current track, when known (carries source,
+    // codec/sample-rate/bit-depth, and per-artist credits the legacy Track drops).
+    // Used by the player to show the source/format tag and to route artist taps
+    // to the right namespace (local vs catalog).
+    val currentUnifiedTrack: StateFlow<UnifiedTrack?> = currentTrack
+        .map { t -> t?.let { unifiedTrackRegistry[it.id] } }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), null)
+    val queue: StateFlow<List<Track>> = queueManager.queue
+    val currentIndex: StateFlow<Int> = queueManager.currentIndex
+    val shuffleEnabled: StateFlow<Boolean> = queueManager.shuffleEnabled
+    val repeatMode: StateFlow<RepeatMode> = queueManager.repeatMode
+
+    // --- Player state (observed from the engine) ---
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
+    // --- Sleep timer ---
+    // Owned here (this ViewModel is created at the nav-host level and shared,
+    // so it outlives the player destination) rather than in a LaunchedEffect
+    // on the player screen: the effect died with the composable, silently
+    // discarding the timer whenever the user collapsed the player or opened
+    // another screen — playback then never paused.
+    private val _sleepTimerMinutes = MutableStateFlow(0)
+    val sleepTimerMinutes: StateFlow<Int> = _sleepTimerMinutes.asStateFlow()
+
+    private val _sleepTimerRemainingMs = MutableStateFlow(0L)
+    val sleepTimerRemainingMs: StateFlow<Long> = _sleepTimerRemainingMs.asStateFlow()
+
+    private var sleepTimerJob: Job? = null
+
+    /**
+     * Arm the sleep timer for [minutes] (restarting if already armed, so
+     * re-selecting the same duration begins a fresh countdown), or cancel
+     * with 0. Pauses playback when the countdown reaches zero.
+     */
+    fun setSleepTimer(minutes: Int) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        val m = minutes.coerceAtLeast(0)
+        _sleepTimerMinutes.value = m
+        _sleepTimerRemainingMs.value = m * 60_000L
+        if (m == 0) return
+        sleepTimerJob = viewModelScope.launch {
+            val endAt = System.currentTimeMillis() + m * 60_000L
+            while (true) {
+                val left = endAt - System.currentTimeMillis()
+                if (left <= 0) break
+                _sleepTimerRemainingMs.value = left
+                delay(minOf(1_000L, left))
+            }
+            if (_isPlaying.value) togglePlayPause()
+            _sleepTimerMinutes.value = 0
+            _sleepTimerRemainingMs.value = 0L
+            sleepTimerJob = null
+        }
+    }
+
+    private val _positionMs = MutableStateFlow(0L)
+    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+
+    private val _durationMs = MutableStateFlow(0L)
+    val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
+
+    // No `progress` flow here on purpose. There was one, and it was a getter
+    // that allocated a fresh MutableStateFlow on every read, seeded from the
+    // position at that instant and then never updated again — a StateFlow that
+    // could not change. Nothing consumed it (both call sites compute the
+    // fraction themselves from position and duration), so it was pure garbage
+    // per access.
+
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
+
+    // Surfaced to the player UI when a track can't be resolved/streamed. Also
+    // used to break the resolve→fail→skip→resolve loop that otherwise ran
+    // forever under repeat modes (offline / dead instance).
+    // A string resource, not text: the toast resolves it with the activity's
+    // context, which is in the app's chosen language; this one's may not be.
+    private val _playbackError = MutableStateFlow<StringKey?>(null)
+    val playbackError: StateFlow<StringKey?> = _playbackError.asStateFlow()
+    private var consecutiveResolveFailures = 0
+    fun clearPlaybackError() { _playbackError.value = null }
+
+    // --- Active Track Meta (Lyrics / Liked) ---
+    private val _isCurrentTrackLiked = MutableStateFlow(false)
+    val isCurrentTrackLiked: StateFlow<Boolean> = _isCurrentTrackLiked.asStateFlow()
+
+    private val _currentLyrics = MutableStateFlow<Lyrics?>(null)
+    val currentLyrics: StateFlow<Lyrics?> = _currentLyrics.asStateFlow()
+
+    private val _isLyricsLoading = MutableStateFlow(false)
+    val isLyricsLoading: StateFlow<Boolean> = _isLyricsLoading.asStateFlow()
+
+    // --- Parity Settings ---
+    val visualizerSensitivity: StateFlow<Int> = preferences.visualizerSensitivity
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 50)
+    val visualizerBrightness: StateFlow<Int> = preferences.visualizerBrightness
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 80)
+    val playerDynamicColor: StateFlow<Boolean> = preferences.playerDynamicColor
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    // Master album-colour switch (Appearance › Dynamic Colors). When off, NO
+    // surface tints from album art — including the player — so turning it off
+    // makes everything static, not just the app-wide theme.
+    val dynamicColors: StateFlow<Boolean> = preferences.dynamicColors
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    // "Blend Between Tracks", in seconds. The player reads it to pace its
+    // colour crossfade against the audio one rather than a fixed tween.
+    val crossfadeDuration: StateFlow<Int> = preferences.crossfadeDuration
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+    // Appearance › "Color transition", in milliseconds. It used to default to
+    // the blend above, which made a six-second audio crossfade a six-second
+    // repaint of the window; it is its own short length now.
+    val colorTransitionMs: StateFlow<Int> = preferences.colorTransitionMs
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            tf.monochrome.desktop.ui.theme.ColorBlend.DEFAULT_MS,
+        )
+
+    // Counts playback changes the UI asked for (see resolveAndPlay). Only
+    // meaningful as "did this move since the last track change" — the artwork
+    // uses it to tell a skip from a song ending. Not a count of anything a
+    // user would recognise, so nothing should display it.
+    private val _userTrackChanges = MutableStateFlow(0)
+    val userTrackChanges: StateFlow<Int> = _userTrackChanges.asStateFlow()
+    val playerBlurredBackground: StateFlow<Boolean> = preferences.playerBlurredBackground
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val playerGlass: StateFlow<tf.monochrome.desktop.domain.model.PlayerGlassSettings> = preferences.playerGlass
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), tf.monochrome.desktop.domain.model.PlayerGlassSettings.INITIAL)
+    val miniPlayerGlass: StateFlow<tf.monochrome.desktop.domain.model.PlayerGlassSettings> = preferences.miniPlayerGlass
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), tf.monochrome.desktop.domain.model.PlayerGlassSettings.INITIAL)
+    val waveCandy: StateFlow<tf.monochrome.desktop.domain.model.WaveCandySettings> = preferences.waveCandy
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), tf.monochrome.desktop.domain.model.WaveCandySettings.DEFAULT)
+    fun setWaveCandy(settings: tf.monochrome.desktop.domain.model.WaveCandySettings) {
+        viewModelScope.launch { preferences.setWaveCandy(settings) }
+    }
+    val spectrumWaterfall: StateFlow<tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings> = preferences.spectrumWaterfall
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings.DEFAULT)
+    fun setSpectrumWaterfall(settings: tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings) {
+        viewModelScope.launch { preferences.setSpectrumWaterfall(settings) }
+    }
+    val lyricsFx: StateFlow<LyricsFxSettings> = preferences.lyricsFx
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LyricsFxSettings())
+    val nowPlayingViewMode: StateFlow<NowPlayingViewMode> = preferences.nowPlayingViewMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), NowPlayingViewMode.COVER_ART)
+    val romajiLyrics: StateFlow<Boolean> = preferences.romajiLyrics
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val visualizerEngineEnabled: StateFlow<Boolean> = preferences.visualizerEngineEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val visualizerShowFps: StateFlow<Boolean> = preferences.visualizerShowFps
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val visualizerFullscreen: StateFlow<Boolean> = preferences.visualizerFullscreen
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val visualizerTouchWaveform: StateFlow<Boolean> = preferences.visualizerTouchWaveform
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    /**
+     * MilkDrop as the player's background rather than instead of the artwork.
+     *
+     * The initial value is the disabled default rather than the stored one:
+     * DataStore has not answered yet on the first frame, and defaulting to
+     * "on" would flash a GL surface over the player on every cold start for
+     * everybody who has it off — which is everybody, until they turn it on.
+     */
+    val ambientVisualizer: StateFlow<AmbientVisualizerSettings> = preferences.ambientVisualizer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AmbientVisualizerSettings())
+
+    /**
+     * Turns the ambient MilkDrop background off (or back on) from the player.
+     *
+     * The setting's home is the Player Visuals Studio, but Audio tools' own
+     * Visualizer chip has to be able to switch it off: when ambient is running
+     * it *is* the visualizer the user is looking at, so a chip that only knows
+     * about the fullscreen view mode leaves no way to stop it from here.
+     */
+    fun setAmbientVisualizerEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAmbientVisualizerEnabled(enabled) }
+    }
+
+    // --- Spectrum analyzer (global prefs) ---
+    val spectrumAnalyzerEnabled: StateFlow<Boolean> = preferences.spectrumAnalyzerEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val spectrumShowOnNowPlaying: StateFlow<Boolean> = preferences.spectrumShowOnNowPlaying
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setSpectrumShowOnNowPlaying(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSpectrumShowOnNowPlaying(enabled) }
+    }
+
+    /**
+     * Whether anything is changing the preset, for the player's Shuffle/Manual
+     * chip. Which of the rotating modes is in force is a Settings question; the
+     * chip only asks whether one of them is.
+     */
+    val visualizerAutoShuffle: StateFlow<Boolean> = projectMEngineRepository.rotationMode
+        .map { it.isRotating }
+        // Seeded from the mode that is actually in force. A literal `true` here
+        // painted the chip as on for every listener, including the ones whose
+        // stored mode is Off, until the mapped flow got round to emitting --
+        // so it read as lit and then thought better of it.
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            projectMEngineRepository.rotationMode.value.isRotating,
+        )
+    val visualizerEngineStatus: StateFlow<VisualizerEngineStatus> = projectMEngineRepository.engineStatus
+    val visualizerPresets: StateFlow<List<VisualizerPreset>> = projectMEngineRepository.presets
+    val currentVisualizerPreset: StateFlow<VisualizerPreset?> = projectMEngineRepository.currentPreset
+    val visualizerFavoritePresetIds: StateFlow<Set<String>> = projectMEngineRepository.favoritePresetIds
+    val visualizerFlaggedPresetIds: StateFlow<Set<String>> = projectMEngineRepository.flaggedPresetIds
+    val canGoToPreviousVisualizerPreset: StateFlow<Boolean> =
+        projectMEngineRepository.canGoToPreviousPreset
+    val visualizerRepository: ProjectMEngineRepository
+        get() = projectMEngineRepository
+
+    // --- Playback Speed ---
+    val playbackSpeed: StateFlow<Float> = preferences.playbackSpeed
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1.0f)
+
+    // When true, changing speed preserves the original pitch (tempo-only);
+    // when false, pitch shifts with speed (vinyl-style). Applied by
+    // EngineController via PlaybackParameters.
+    val preservePitch: StateFlow<Boolean> = preferences.preservePitch
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setPreservePitch(enabled: Boolean) {
+        viewModelScope.launch { preferences.setPreservePitch(enabled) }
+    }
+
+    // Transposition that leaves the tempo alone, applied by the phase vocoder
+    // rather than by resampling. Independent of playbackSpeed on purpose: the
+    // two are different operations with different trade-offs.
+    val pitchSemitones: StateFlow<Float> = preferences.pitchSemitones
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0f)
+
+    fun setPitchSemitones(semitones: Float) {
+        viewModelScope.launch { preferences.setPitchSemitones(semitones) }
+    }
+
+    // Which algorithm does the transposing, and how big a grain it uses. Only
+    // meaningful while the pitch is off zero, which is what the panel keys the
+    // controls on.
+    val pitchEngine: StateFlow<PitchEngine> = preferences.pitchEngine
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PitchEngine.VOCODER)
+
+    fun setPitchEngine(engine: PitchEngine) {
+        viewModelScope.launch { preferences.setPitchEngine(engine) }
+    }
+
+    val pitchQuality: StateFlow<PitchQuality> = preferences.pitchQuality
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PitchQuality.BALANCED)
+
+    fun setPitchQuality(quality: PitchQuality) {
+        viewModelScope.launch { preferences.setPitchQuality(quality) }
+    }
+
+    // What the speed control reads in: a multiplier, semitones, or BPM.
+    val speedUnit: StateFlow<tf.monochrome.desktop.audio.SpeedUnit> = preferences.speedUnit
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), tf.monochrome.desktop.audio.SpeedUnit.MULTIPLIER)
+
+    fun setSpeedUnit(unit: tf.monochrome.desktop.audio.SpeedUnit) {
+        viewModelScope.launch { preferences.setSpeedUnit(unit) }
+    }
+
+    /**
+     * The playing track's own tempo: measured once a few seconds into the
+     * track, then held. Null until known, and while a measurement is running.
+     */
+    val trackBpm: StateFlow<Float?> = bpmTap.bpm
+
+    /** Measure the playing track's tempo again (a tap on the BPM number). */
+    fun measureTrackBpm() = bpmTap.measure()
+
+    /** The listener's own figure for the playing track's tempo; speed is untouched. */
+    fun setTrackBpm(bpm: Float) = bpmTap.setTempo(bpm)
+
+    // --- Oxford DSP effect toggles (compressor / inflator) ---
+    // The effects are @Singleton, so these flows stay in sync with the Oxford
+    // screen. Compressor uses an inverted "bypass" flag; inflator uses "effectIn".
+    val compressorEnabled: StateFlow<Boolean> = compressorEffect.state
+        .map { !it.bypass }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val inflatorEnabled: StateFlow<Boolean> = inflatorEffect.state
+        .map { it.effectIn }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setCompressorEnabled(on: Boolean) = compressorEffect.setBypass(!on)
+
+    fun setInflatorEnabled(on: Boolean) = inflatorEffect.setEffectIn(on)
+
+    // --- Crossfeed (headphone speaker simulation) ---
+    val crossfeedEnabled: StateFlow<Boolean> = crossfeedEffect.state
+        .map { it.enabled }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setCrossfeedEnabled(on: Boolean) = crossfeedEffect.setEnabled(on)
+
+    // --- AutoEQ (headphone correction) ---
+    // The in-app correction flag; the same one the Equalizer screen toggles.
+    val autoEqEnabled: StateFlow<Boolean> = preferences.eqEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setAutoEqEnabled(on: Boolean) {
+        viewModelScope.launch {
+            preferences.setEqEnabled(on)
+            // The system-wide sub-toggle only shows while AutoEQ is on; clear it
+            // on the way out so the global effect can't keep running invisibly.
+            if (!on) preferences.setSystemWideAutoEqEnabled(false)
+        }
+    }
+
+    // --- System-wide AutoEQ (global output-mix effect) ---
+    // Desktop: there is no global effect to attach. EngineController keeps the
+    // in-app EQ off while this is set, as Android did; the ViewModel only flips the flag.
+    val systemWideAutoEqEnabled: StateFlow<Boolean> = preferences.systemWideAutoEqEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setSystemWideAutoEq(on: Boolean) {
+        viewModelScope.launch { preferences.setSystemWideAutoEqEnabled(on) }
+    }
+
+    // Bass/treble tone shelves (after AutoEQ). Local state updates instantly so
+    // the knobs + curve are smooth; persistence (which EngineController reacts
+    // to) is debounced so a drag doesn't hammer DataStore or re-apply the EQ on
+    // every frame.
+    private val _toneControls = MutableStateFlow(tf.monochrome.desktop.domain.model.ToneControls.DEFAULT)
+    val toneControls: StateFlow<tf.monochrome.desktop.domain.model.ToneControls> = _toneControls.asStateFlow()
+    private var tonePersistJob: kotlinx.coroutines.Job? = null
+
+    init {
+        viewModelScope.launch { preferences.systemToneControls.collect { _toneControls.value = it } }
+    }
+
+    fun setToneControls(controls: tf.monochrome.desktop.domain.model.ToneControls) {
+        _toneControls.value = controls
+        tonePersistJob?.cancel()
+        tonePersistJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(120)
+            preferences.setSystemToneControls(controls)
+        }
+    }
+
+    // --- Output ---
+    // Desktop: the device the engine plays to and how it reaches it (WASAPI
+    // shared or exclusive, libusb, Java Sound). Android had the one system
+    // output and only ever labelled it "Default".
+    val outputState: StateFlow<AudioOutputController.State> = audioOutputController.state
+    val outputDevices: StateFlow<List<AudioOutputController.Device>> = audioOutputController.devices
+
+    // --- Volume ---
+    val volume: StateFlow<Float> = preferences.volume
+        .map { it.toFloat() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1.0f)
+
+    // --- Global Favorites State ---
+    val favoriteTrackIds: StateFlow<Set<Long>> = libraryRepository.getFavoriteTracks()
+        .map { tracks -> tracks.map { it.id }.toSet() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptySet()
+        )
+
+    val playlists: StateFlow<List<tf.monochrome.desktop.data.db.entity.UserPlaylistEntity>> = libraryRepository.getAllPlaylists()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Desktop: the engine is a Player (the Media3 shim) and is there from the
+    // start, so this is never null and never has to be waited for.
+    private val mediaController: Player get() = engineController.engine
+
+    // Legacy Track IDs → their UnifiedTrack source live in UnifiedTrackRegistry
+    // (a @Singleton) so EngineController's own advance and media-key skip path
+    // can resolve unified tracks too. Don't redeclare here.
+
+
+    /**
+     * Live download state by track id.
+     *
+     * Declared HERE, above the init block that writes it, and that is not
+     * cosmetic. Kotlin runs property initialisers and init blocks in source
+     * order, and viewModelScope's dispatcher is Dispatchers.Main.immediate — so
+     * a `launch` from init that is already on the main thread starts its body
+     * *synchronously, inside the constructor*. Collecting a StateFlow there
+     * delivers its current value on the spot, and the assignment lands before
+     * a property declared further down has been initialised: a null receiver
+     * and a crash on app start, every time, on the first frame.
+     *
+     * It survived only because the download flow used to be LiveData-backed and
+     * so could not emit synchronously. Making it a StateFlow exposed it.
+     */
+    private val _activeDownloads = MutableStateFlow<Map<Long, tf.monochrome.desktop.data.downloads.TrackDownloadState>>(emptyMap())
+    val activeDownloads: StateFlow<Map<Long, tf.monochrome.desktop.data.downloads.TrackDownloadState>> = _activeDownloads.asStateFlow()
+
+    init {
+        // Desktop: connectToService() runs from the init block after playedFrom.
+        // It is synchronous here, so it must not run before what it writes exists.
+        startPositionPolling()
+        observeCurrentTrackMeta()
+        // Before anything is loaded, so the mini player comes back with the
+        // scrubber where the user left it. Duration comes from the snapshot:
+        // the player has no opinion until it is prepared.
+        viewModelScope.launch {
+            playbackState.pendingStart.collect { pending ->
+                if (pending != null && mediaController.currentMediaItem == null) {
+                    _positionMs.value = pending.positionMs
+                    _durationMs.value = pending.durationMs
+                }
+            }
+        }
+        // Mirror the now-playing lyrics + position into the app-scoped holder so
+        // other screens (the Player Visuals Studio preview) can show the real lyrics.
+        viewModelScope.launch { _currentLyrics.collect { nowPlayingLyrics.setLyrics(it) } }
+        viewModelScope.launch { _positionMs.collect { nowPlayingLyrics.setPosition(it) } }
+        viewModelScope.launch {
+            downloadManager.observeAllActiveDownloads().collectLatest { active ->
+                _activeDownloads.value = active
+            }
+        }
+        viewModelScope.launch {
+            preferences.spectrumFftSize.collect { size ->
+                spectrumAnalyzer.fftSize = size
+            }
+        }
+        viewModelScope.launch {
+            preferences.spectrumWaterfall.collect { w ->
+                spectrumAnalyzer.overlap = w.clamped().overlapPct / 100f
+            }
+        }
+    }
+
+    private fun observeCurrentTrackMeta() {
+        viewModelScope.launch {
+            // Re-fetch when track OR romaji setting changes
+            kotlinx.coroutines.flow.combine(currentTrack, romajiLyrics) { track, _ -> track }
+                .collectLatest { track ->
+                    // A live station has no lyrics and no favourite to observe.
+                    // Asking anyway sends a station name and a city to TIDAL and
+                    // then to LRCLib, which can only 404 after a fifteen-second
+                    // timeout — and leaves the lyrics view spinning for all of
+                    // it. Saying so immediately is both faster and true.
+                    if (track != null && isLiveStreamTrack(track)) {
+                        _currentLyrics.value = null
+                        _isLyricsLoading.value = false
+                        _isCurrentTrackLiked.value = false
+                        return@collectLatest
+                    }
+                    if (track != null) {
+                        // Start fetching lyrics
+                        _isLyricsLoading.value = true
+                        _currentLyrics.value = null
+
+                        // coroutineScope so BOTH children are children of this
+                        // collectLatest emission — a track change cancels the
+                        // in-flight lyrics fetch too. Previously the lyrics
+                        // `launch` bound to the outer viewModelScope coroutine
+                        // and survived, so a slow fetch for a skipped track
+                        // could overwrite the current track's lyrics.
+                        coroutineScope {
+                            launch {
+                                // Qobuz tracks must skip the TIDAL /lyrics lookup —
+                                // a Qobuz id on TIDAL resolves to a different song,
+                                // so its (synced) lyrics would never match. The
+                                // resolved source is the authoritative signal;
+                                // qobuzIdRegistry is a backstop.
+                                // Deezer ids have the same problem.
+                                val resolvedSource = unifiedTrackRegistry[track.id]?.sourceType
+                                val skipTidal = resolvedSource ==
+                                    tf.monochrome.desktop.domain.model.SourceType.QOBUZ ||
+                                    resolvedSource == tf.monochrome.desktop.domain.model.SourceType.DEEZER ||
+                                    track.deezerId != null ||
+                                    qobuzIdRegistry.isQobuzTrack(track.id) ||
+                                    qobuzIdRegistry.isDeezerTrack(track.id)
+                                // Pass the full Track so the repository can fall
+                                // back to LRCLib (track + artist + album +
+                                // duration) when TIDAL returns no lyrics.
+                                _currentLyrics.value =
+                                    repository.getLyrics(track.id, track, skipTidal = skipTidal).getOrNull()
+                                _isLyricsLoading.value = false
+                            }
+                            // Observe liked status
+                            launch {
+                                libraryRepository.isFavoriteTrack(track.id).collectLatest { isLiked ->
+                                    _isCurrentTrackLiked.value = isLiked
+                                }
+                            }
+                        }
+                    } else {
+                        _currentLyrics.value = null
+                        _isLyricsLoading.value = false
+                        _isCurrentTrackLiked.value = false
+                    }
+                }
+        }
+    }
+
+    fun toggleLikeCurrentTrack() {
+        val track = currentTrack.value ?: return
+        // Favouriting a station would write a row keyed by a synthetic hash and,
+        // with auto-download on, hand that same hash to the downloader — which
+        // has nothing to fetch. Stations are favourited on the globe instead,
+        // where the thing being kept is the station rather than a fake track.
+        if (isLiveStreamTrack(track)) return
+        viewModelScope.launch {
+            libraryRepository.toggleFavoriteTrack(track)
+        }
+    }
+
+    fun toggleFavorite(track: Track) {
+        viewModelScope.launch {
+            libraryRepository.toggleFavoriteTrack(track)
+        }
+    }
+
+    private fun connectToService() {
+        setupPlayerListener()
+        syncState()
+    }
+
+    // Removed in onCleared: the engine is a singleton and outlives this ViewModel.
+    private var playerListener: Player.Listener? = null
+
+    private fun setupPlayerListener() {
+        mediaController.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                _isPlaying.value = isPlaying
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                _isBuffering.value = playbackState == Player.STATE_BUFFERING
+                syncState()
+            }
+
+            override fun onMediaItemTransition(
+                mediaItem: androidx.media3.common.MediaItem?,
+                reason: Int
+            ) {
+                syncState()
+                syncPlayedFrom()
+            }
+
+            override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+                syncPlayedFrom()
+            }
+        }.also { playerListener = it })
+        syncPlayedFrom()
+    }
+
+    private val _playedFrom = MutableStateFlow<SourceType?>(null)
+
+    /**
+     * Where the playing song's audio comes from when that is not the catalog
+     * it was picked from (Qobuz for a Deezer pick, the device for a download),
+     * else null. Shown beside the source tag on the player.
+     */
+    val playedFrom: StateFlow<SourceType?> = _playedFrom.asStateFlow()
+
+    init {
+        connectToService()
+    }
+
+    private fun syncPlayedFrom() {
+        val mark = tf.monochrome.desktop.player.PlayedFrom.of(mediaController.currentMediaItem?.mediaMetadata)
+        _playedFrom.value = when (mark) {
+            tf.monochrome.desktop.player.PlayedFrom.QOBUZ -> SourceType.QOBUZ
+            tf.monochrome.desktop.player.PlayedFrom.LOCAL -> SourceType.LOCAL
+            else -> null
+        }
+    }
+
+    private fun syncState() {
+        mediaController.let { mc ->
+            _isPlaying.value = mc.isPlaying
+            // This runs the moment the controller connects, and on an empty
+            // player Media3 reports position 0 and an unset duration — "no
+            // item", not "at the start". Without the guard those zeroes land on
+            // the scrubber a frame after the restore paints it.
+            if (mc.currentMediaItem == null && playbackState.pendingStart.value != null) return@let
+            _durationMs.value = mc.duration.coerceAtLeast(0)
+            _positionMs.value = mc.currentPosition.coerceAtLeast(0)
+        }
+    }
+
+    private fun startPositionPolling() {
+        viewModelScope.launch {
+            while (isActive) {
+                val mc = mediaController
+                if (!mc.isPlaying) {
+                    // Nothing is moving, so there is nothing to read. This used
+                    // to tick four times a second regardless — for the whole
+                    // life of the ViewModel, paused or not, controller or not —
+                    // to copy the same number onto itself. Wait for playback
+                    // instead; seekTo and syncState already publish the position
+                    // directly when it changes while paused.
+                    _isPlaying.first { it }
+                    continue
+                }
+                _positionMs.value = mc.currentPosition.coerceAtLeast(0)
+                _durationMs.value = mc.duration.coerceAtLeast(0)
+                delay(250) // 4 updates/sec for smooth progress
+            }
+        }
+    }
+
+    // --- Actions ---
+
+    /** Play a single track (sets a 1-item queue). */
+    fun playTrack(track: Track) {
+        queueManager.setQueue(listOf(track), 0)
+        resolveAndPlay()
+    }
+
+    /** Play a track within a list (sets the full list as queue). */
+    fun playTrack(track: Track, trackList: List<Track>) {
+        queueManager.playTrackInQueue(track, trackList)
+        resolveAndPlay()
+    }
+
+    /** Play all tracks starting from index 0. */
+    fun playAll(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        queueManager.setQueue(tracks, 0)
+        resolveAndPlay()
+    }
+
+    /** Shuffle-play all tracks. */
+    fun shufflePlay(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        try {
+            queueManager.setQueue(tracks, 0)
+            queueManager.toggleShuffle()
+            resolveAndPlay()
+        } catch (t: Throwable) {
+            android.util.Log.e("PlayerViewModel", "shufflePlay(${tracks.size}) failed", t)
+        }
+    }
+
+    // --- Unified Track playback (local files, collections) ---
+
+    /** Play a UnifiedTrack within a list — the correct path for local/collection files. */
+    fun playUnifiedTrack(track: UnifiedTrack, trackList: List<UnifiedTrack>) {
+        val legacyTracks = trackList.map { it.toLegacyTrack() }
+        // Store source mappings so resolveAndPlay can find the right playback source
+        trackList.forEach { ut ->
+            val legacyId = ut.toLegacyTrack().id
+            unifiedTrackRegistry.put(legacyId, ut)
+        }
+        val legacyTrack = track.toLegacyTrack()
+        queueManager.playTrackInQueue(legacyTrack, legacyTracks)
+        resolveAndPlay()
+    }
+
+    /**
+     * Play a live radio station.
+     *
+     * A queue of one, and deliberately not [playUnifiedTrack]: song-radio is
+     * stood down first. The station planner tops up any queue whose tail is
+     * short, and a one-item queue is exactly that — so without this, tuning into
+     * a station in Lagos quietly grows a tail of algorithmically chosen songs
+     * behind it and the station becomes the first track of a playlist nobody
+     * asked for.
+     */
+    /** One station, on its own. */
+    fun playRadioStation(station: UnifiedTrack) = playRadioStations(listOf(station), 0)
+
+    /**
+     * Tune in with the rest of the list behind it, so Next moves down the city.
+     *
+     * This used to be a queue of exactly one, which is why Next did nothing on
+     * a station: there was nowhere to go. A city's stations are an ordinary
+     * queue — the same shape [playAllUnified] builds — and the transport does
+     * not need to know that its entries happen to be live streams.
+     *
+     * [startIndex] rather than a lookup by id: the directory does not promise
+     * unique station uuids (see the deliberately unkeyed list in
+     * `WorldRadioScreen`), so "find the one that was tapped" can find the wrong
+     * one. The caller knows which row it was.
+     *
+     * Duplicate ids are still collapsed before the queue is built. Two entries
+     * sharing an id would fight over one slot in [unifiedTrackRegistry] — the
+     * second overwriting the first — and both would then resolve to the same
+     * stream. Dropping the repeat gives a queue whose length matches what it
+     * will actually play, and the start index is moved onto the survivor so the
+     * tapped row is still what comes out of the speaker.
+     */
+    fun playRadioStations(stations: List<UnifiedTrack>, startIndex: Int) {
+        if (stations.isEmpty()) return
+        val plan = planRadioQueue(stations.map { it.id }, startIndex)
+        val queue = plan.keep.map { stations[it] }
+        if (queue.isEmpty()) return
+
+        radioQueueManager.stopRadio()
+        val legacy = queue.map { it.toLegacyTrack() }
+        queue.forEachIndexed { i, track -> unifiedTrackRegistry.put(legacy[i].id, track) }
+        queueManager.setQueue(legacy, plan.startIndex)
+        resolveAndPlay()
+    }
+
+    /** True when this track is a live stream, which has no duration to seek in. */
+    fun isLiveStreamTrack(track: Track?): Boolean =
+        track != null &&
+            unifiedTrackRegistry[track.id]?.source is PlaybackSource.RadioStream
+
+    /** Play all unified tracks starting from index 0. */
+    fun playAllUnified(tracks: List<UnifiedTrack>) {
+        if (tracks.isEmpty()) return
+        tracks.forEach { ut ->
+            unifiedTrackRegistry.put(ut.toLegacyTrack().id, ut)
+        }
+        val legacyTracks = tracks.map { it.toLegacyTrack() }
+        queueManager.setQueue(legacyTracks, 0)
+        resolveAndPlay()
+    }
+
+    /** Shuffle-play all unified tracks. */
+    fun shufflePlayUnified(tracks: List<UnifiedTrack>) {
+        if (tracks.isEmpty()) return
+        try {
+            tracks.forEach { ut ->
+                unifiedTrackRegistry.put(ut.toLegacyTrack().id, ut)
+            }
+            val legacyTracks = tracks.map { it.toLegacyTrack() }
+            queueManager.setQueue(legacyTracks, 0)
+            queueManager.toggleShuffle()
+            resolveAndPlay()
+        } catch (t: Throwable) {
+            android.util.Log.e("PlayerViewModel", "shufflePlayUnified(${tracks.size}) failed", t)
+        }
+    }
+
+    /** Add tracks to end of current queue. */
+    fun addToQueue(tracks: List<Track>) {
+        queueManager.addToQueue(tracks)
+    }
+
+    /**
+     * Queue UnifiedTracks (search results, downloads): register each in the
+     * registry first — same as playAllUnified — so local/Qobuz items resolve
+     * to the right playback source when they come up.
+     */
+    fun addUnifiedToQueue(tracks: List<UnifiedTrack>) {
+        if (tracks.isEmpty()) return
+        tracks.forEach { unifiedTrackRegistry.put(it.toLegacyTrack().id, it) }
+        queueManager.addToQueue(tracks.map { it.toLegacyTrack() })
+    }
+
+    /** Bulk add from multi-select. */
+    fun addTracksToPlaylist(playlistId: String, tracks: List<Track>) {
+        viewModelScope.launch {
+            tracks.forEach { libraryRepository.addTrackToPlaylist(playlistId, it) }
+        }
+    }
+
+    /** Bulk unlike from multi-select. */
+    fun unlikeTracks(trackIds: Collection<Long>) {
+        viewModelScope.launch {
+            libraryRepository.removeFavoriteTracks(trackIds)
+        }
+    }
+
+    /** Bulk remove listening-history entries from multi-select. */
+    fun removeFromHistory(trackIds: Collection<Long>) {
+        viewModelScope.launch {
+            libraryRepository.removeFromHistory(trackIds)
+        }
+    }
+
+    /** Insert a track right after the current one. */
+    fun playNext(track: Track) {
+        queueManager.addNextInQueue(track)
+    }
+
+    /**
+     * Play-next for a UnifiedTrack. Registers the source first — same reason
+     * [addUnifiedToQueue] does — so a local file queued from the local library
+     * still resolves to its file rather than being looked up as a catalog id.
+     */
+    fun playNextUnified(track: UnifiedTrack) {
+        val legacy = track.toLegacyTrack()
+        unifiedTrackRegistry.put(legacy.id, track)
+        queueManager.addNextInQueue(legacy)
+    }
+
+    // --- Queue editing ---
+
+    /**
+     * Reset the queue: drop everything upcoming, keep the current track
+     * playing. Stops radio first so it can't instantly refill the tail the
+     * user just rejected.
+     */
+    fun resetQueue() {
+        radioQueueManager.onQueueReset()
+        queueManager.clearUpcoming()
+    }
+
+    fun removeFromQueue(index: Int) {
+        val wasCurrent = index == queueManager.currentQueueIndex
+        queueManager.removeFromQueue(index)
+        // Deleting the playing track slid the next one into its slot, but the
+        // player is still on the old audio — resolve & play the new current so
+        // the UI and audio don't desync (or stop if the queue drained).
+        if (wasCurrent) {
+            if (queueManager.currentTrack.value != null) resolveAndPlay()
+            else mediaController.stop()
+        }
+    }
+
+    fun removeSelectedFromQueue(indices: Set<Int>) {
+        val playingId = queueManager.currentTrack.value?.id
+        queueManager.removeMany(indices)
+        // If the track that was playing got removed, re-sync the player to the
+        // new current track (removeMany keeps the current track when it survives,
+        // so this only fires when it was actually deleted).
+        if (queueManager.currentTrack.value?.id != playingId) {
+            if (queueManager.currentTrack.value != null) resolveAndPlay()
+            else mediaController.stop()
+        }
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        queueManager.move(fromIndex, toIndex)
+    }
+
+    fun playQueueItemNext(index: Int) {
+        queueManager.moveToPlayNext(index)
+    }
+
+    // --- Radio (queue maker) ---
+
+    val isRadioActive: StateFlow<Boolean> = radioQueueManager.isActive
+    val isRadioGenerating: StateFlow<Boolean> = radioQueueManager.isGenerating
+    val radioStatusMessage: StateFlow<String?> = radioQueueManager.statusMessage
+
+    /** Start radio seeded from the currently playing track. */
+    fun startRadio() {
+        radioQueueManager.startRadio()
+    }
+
+    /** Queue radio: (re)seed the station from a specific track. */
+    fun startRadioFrom(track: Track) {
+        radioQueueManager.startRadio(track)
+    }
+
+    fun stopRadio() {
+        radioQueueManager.stopRadio()
+    }
+
+    fun togglePlayPause() {
+        mediaController.let { mc ->
+            when {
+                mc.isPlaying -> mc.pause()
+                // A restored session has a queue but the player was never
+                // handed an item, and play() on an empty timeline does nothing.
+                // The one point where a restore touches the network, on a tap.
+                mc.currentMediaItem == null && queueManager.currentTrack.value != null ->
+                    resolveAndPlay()
+                else -> mc.play()
+            }
+        }
+    }
+
+    fun skipToNext() {
+        val next = queueManager.next()
+        if (next != null) {
+            resolveAndPlay()
+        } else {
+            mediaController.stop()
+        }
+    }
+
+    fun skipToPrevious() {
+        val position = mediaController.currentPosition
+        if (position > 3000) {
+            mediaController.seekTo(0)
+            return
+        }
+        val prev = queueManager.previous()
+        if (prev != null) {
+            resolveAndPlay()
+        }
+    }
+
+    fun seekTo(positionMs: Long) {
+        // A live stream has no position to seek to: ExoPlayer reports no
+        // duration, every fraction resolves to zero, and seekTo(0) would drop
+        // the connection and reconnect at the live edge — so the scrubber that
+        // looks like it rewinds would actually restart the stream. Every seek
+        // verb the UI offers funnels through here, so one guard covers them all.
+        if (isLiveStreamTrack(currentTrack.value)) return
+        // Scrubbing before play on a restored session: the player holds no
+        // item, so the seek is dropped and play starts from the stale position.
+        // Move where it will start instead of seeking something unloaded.
+        if (mediaController.currentMediaItem == null && playbackState.pendingStart.value != null) {
+            playbackState.overridePendingStart(positionMs)
+        } else {
+            mediaController.seekTo(positionMs)
+        }
+        _positionMs.value = positionMs
+    }
+
+    fun seekToFraction(fraction: Float) {
+        val pos = (fraction * _durationMs.value).toLong()
+        seekTo(pos)
+    }
+
+    /** Seek relative to the current position, clamped to the track bounds. */
+    fun seekBy(deltaMs: Long) {
+        val target = (_positionMs.value + deltaMs).coerceIn(0L, _durationMs.value.coerceAtLeast(0L))
+        seekTo(target)
+    }
+
+    fun rewind10() = seekBy(-10_000L)
+
+    fun forward10() = seekBy(10_000L)
+
+    fun toggleShuffle() {
+        try {
+            queueManager.toggleShuffle()
+        } catch (t: Throwable) {
+            android.util.Log.e("PlayerViewModel", "toggleShuffle failed", t)
+        }
+    }
+
+    fun cycleRepeatMode() {
+        queueManager.cycleRepeatMode()
+    }
+
+    fun setVolume(newVolume: Float) {
+        viewModelScope.launch {
+            preferences.setVolume(newVolume.toDouble())
+            mediaController.volume = newVolume
+            // Mirror to the libusb bypass path, which keeps a volume
+            // of its own. Matches the existing delegate-path
+            // semantics: no ReplayGain re-application on a
+            // mid-playback drag (EngineController re-applies on the
+            // next STATE_READY).
+            bypassVolumeController.setVolume(newVolume)
+        }
+    }
+
+    fun setNowPlayingViewMode(mode: NowPlayingViewMode) {
+        viewModelScope.launch {
+            if (mode == NowPlayingViewMode.VISUALIZER) {
+                preferences.setVisualizerEngineEnabled(true)
+            }
+            preferences.setNowPlayingViewMode(mode)
+        }
+    }
+
+    fun setVisualizerShuffle(enabled: Boolean) {
+        projectMEngineRepository.setRotationEnabled(enabled)
+    }
+
+    fun nextVisualizerPreset() {
+        projectMEngineRepository.nextPreset()
+    }
+
+    fun previousVisualizerPreset() {
+        projectMEngineRepository.previousPreset()
+    }
+
+    fun selectVisualizerPreset(preset: VisualizerPreset) {
+        projectMEngineRepository.selectPreset(preset)
+    }
+
+    fun toggleVisualizerFavoritePreset(presetId: String) {
+        projectMEngineRepository.toggleFavoritePreset(presetId)
+    }
+
+    fun setVisualizerPlaybackPaused(paused: Boolean) {
+        projectMEngineRepository.setPlaybackPaused(paused)
+    }
+
+    fun toggleVisualizerFullscreen() {
+        viewModelScope.launch {
+            val current = visualizerFullscreen.value
+            preferences.setVisualizerFullscreen(!current)
+        }
+    }
+
+    fun skipToQueueIndex(index: Int) {
+        queueManager.skipToIndex(index)
+        resolveAndPlay()
+    }
+
+    /** A TIDAL track TIDAL could not play, which Qobuz has: waiting for a yes or no. */
+    val qobuzOffer: StateFlow<tf.monochrome.desktop.player.QobuzOffer?> = sourceConsent.offer
+
+    /**
+     * Yes: play that song from Qobuz. Allowed for the rest of the session, and
+     * played again from its place in the queue — it was skipped while the
+     * question was open.
+     */
+    fun acceptQobuzOffer() {
+        val offer = qobuzOffer.value ?: return
+        sourceConsent.allow(offer.tidalId)
+        val index = queueManager.queue.value.indexOfFirst { it.id == offer.tidalId }
+        if (index >= 0) skipToQueueIndex(index)
+    }
+
+    /** No: it stays skipped. */
+    fun dismissQobuzOffer() = sourceConsent.dismiss()
+
+    fun setPlaybackSpeed(speed: Float) {
+        viewModelScope.launch { preferences.setPlaybackSpeed(speed) }
+    }
+
+    private fun resolveAndPlay(startPositionMs: Long = 0L) {
+        val track = queueManager.currentTrack.value ?: return
+        // Consumed on first use and keyed on the track, so replaying it later
+        // starts at the beginning and a skipped-past track never hands its
+        // offset to a different one.
+        val start = if (startPositionMs > 0L) startPositionMs
+        else playbackState.consumePendingStart(track.id)
+        // Every playback change the UI asks for funnels through here — taps,
+        // transport skips, queue jumps, a removed current track. The player's
+        // own end-of-track advance happens inside EngineController and never
+        // does, which is what lets the artwork tell "you skipped" from "the
+        // song ended" and pick a matching transition length. Bumped before the
+        // resolve so it is already recorded when the track change lands.
+        _userTrackChanges.value++
+        viewModelScope.launch {
+            try {
+                // Resolution priority:
+                //   1. unifiedTrackRegistry — local files / collections / Qobuz
+                //      tracks already promoted to UnifiedTrack at queue time.
+                //   2. qobuzIdRegistry — synthesize a QobuzCached UnifiedTrack
+                //      for tracks whose ids came in via getQobuzAlbum /
+                //      getQobuzArtist / searchQobuz but were enqueued as
+                //      legacy Track (e.g. an album-detail screen tap). Without
+                //      this step the legacy path below would call TIDAL
+                //      /track/?id=<qobuzId> which either 404s or returns the
+                //      wrong track because the numeric id doesn't match.
+                //   3. Legacy TIDAL path.
+                val unifiedTrack = unifiedTrackRegistry[track.id]
+                    ?: synthesizeQobuzUnifiedTrack(track)
+                if (unifiedTrack != null) {
+                    // Make sure the synthesized UnifiedTrack lands in the
+                    // registry so EngineController's onMediaItemTransition can
+                    // tag the history row with the right source. Otherwise
+                    // Recently Played would re-resolve via TIDAL after process
+                    // death.
+                    unifiedTrackRegistry.put(track.id, unifiedTrack)
+                    val resolved = streamResolver.resolveUnifiedTrack(unifiedTrack)
+                    if (!resolved.isPlayable) {
+                        handleResolveFailure()
+                        return@launch
+                    }
+                    val mc = mediaController
+                    mc.setMediaItem(resolved.mediaItem, start)
+                    mc.prepare()
+                    mc.play()
+                    onResolveSucceeded()
+                    warmUpcoming()
+                } else {
+                    // Legacy API path
+                    val (mediaItem, _) = streamResolver.resolveMediaItem(track)
+                    if (mediaItem == null) {
+                        handleResolveFailure()
+                        return@launch
+                    }
+                    val mc = mediaController
+                    mc.setMediaItem(mediaItem, start)
+                    mc.prepare()
+                    mc.play()
+                    onResolveSucceeded()
+                    warmUpcoming()
+                }
+            } catch (_: Exception) {
+                handleResolveFailure()
+            }
+        }
+    }
+
+    // Desktop: no awaitMediaController(). The engine is in-process and exists
+    // before any tap, so there is no connection for a tap to beat.
+
+    /**
+     * Warm the next couple of queue entries once playback is under way, so a
+     * skip doesn't start from cold. Only the service used to do this, which
+     * left every UI-initiated play unwarmed. Detached — it must never hold up
+     * the track that's already playing.
+     */
+    private fun warmUpcoming() {
+        viewModelScope.launch {
+            val queue = queueManager.currentQueue
+            val currentIdx = queueManager.currentQueueIndex
+            for (i in 1..2) {
+                val nextIdx = currentIdx + i
+                if (nextIdx < queue.size) streamResolver.warmUpcoming(queue[nextIdx])
+            }
+        }
+    }
+
+    private fun onResolveSucceeded() {
+        consecutiveResolveFailures = 0
+        _playbackError.value = null
+    }
+
+    /**
+     * A track failed to resolve/stream. Advance to the next track, but stop —
+     * and surface an error — rather than looping forever: never auto-skip
+     * under RepeatMode.ONE, and bail once a full queue's worth of tracks have
+     * failed in a row (offline / dead streaming instance).
+     */
+    private fun handleResolveFailure() {
+        consecutiveResolveFailures++
+        // Never loaded. Leaving the offset hands it to whatever the skip
+        // below lands on.
+        playbackState.clearPendingStart()
+        val queueSize = queueManager.queue.value.size.coerceAtLeast(1)
+        if (repeatMode.value == RepeatMode.ONE) {
+            _playbackError.value = R.string.error_play_track
+            consecutiveResolveFailures = 0
+            return
+        }
+        if (consecutiveResolveFailures >= queueSize) {
+            _playbackError.value = R.string.error_play_tracks
+            consecutiveResolveFailures = 0
+            return
+        }
+        skipToNext()
+    }
+
+    /**
+     * Build a transient UnifiedTrack with PlaybackSource.QobuzCached for a
+     * legacy Track whose id was previously registered as Qobuz. Used by
+     * resolveAndPlay so a tap on a Qobuz-album track row routes through the
+     * cache-on-demand path rather than TIDAL streaming.
+     */
+    private fun synthesizeQobuzUnifiedTrack(track: Track): UnifiedTrack? {
+        // A Deezer pick whose number is also a known Qobuz id is still the
+        // Deezer pick; StreamResolver's legacy path routes it by deezerId.
+        if (track.deezerId != null) return null
+        if (!qobuzIdRegistry.isQobuzTrack(track.id)) return null
+        return UnifiedTrack(
+            id = "qobuz_${track.id}",
+            title = track.title,
+            durationSeconds = track.duration,
+            trackNumber = track.trackNumber,
+            discNumber = track.volumeNumber,
+            explicit = track.explicit,
+            artistName = track.displayArtist.ifBlank { "Unknown Artist" },
+            artistNames = track.artists.map { it.name }
+                .ifEmpty { listOfNotNull(track.artist?.name) },
+            albumArtistName = track.artist?.name,
+            albumTitle = track.album?.title,
+            albumId = track.album?.id?.toString(),
+            artworkUri = track.coverUrl,
+            source = tf.monochrome.desktop.domain.model.PlaybackSource.QobuzCached(qobuzId = track.id),
+            sourceType = tf.monochrome.desktop.domain.model.SourceType.QOBUZ,
+        )
+    }
+
+    // --- Downloads ---
+
+    /**
+     * Ids of every track with a downloaded copy on disk. Drives the persistent
+     * "downloaded" badge on song rows — unlike [activeDownloads] this outlives
+     * the transfer and survives a restart.
+     */
+    val downloadedTrackIds: StateFlow<Set<Long>> =
+        libraryRepository.getDownloadedTracks()
+            .map { downloads -> downloads.mapTo(mutableSetOf()) { it.id } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    // Live download state for whichever track is currently playing — drives
+    // the player's download button visual feedback (queued/downloading arc,
+    // completed checkmark, failed indicator).
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val currentTrackDownloadState: StateFlow<tf.monochrome.desktop.data.downloads.TrackDownloadState> =
+        currentTrack
+            .flatMapLatest { track ->
+                if (track == null) flowOf(tf.monochrome.desktop.data.downloads.TrackDownloadState())
+                else downloadManager.observeDownloadState(track.id)
+            }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5000),
+                tf.monochrome.desktop.data.downloads.TrackDownloadState()
+            )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val isCurrentTrackDownloaded: StateFlow<Boolean> =
+        currentTrack
+            .flatMapLatest { track ->
+                if (track == null) flowOf(false)
+                else libraryRepository.isDownloadedFlow(track.id)
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /**
+     * True when the track resolves to a local file — it's already on disk, so
+     * download affordances should be hidden and download requests dropped.
+     * The registry is rehydrated from history/queue state, so this covers
+     * local tracks surfaced through Recently Played and playlists too.
+     */
+    /**
+     * Where a legacy [Track] really comes from, when the app knows. Navigation
+     * needs it: a local song's `Track` ids are made up, so "Go to artist"
+     * routes by this rather than by them — see `trackArtistAction`.
+     */
+    fun unifiedFor(track: Track?): tf.monochrome.desktop.domain.model.UnifiedTrack? =
+        track?.let { unifiedTrackRegistry[it.id] }
+
+    fun isLocalTrack(track: Track): Boolean =
+        unifiedTrackRegistry[track.id]?.source is tf.monochrome.desktop.domain.model.PlaybackSource.LocalFile
+
+    /** Drives the player UI: a local file shows as on-device, never downloadable. */
+    val isCurrentTrackLocal: StateFlow<Boolean> = currentTrack
+        .map { track -> track != null && isLocalTrack(track) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /**
+     * Resolve (and cache) the Apple adamId for whatever is playing, so the
+     * downloader already has an Apple source ready by the time the user taps
+     * download. Fire-and-forget: the result lands in QobuzIdRegistry and the
+     * lookup is skipped entirely once a track has been checked once.
+     */
+    private fun prefetchAppleId(track: Track) {
+        // A station is not in anyone's catalogue; searching Apple for its name
+        // and city is a request that can only miss.
+        if (track.appleId != null || isLocalTrack(track) || isLiveStreamTrack(track)) return
+        if (qobuzIdRegistry.hasAppleLookup(track.id)) return
+        viewModelScope.launch {
+            runCatching {
+                apiClient.findAppleIdFor(
+                    trackId = track.id,
+                    title = track.title,
+                    artist = track.displayArtist,
+                    durationSeconds = track.duration,
+                )
+            }
+        }
+    }
+
+    init {
+        viewModelScope.launch {
+            currentTrack.collect { track -> track?.let(::prefetchAppleId) }
+        }
+    }
+
+    fun downloadTrack(track: Track) {
+        // There is no file behind a live stream to download.
+        if (isLocalTrack(track) || isLiveStreamTrack(track)) return
+        downloadManager.downloadTrack(track)
+        observeTrackDownload(track.id)
+    }
+
+    fun downloadAllTracks(tracks: List<Track>) {
+        val remote = tracks.filterNot(::isLocalTrack)
+        downloadManager.downloadTracks(remote)
+        remote.forEach { observeTrackDownload(it.id) }
+    }
+
+    /**
+     * Share the track's audio file (on the desktop, TrackShareHelper reveals it
+     * in Explorer: there is no share sheet).
+     *
+     * A scanned file goes straight to its path. Everything else resolves a
+     * downloaded copy, then a Qobuz cache hit, then a fetch on demand.
+     *
+     * The local branch is the whole point. A [Track] carries no file path, and
+     * TrackShareHelper.shareTrack has nowhere to look for one: it finds no
+     * download row and no cache entry for a scanned file, and falls through to
+     * *downloading the track from Qobuz* — which fails, and reports "No file
+     * available to share" about a file sitting on the user's phone. Every
+     * screen that shares a legacy Track hit that: the player, playlists, album
+     * and artist pages, Favorites, search. Only the unified context menu, which
+     * has the UnifiedTrack and its path, ever worked.
+     *
+     * The lookup is the one already drawing the player's "Downloaded" tick —
+     * see [isLocalTrack]. It was answering correctly one menu row above the
+     * failure.
+     */
+    fun shareTrack(track: Track) {
+        val unified = unifiedTrackRegistry[track.id]
+        if (unified?.source is tf.monochrome.desktop.domain.model.PlaybackSource.LocalFile) {
+            shareUnifiedTrack(unified)
+            return
+        }
+        viewModelScope.launch {
+            trackShareHelper.shareTrack(track)
+        }
+    }
+
+    fun shareDownloadedTrack(entity: tf.monochrome.desktop.data.db.entity.DownloadedTrackEntity) {
+        trackShareHelper.shareDownloadedTrack(entity)
+    }
+
+    /**
+     * Share the file behind a UnifiedTrack. A local track shares the scanned
+     * file straight away; anything else goes through the normal resolve path.
+     */
+    fun shareUnifiedTrack(track: UnifiedTrack) {
+        val local = track.source as? tf.monochrome.desktop.domain.model.PlaybackSource.LocalFile
+        if (local != null) {
+            trackShareHelper.shareLocalPath(local.filePath, track.title)
+            return
+        }
+        shareTrack(track.toLegacyTrack())
+    }
+
+    /** True when this UnifiedTrack is a file already on disk. */
+    fun isLocalUnified(track: UnifiedTrack): Boolean =
+        track.source is tf.monochrome.desktop.domain.model.PlaybackSource.LocalFile
+
+    private fun observeTrackDownload(trackId: Long) {
+        viewModelScope.launch {
+            downloadManager.observeDownloadState(trackId).collectLatest { state ->
+                _activeDownloads.value = _activeDownloads.value.toMutableMap().apply {
+                    if (state.status == tf.monochrome.desktop.data.downloads.DownloadStatus.IDLE) {
+                        remove(trackId)
+                    } else {
+                        put(trackId, state)
+                    }
+                }
+            }
+        }
+    }
+
+    fun addTrackToPlaylist(playlistId: String, track: Track) {
+        viewModelScope.launch {
+            libraryRepository.addTrackToPlaylist(playlistId, track)
+        }
+    }
+
+    fun createPlaylist(
+        name: String,
+        description: String? = null,
+        initialTracks: List<Track> = emptyList(),
+    ) {
+        viewModelScope.launch {
+            // Use the id the repository returns so tracks stashed from an
+            // "Add to playlist → New Playlist" flow actually land in the new
+            // playlist instead of being silently dropped.
+            val id = libraryRepository.createPlaylist(name, description)
+            initialTracks.forEach { libraryRepository.addTrackToPlaylist(id, it) }
+        }
+    }
+
+    override fun onCleared() {
+        playerListener?.let { mediaController.removeListener(it) }
+        playerListener = null
+        super.onCleared()
+    }
+
+    // --- Formatting helpers ---
+    fun formatTime(ms: Long): String {
+        val totalSeconds = (ms / 1000).coerceAtLeast(0)
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return "%d:%02d".format(minutes, seconds)
+    }
+
+}

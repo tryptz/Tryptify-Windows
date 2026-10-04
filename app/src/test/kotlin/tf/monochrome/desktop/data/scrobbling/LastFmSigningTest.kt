@@ -3,7 +3,6 @@ package tf.monochrome.desktop.data.scrobbling
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
 /**
  * The signed half of the Last.fm API.
@@ -70,15 +69,16 @@ class LastFmSigningTest {
 
     @Test
     fun `the callback url is one the manifest actually receives`() {
-        // A scheme or host that drifts from the intent filter produces a
+        // A callback that drifts from what the app listens for produces a
         // browser that redirects into nothing, which looks identical to the
-        // user declining. Read the manifest rather than trusting a constant.
-        val manifest = File("src/main/AndroidManifest.xml").readText()
+        // user declining. Desktop: there is no manifest; the loopback server
+        // listens on LastFmAuthManager.CALLBACK_PATH, which must stay the name
+        // Android's tryptify:// callback uses, so the two apps' flows match.
         val uri = LastFmSigning.CALLBACK_URL
         val scheme = uri.substringBefore("://")
         val host = uri.removePrefix("$scheme://").substringBefore("/")
-        assertTrue("manifest declares no scheme $scheme", manifest.contains("android:scheme=\"$scheme\""))
-        assertTrue("manifest declares no host $host", manifest.contains("android:host=\"$host\""))
+        assertEquals("desktop callback path drifted from Android's", host,
+            tf.monochrome.desktop.data.auth.LastFmAuthManager.CALLBACK_PATH)
     }
 
     @Test

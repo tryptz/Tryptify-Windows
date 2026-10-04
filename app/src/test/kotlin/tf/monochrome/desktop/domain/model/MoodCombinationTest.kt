@@ -16,7 +16,7 @@ class MoodCombinationTest {
 
     private val graph: GenreGraph by lazy {
         val json = Json { ignoreUnknownKeys = true; isLenient = true }
-        val assets = File("src/main/assets")
+        val assets = File("src/main/resources/assets")
         val data = json.decodeFromString(
             GenreGraphData.serializer(),
             File(assets, "genre_graph.json").readText(),

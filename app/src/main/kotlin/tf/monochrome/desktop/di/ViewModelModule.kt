@@ -15,4 +15,106 @@ abstract class ViewModelModule {
     @Multibinds abstract fun plainViewModels(): Map<Class<out ViewModel>, ViewModel>
     @Multibinds abstract fun assistedViewModels(): Map<Class<out ViewModel>, SavedStateVmFactory<*>>
 
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.carmode.CarModeViewModel::class)
+    abstract fun bindCarModeViewModel(vm: tf.monochrome.desktop.ui.carmode.CarModeViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.crossfeed.CrossfeedViewModel::class)
+    abstract fun bindCrossfeedViewModel(vm: tf.monochrome.desktop.ui.crossfeed.CrossfeedViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.debug.DebugLogViewModel::class)
+    abstract fun bindDebugLogViewModel(vm: tf.monochrome.desktop.ui.debug.DebugLogViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.discover.DiscoverViewModel::class)
+    abstract fun bindDiscoverViewModel(vm: tf.monochrome.desktop.ui.discover.DiscoverViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.discover.GenreChartViewModel::class)
+    abstract fun bindGenreChartViewModel(vm: tf.monochrome.desktop.ui.discover.GenreChartViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.discover.WorldRadioViewModel::class)
+    abstract fun bindWorldRadioViewModel(vm: tf.monochrome.desktop.ui.discover.WorldRadioViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.downloads.DownloadCenterViewModel::class)
+    abstract fun bindDownloadCenterViewModel(vm: tf.monochrome.desktop.ui.downloads.DownloadCenterViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.eq.EqViewModel::class)
+    abstract fun bindEqViewModel(vm: tf.monochrome.desktop.ui.eq.EqViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.eq.ParametricEqViewModel::class)
+    abstract fun bindParametricEqViewModel(vm: tf.monochrome.desktop.ui.eq.ParametricEqViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.library.DownloadsViewModel::class)
+    abstract fun bindDownloadsViewModel(vm: tf.monochrome.desktop.ui.library.DownloadsViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.library.LibraryViewModel::class)
+    abstract fun bindLibraryViewModel(vm: tf.monochrome.desktop.ui.library.LibraryViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.library.LocalLibraryViewModel::class)
+    abstract fun bindLocalLibraryViewModel(vm: tf.monochrome.desktop.ui.library.LocalLibraryViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.main.MainViewModel::class)
+    abstract fun bindMainViewModel(vm: tf.monochrome.desktop.ui.main.MainViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.mixer.MixerViewModel::class)
+    abstract fun bindMixerViewModel(vm: tf.monochrome.desktop.ui.mixer.MixerViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.onboarding.OnboardingViewModel::class)
+    abstract fun bindOnboardingViewModel(vm: tf.monochrome.desktop.ui.onboarding.OnboardingViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.oxford.OxfordViewModel::class)
+    abstract fun bindOxfordViewModel(vm: tf.monochrome.desktop.ui.oxford.OxfordViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.player.AudioPipelineViewModel::class)
+    abstract fun bindAudioPipelineViewModel(vm: tf.monochrome.desktop.ui.player.AudioPipelineViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.player.PlayerViewModel::class)
+    abstract fun bindPlayerViewModel(vm: tf.monochrome.desktop.ui.player.PlayerViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.profile.ProfileViewModel::class)
+    abstract fun bindProfileViewModel(vm: tf.monochrome.desktop.ui.profile.ProfileViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.search.SearchViewModel::class)
+    abstract fun bindSearchViewModel(vm: tf.monochrome.desktop.ui.search.SearchViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.AtmosRendererViewModel::class)
+    abstract fun bindAtmosRendererViewModel(vm: tf.monochrome.desktop.ui.settings.AtmosRendererViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.HrtfDatabaseViewModel::class)
+    abstract fun bindHrtfDatabaseViewModel(vm: tf.monochrome.desktop.ui.settings.HrtfDatabaseViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.LyricsFxStudioViewModel::class)
+    abstract fun bindLyricsFxStudioViewModel(vm: tf.monochrome.desktop.ui.settings.LyricsFxStudioViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.SettingsViewModel::class)
+    abstract fun bindSettingsViewModel(vm: tf.monochrome.desktop.ui.settings.SettingsViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.SpotifyImportViewModel::class)
+    abstract fun bindSpotifyImportViewModel(vm: tf.monochrome.desktop.ui.settings.SpotifyImportViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.settings.radio.RadioSettingsViewModel::class)
+    abstract fun bindRadioSettingsViewModel(vm: tf.monochrome.desktop.ui.settings.radio.RadioSettingsViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.stats.ListeningStatsViewModel::class)
+    abstract fun bindListeningStatsViewModel(vm: tf.monochrome.desktop.ui.stats.ListeningStatsViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.stats.StatsViewModel::class)
+    abstract fun bindStatsViewModel(vm: tf.monochrome.desktop.ui.stats.StatsViewModel): ViewModel
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.detail.AlbumDetailViewModel::class)
+    abstract fun bindAlbumDetailViewModelFactory(factory: tf.monochrome.desktop.ui.detail.AlbumDetailViewModel.Factory): SavedStateVmFactory<*>
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.detail.ArtistDetailViewModel::class)
+    abstract fun bindArtistDetailViewModelFactory(factory: tf.monochrome.desktop.ui.detail.ArtistDetailViewModel.Factory): SavedStateVmFactory<*>
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.detail.LocalAlbumDetailViewModel::class)
+    abstract fun bindLocalAlbumDetailViewModelFactory(factory: tf.monochrome.desktop.ui.detail.LocalAlbumDetailViewModel.Factory): SavedStateVmFactory<*>
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.detail.LocalArtistDetailViewModel::class)
+    abstract fun bindLocalArtistDetailViewModelFactory(factory: tf.monochrome.desktop.ui.detail.LocalArtistDetailViewModel.Factory): SavedStateVmFactory<*>
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.detail.LocalFacetDetailViewModel::class)
+    abstract fun bindLocalFacetDetailViewModelFactory(factory: tf.monochrome.desktop.ui.detail.LocalFacetDetailViewModel.Factory): SavedStateVmFactory<*>
+
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.library.PlaylistViewModel::class)
+    abstract fun bindPlaylistViewModelFactory(factory: tf.monochrome.desktop.ui.library.PlaylistViewModel.Factory): SavedStateVmFactory<*>
+
 }

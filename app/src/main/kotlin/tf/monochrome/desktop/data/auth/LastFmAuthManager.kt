@@ -212,7 +212,7 @@ class LastFmAuthManager @Inject constructor(
         _errorMessage.value = null
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "LastFmAuth"
         const val CALLBACK_PATH = "lastfm-callback"
         val CALLBACK_TIMEOUT = 5.minutes

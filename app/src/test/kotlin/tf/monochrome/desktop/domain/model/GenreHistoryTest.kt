@@ -24,7 +24,7 @@ import java.io.File
 class GenreHistoryTest {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-    private val assets = File("src/main/assets")
+    private val assets = File("src/main/resources/assets")
 
     private val history: GenreHistoryData by lazy {
         json.decodeFromString(
