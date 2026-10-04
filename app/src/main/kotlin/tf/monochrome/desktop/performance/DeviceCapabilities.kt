@@ -2,6 +2,7 @@ package tf.monochrome.desktop.performance
 
 import android.os.Build
 import java.io.File
+import java.lang.management.ManagementFactory
 
 data class DeviceSnapshot(
     val cores: Int,
@@ -13,10 +14,18 @@ data class DeviceSnapshot(
 )
 
 /**
- * Synchronous, no-Context device probe. Runs from [tf.monochrome.desktop.MonochromeApp]'s
- * companion-object `init` block — before `Dispatchers.Default` is first touched and
- * before `Application.onCreate`. Every probe is defensive so a missing sysfs node
- * on emulators / some OEMs can't crash startup; we fall back to `availableProcessors`.
+ * Synchronous, no-Context machine probe. Runs from [tf.monochrome.desktop.MonochromeApp]'s
+ * initialiser, which main() touches first — before `Dispatchers.Default` is first
+ * used, because the coroutine scheduler reads its pool sizes exactly once. Every
+ * probe is defensive so an unreadable value can't crash startup.
+ *
+ * Desktop: Android read core frequencies from `cpufreq` sysfs and RAM from
+ * `/proc/meminfo`. On Windows neither exists, so RAM comes from the JVM's
+ * `OperatingSystemMXBean` (physical memory, not the heap) and the core count from
+ * `availableProcessors` (logical processors, so SMT threads count). The sysfs
+ * frequency read is kept for Linux, where it works; on Windows the frequency is
+ * reported as unknown (0) and big-core counting is skipped, which [classify]
+ * already treats as "no data" rather than "weak".
  */
 object DeviceCapabilities {
 
@@ -31,6 +40,9 @@ object DeviceCapabilities {
         cached = result
         return result
     }
+
+    /** The profile for this machine; the same value `MonochromeApp.profile` holds. */
+    fun profile(): PerformanceProfile = PerformanceProfile.forTier(detect().first)
 
     private fun probe(): DeviceSnapshot {
         val cores = runCatching { Runtime.getRuntime().availableProcessors() }.getOrDefault(2)
@@ -50,6 +62,7 @@ object DeviceCapabilities {
         )
     }
 
+    /** Linux only (cpufreq sysfs); on Windows every read comes back 0, "unknown". */
     private fun readCoreMaxFreqsMhz(cores: Int): IntArray {
         if (cores <= 0) return IntArray(0)
         val out = IntArray(cores)
@@ -64,54 +77,58 @@ object DeviceCapabilities {
         return out
     }
 
+    /** Installed physical memory, from the JVM's platform MXBean; 0 if unavailable. */
     private fun readTotalRamMb(): Int = runCatching {
-        val meminfo = File("/proc/meminfo")
-        if (!meminfo.canRead()) return@runCatching 0
-        // "MemTotal:       16123456 kB"
-        meminfo.useLines { lines ->
-            for (line in lines) {
-                if (line.startsWith("MemTotal")) {
-                    val kb = line.filter { it.isDigit() }.toLongOrNull() ?: return@runCatching 0
-                    return@runCatching (kb / 1024L).toInt()
-                }
-            }
-            0
-        }
+        val os = ManagementFactory.getOperatingSystemMXBean() as? com.sun.management.OperatingSystemMXBean
+            ?: return@runCatching 0
+        (os.totalMemorySize / (1024L * 1024L)).toInt()
     }.getOrDefault(0)
 
     private fun classify(s: DeviceSnapshot): DeviceTier {
-        // cpufreq sysfs is unreadable on emulators and some OEM kernels — there
-        // maxFreqMhz probes 0 and bigCores is UNKNOWN, not "none". Missing data
-        // must stay neutral: frequency-based signals only count when a real
-        // reading exists, otherwise an 8-core/12GB emulator lands in LOW and
-        // every blur/glass feature silently vanishes from the test device.
+        // Skia's software rasteriser (forced with -Dskiko.renderApi=SOFTWARE or
+        // SKIKO_RENDER_API, typically on a machine whose GPU driver fails) does
+        // every blur on the CPU; the glass costs more than it is worth there.
+        if (softwareRendering()) return DeviceTier.LOW
+
+        // Missing data must stay neutral: a reading of 0 means "unknown", never
+        // "small", so an unreadable value cannot push a capable machine down.
         val freqKnown = s.maxFreqMhz > 0
 
-        // LOW: any single "too weak" signal wins, so we err toward smoothness on constrained hw.
+        // LOW: any single "too weak" signal wins, so we err toward smoothness.
         val ramLow = s.ramMb in 1..LOW_RAM_MB_MAX
         val weakCpu = freqKnown && s.bigCores == 0 && s.maxFreqMhz <= LOW_FREQ_MHZ_MAX
         if (s.cores <= LOW_CORES_MAX || ramLow || weakCpu) return DeviceTier.LOW
 
-        // HIGH: many cores + plenty of RAM, and — when frequency data exists —
-        // a real big-core cluster. Without cpufreq the big-core requirement is
-        // waived rather than auto-failed.
+        // HIGH: many hardware threads and plenty of RAM. Desktop CPUs have no
+        // big.LITTLE frequency split worth counting, so the Android big-core
+        // requirement only applies when cpufreq data exists.
         val manyCores = s.cores >= HIGH_CORES_MIN
         val manyBig = !freqKnown || s.bigCores >= HIGH_BIG_CORES_MIN
-        val plentyRam = s.ramMb >= HIGH_RAM_MB_MIN
+        val plentyRam = s.ramMb == 0 || s.ramMb >= HIGH_RAM_MB_MIN
         if (manyCores && manyBig && plentyRam) return DeviceTier.HIGH
 
         return DeviceTier.MID
     }
 
+    private fun softwareRendering(): Boolean =
+        System.getProperty("skiko.renderApi").orEmpty().equals("SOFTWARE", ignoreCase = true) ||
+            System.getenv("SKIKO_RENDER_API").orEmpty().equals("SOFTWARE", ignoreCase = true)
+
     // "Same cluster" tolerance for big-core counting. Kryo/Cortex clusters typically
     // differ by 200+ MHz; this keeps us tolerant of dvfs governor noise.
     private const val BIG_CLUSTER_TOLERANCE_MHZ = 100
 
-    private const val LOW_CORES_MAX = 4
-    private const val LOW_RAM_MB_MAX = 3 * 1024
+    // Desktop thresholds. Android's LOW tier (≤ 4 cores, ≤ 3 GB) was for phones
+    // with four slow cores; a PC reporting 4 logical processors is a dual-core
+    // with SMT and handles the glass at MID. Only ≤ 2 logical processors, or
+    // 4 GB of RAM or less (Windows 11's own floor), is LOW. The HIGH bar sits a
+    // little under 8 GB because firmware and integrated graphics reserve some of
+    // it, so an 8 GB machine reports roughly 7.8.
+    private const val LOW_CORES_MAX = 2
+    private const val LOW_RAM_MB_MAX = 4 * 1024
     private const val LOW_FREQ_MHZ_MAX = 1800
 
     private const val HIGH_CORES_MIN = 8
     private const val HIGH_BIG_CORES_MIN = 3
-    private const val HIGH_RAM_MB_MIN = 6 * 1024
+    private const val HIGH_RAM_MB_MIN = 8 * 1024 - 512
 }

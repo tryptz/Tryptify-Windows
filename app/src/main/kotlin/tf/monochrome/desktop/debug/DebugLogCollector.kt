@@ -1,85 +1,130 @@
 package tf.monochrome.desktop.debug
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import java.io.IOException
+import android.util.Log
+import java.io.ByteArrayOutputStream
+import java.io.OutputStream
+import java.io.PrintStream
+import java.nio.charset.Charset
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Long-running subprocess reader that pipes `logcat -v threadtime --pid=<us>`
- * into [DebugLogBuffer]. Captures everything the Android logger sees for our
- * process — framework warnings, our own Log.* calls, native crash traces,
- * StrictMode violations — with no changes to existing logging code.
+ * Feeds the process's own log into [DebugLogBuffer] for the in-app debug log.
  *
- * API 24+ only allows an app to read its own pid's output (security hardening
- * from Nougat onwards), which is exactly what we want: `--pid=<us>` both scopes
- * the stream to our process and keeps the approach portable without adding the
- * `READ_LOGS` permission.
+ * Android: a long-running `logcat -v threadtime --pid=<us>` subprocess, which
+ * captured everything the platform logger saw for the process — our Log.*
+ * calls, `System.err` (tag `System.err`, level W), framework warnings.
+ *
+ * Desktop: there is no logcat. The `android.util.Log` shim offers a [Log.sink]
+ * that receives every line it prints, so our own Log.* calls arrive with their
+ * level and tag intact; and `System.err` / `System.out` are teed, so library
+ * warnings and uncaught-exception traces land under `System.err` /
+ * `System.out` exactly as logcat filed them. Every entry is given a logcat
+ * `threadtime` line as its [DebugLogEntry.raw], so the export reads the same
+ * as on Android and [parse] round-trips it.
+ *
+ * Desktop: what native code writes straight to file descriptor 2 (the DSP's
+ * `<android/log.h>` compat layer) bypasses `System.err` and is not captured;
+ * the shim's `Log.minLevel` also drops DEBUG/VERBOSE lines before the sink.
  */
 @Singleton
 class DebugLogCollector @Inject constructor(
     private val buffer: DebugLogBuffer,
 ) {
+    private val lock = Any()
+    private var running = false
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var job: Job? = null
-    @Volatile private var process: Process? = null
+    private var previousSink: ((level: Int, tag: String, message: String) -> Unit)? = null
+    private var ourSink: ((level: Int, tag: String, message: String) -> Unit)? = null
+    private var originalErr: PrintStream? = null
+    private var originalOut: PrintStream? = null
+    private var teeErr: PrintStream? = null
+    private var teeOut: PrintStream? = null
+
+    private val pid: Int = runCatching { ProcessHandle.current().pid().toInt() }.getOrDefault(0)
+
+    /** Guards against a capture that itself prints (it never should) looping forever. */
+    private val recording = ThreadLocal.withInitial { false }
 
     /** Idempotent; safe to call multiple times. Starts at app boot. */
     fun start() {
-        if (job?.isActive == true) return
-        job = scope.launch { run() }
+        synchronized(lock) {
+            if (running) return
+            running = true
+            val previous = Log.sink
+            val sink: (Int, String, String) -> Unit = { level, tag, message ->
+                previous?.invoke(level, tag, message)
+                record(levelChar(level), tag, message)
+            }
+            previousSink = previous
+            ourSink = sink
+            Log.sink = sink
+            installStreamTees()
+        }
     }
 
     /** Only used by unit-test / teardown paths — the collector normally runs for the whole process lifetime. */
     fun stop() {
-        job?.cancel()
-        job = null
-        process?.destroy()
-        process = null
+        synchronized(lock) {
+            if (!running) return
+            running = false
+            if (Log.sink === ourSink) Log.sink = previousSink
+            ourSink = null
+            previousSink = null
+            if (System.err === teeErr) originalErr?.let { System.setErr(it) }
+            if (System.out === teeOut) originalOut?.let { System.setOut(it) }
+            teeErr = null
+            teeOut = null
+            originalErr = null
+            originalOut = null
+        }
     }
 
-    private suspend fun run() {
-        val pid = android.os.Process.myPid()
-        // `*:V` = every tag at Verbose and above. `-T 1` starts from the tail so
-        // we don't replay megabytes of framework output from before this boot.
-        // `--pid` scopes to our own process on API 24+.
-        val cmd = arrayOf(
-            "logcat",
-            "-v", "threadtime",
-            "--pid=$pid",
-            "-T", "1",
-            "*:V",
-        )
-        val proc = try {
-            Runtime.getRuntime().exec(cmd)
-        } catch (e: IOException) {
-            // Device doesn't have logcat in PATH or blocks Runtime.exec — give up
-            // silently. The UI will simply show an empty buffer.
-            return
+    private fun installStreamTees() {
+        runCatching {
+            val err = System.err
+            val tee = TeePrintStream(CapturingStream(err, err.charset()) { line -> if (!Log.isEmittingConsoleLine()) record('W', "System.err", line) }, err.charset())
+            originalErr = err
+            teeErr = tee
+            System.setErr(tee)
         }
-        process = proc
+        runCatching {
+            val out = System.out
+            val tee = TeePrintStream(CapturingStream(out, out.charset()) { line -> record('I', "System.out", line) }, out.charset())
+            originalOut = out
+            teeOut = tee
+            System.setOut(tee)
+        }
+    }
+
+    /** One entry per line, as logcat splits a multi-line message. */
+    private fun record(level: Char, tag: String, message: String) {
+        if (recording.get()) return
+        recording.set(true)
         try {
-            proc.inputStream.bufferedReader().useLines { lines ->
-                for (line in lines) {
-                    if (!kotlin.coroutines.coroutineContext.isActive) break
-                    if (line.isEmpty()) continue
-                    val entry = parse(line)
-                    if (isNoise(entry)) continue
-                    buffer.append(entry)
-                }
+            val timestamp = LocalDateTime.now().format(TIMESTAMP)
+            val tid = Thread.currentThread().threadId().toInt()
+            val lines = message.split('\n').map { it.trimEnd('\r') }.dropLastWhile { it.isEmpty() }.ifEmpty { listOf("") }
+            for (line in lines) {
+                val raw = String.format(Locale.US, "%s %5d %5d %c %s: %s", timestamp, pid, tid, level, tag, line)
+                val entry = DebugLogEntry(
+                    timestamp = timestamp,
+                    pid = pid,
+                    tid = tid,
+                    level = level,
+                    tag = tag,
+                    message = line,
+                    raw = raw,
+                )
+                if (!isNoise(entry)) buffer.append(entry)
             }
-        } catch (_: IOException) {
-            // Stream closed — subprocess exited. Fall through and let the
-            // coroutine complete; caller can restart if desired.
+        } catch (_: Throwable) {
+            // Logging must never take the app down with it.
         } finally {
-            runCatching { proc.destroy() }
-            process = null
+            recording.set(false)
         }
     }
 
@@ -88,7 +133,9 @@ class DebugLogCollector @Inject constructor(
      * `MM-DD HH:MM:SS.SSS  PID  TID LVL TAG: MESSAGE`
      *
      * Returns a best-effort entry; anything that doesn't match is preserved
-     * verbatim as an INFO line so nothing is silently dropped.
+     * verbatim as an INFO line so nothing is silently dropped. On the desktop
+     * the collector writes this shape itself (see [record]); the parser stays
+     * for anything that reads an export back.
      */
     internal fun parse(line: String): DebugLogEntry {
         val match = THREADTIME_REGEX.matchEntire(line)
@@ -128,6 +175,9 @@ class DebugLogCollector @Inject constructor(
      * wrong, and a screen of vendor chatter there is worse than a long All tab.
      * Everything dropped below was filling that tab on a ColorOS device while
      * the app was working perfectly.
+     *
+     * Desktop: none of these Android sources exist here, so the lists never
+     * match; they are kept so the filter (and its test) stays one rule set.
      */
     internal fun isNoise(entry: DebugLogEntry): Boolean {
         // Drop debug-level lines from these tags entirely.
@@ -139,6 +189,75 @@ class DebugLogCollector @Inject constructor(
         return false
     }
 
+    /**
+     * The console stream with a copy of every line handed to [onLine].
+     *
+     * The Log shim prints its own lines to `System.err` before handing them to
+     * [Log.sink]; those arrive here through `println(String)` in the shim's
+     * `L/Tag: message` shape and are passed through without being captured a
+     * second time. Bytes go to the original stream untouched, in the original
+     * stream's charset, so the console reads exactly as before.
+     */
+    private class TeePrintStream(
+        private val capturing: CapturingStream,
+        charset: Charset,
+    ) : PrintStream(capturing, true, charset) {
+
+        override fun println(x: String?) {
+            if (x != null && LOG_SHIM_LINE.containsMatchIn(x)) {
+                capturing.suppressed.set(true)
+                try {
+                    super.println(x)
+                } finally {
+                    capturing.suppressed.set(false)
+                }
+            } else {
+                super.println(x)
+            }
+        }
+    }
+
+    private class CapturingStream(
+        private val original: PrintStream,
+        private val charset: Charset,
+        private val onLine: (String) -> Unit,
+    ) : OutputStream() {
+        val suppressed: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
+        private val line = ByteArrayOutputStream()
+
+        override fun write(b: Int) {
+            original.write(b)
+            if (!suppressed.get()) capture(byteArrayOf(b.toByte()), 0, 1)
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            original.write(b, off, len)
+            if (!suppressed.get()) capture(b, off, len)
+        }
+
+        override fun flush() = original.flush()
+
+        // The console is not ours to close.
+        override fun close() = original.flush()
+
+        private fun capture(b: ByteArray, off: Int, len: Int) {
+            val complete = ArrayList<String>(1)
+            synchronized(line) {
+                for (i in off until off + len) {
+                    val byte = b[i]
+                    if (byte == '\n'.code.toByte()) {
+                        complete += String(line.toByteArray(), charset).trimEnd('\r')
+                        line.reset()
+                    } else if (line.size() < MAX_LINE_BYTES) {
+                        line.write(byte.toInt())
+                    }
+                }
+            }
+            // Outside the lock: the buffer has its own.
+            for (text in complete) if (text.isNotEmpty()) onLine(text)
+        }
+    }
+
     private companion object {
         /**
          * threadtime format from AOSP's `logcat.cpp`:
@@ -147,6 +266,23 @@ class DebugLogCollector @Inject constructor(
         private val THREADTIME_REGEX = Regex(
             """^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\d+)\s+(\d+)\s+([VDIWEFS])\s+([^:]+):\s?(.*)$"""
         )
+
+        /** The shape the Log shim prints: `W/Tag: message`. */
+        private val LOG_SHIM_LINE = Regex("""^[VDIWEF]/[^:\n]+: """)
+
+        private val TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS", Locale.US)
+
+        /** One runaway line (a binary blob printed by mistake) must not eat the heap. */
+        private const val MAX_LINE_BYTES = 16 * 1024
+
+        private fun levelChar(priority: Int): Char = when (priority) {
+            Log.VERBOSE -> 'V'
+            Log.DEBUG -> 'D'
+            Log.INFO -> 'I'
+            Log.WARN -> 'W'
+            Log.ERROR -> 'E'
+            else -> 'F'
+        }
 
         private val NOISE_DEBUG_TAGS = setOf(
             "PipelineWatcher",       // Media3 codec input/output queue depth

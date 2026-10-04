@@ -7,6 +7,7 @@ import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import android.net.Uri
+import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -370,10 +371,17 @@ class FfmpegDecoder private constructor(
          * Opens [url] directly with libavformat (file paths, http(s), hls, dash),
          * sending [headers] and the app's user agent on network streams.
          */
-        fun open(url: String, headers: Map<String, String> = emptyMap(), userAgent: String? = null): FfmpegDecoder {
+        fun open(
+            url: String,
+            headers: Map<String, String> = emptyMap(),
+            userAgent: String? = null,
+            formatName: String? = null,
+            protocolWhitelist: String? = null,
+        ): FfmpegDecoder {
             val format = avformat.avformat_alloc_context() ?: throw IOException("avformat_alloc_context failed")
             val options = AVDictionary(null as Pointer?)
             if (userAgent != null) avutil.av_dict_set(options, "user_agent", userAgent, 0)
+            if (protocolWhitelist != null) avutil.av_dict_set(options, "protocol_whitelist", protocolWhitelist, 0)
             if (headers.isNotEmpty()) {
                 avutil.av_dict_set(options, "headers", headers.entries.joinToString("") { "${it.key}: ${it.value}\r\n" }, 0)
             }
@@ -381,11 +389,40 @@ class FfmpegDecoder private constructor(
             avutil.av_dict_set(options, "reconnect_streamed", "1", 0)
             avutil.av_dict_set(options, "reconnect_delay_max", "5", 0)
             avutil.av_dict_set(options, "rw_timeout", "20000000", 0)   // 20 s, microseconds
-            val rc = avformat.avformat_open_input(format, url, null, options)
+            val inputFormat = formatName?.let { name ->
+                avformat.av_find_input_format(name) ?: throw IOException("this FFmpeg build has no $name demuxer")
+            }
+            val rc = avformat.avformat_open_input(format, url, inputFormat, options)
             avutil.av_dict_free(options)
-            if (rc < 0) throw IOException("cannot open $url: ${errorString(rc)}")
+            if (rc < 0) throw IOException("cannot open ${url.take(200)}: ${errorString(rc)}")
             return finishOpen(format, null)
         }
+
+        /**
+         * Opens an inline DASH manifest: StreamResolver puts TIDAL's MPD on the
+         * item as a `data:` URI, as the Android app handed it to ExoPlayer.
+         *
+         * libavformat's DASH demuxer reads the manifest and then fetches the
+         * segments it names, and a demuxer may only open protocols its parent
+         * allows. So the manifest goes to a file and the segment protocols are
+         * whitelisted. A static manifest is read once, during open, so the file
+         * is deleted as soon as that returns.
+         */
+        fun openDash(manifest: String, scratchDir: File, userAgent: String?): FfmpegDecoder {
+            scratchDir.mkdirs()
+            val file = File.createTempFile("stream-", ".mpd", scratchDir)
+            return try {
+                file.writeText(manifest)
+                open(file.absolutePath, userAgent = userAgent, formatName = "dash", protocolWhitelist = DASH_PROTOCOLS)
+            } finally {
+                file.delete()
+            }
+        }
+
+        /** libavformat/avformat.h; JavaCV does not expose the AVFMT_FLAG_* macros. */
+        private const val AVFMT_FLAG_CUSTOM_IO = 0x0080
+
+        private const val DASH_PROTOCOLS = "file,http,https,tcp,tls,crypto"
 
         /** Opens through one of the app's DataSources (partial caches, decrypting sources). */
         fun open(source: DataSource, uri: Uri): FfmpegDecoder {
@@ -393,7 +430,7 @@ class FfmpegDecoder private constructor(
             val bridge = AvioBridge(source, uri, length)
             val format = avformat.avformat_alloc_context() ?: run { bridge.close(); throw IOException("avformat_alloc_context failed") }
             format.pb(bridge.context)
-            format.flags(format.flags() or avformat.AVFMT_FLAG_CUSTOM_IO)
+            format.flags(format.flags() or AVFMT_FLAG_CUSTOM_IO)
             val rc = avformat.avformat_open_input(format, "", null, null as AVDictionary?)
             if (rc < 0) { bridge.close(); throw IOException("cannot open ${uri}: ${errorString(rc)}") }
             return finishOpen(format, bridge)

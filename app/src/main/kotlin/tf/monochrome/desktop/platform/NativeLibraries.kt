@@ -9,10 +9,15 @@ import java.io.File
  * On Android `System.loadLibrary("monochrome_dsp")` found the .so inside the
  * APK. On the desktop the libraries sit in a folder the installer ships
  * (`compose.application.resources.dir`, the Compose packaging convention) or,
- * during development, under `app/resources/<os>-<arch>`. [preload] loads every
- * library it finds by absolute path, once, before any class with a
- * `System.loadLibrary` initialiser runs; a later `loadLibrary` of the same
- * library is then a no-op, so the loaders ported from Android stay unchanged.
+ * during development, under `app/resources/<os>-<arch>`.
+ *
+ * `System.loadLibrary` only searches `java.library.path`, which is fixed at
+ * JVM start, and a library already loaded by absolute path does not satisfy
+ * it. So every loader ported from Android calls [load] instead: it resolves
+ * the file in [candidateDirs], loads it by path once, and falls back to
+ * `loadLibrary` so a `-Djava.library.path` still works. It throws the same
+ * [UnsatisfiedLinkError] `loadLibrary` would, which keeps the loaders'
+ * existing error handling meaningful.
  */
 object NativeLibraries {
     private const val TAG = "NativeLibraries"
@@ -54,28 +59,37 @@ object NativeLibraries {
         else if (System.getProperty("os.name").orEmpty().startsWith("Mac", ignoreCase = true)) "lib$name.dylib"
         else "lib$name.so"
 
+    /** Loads [name] once; throws [UnsatisfiedLinkError] when it cannot be found or linked. */
+    @Synchronized
+    fun load(name: String) {
+        if (loaded[name] == true) return
+        val file = candidateDirs().asSequence().map { it.resolve(fileName(name)) }.firstOrNull { it.isFile }
+        if (file != null) System.load(file.absolutePath) else System.loadLibrary(name)
+        loaded[name] = true
+    }
+
+    /**
+     * Loads every library up front, off the UI thread, so the first class
+     * that needs one does not pay for the link on its own thread. Missing
+     * libraries are logged, not fatal: the features behind them report
+     * themselves unavailable, as they did on Android.
+     */
     @Synchronized
     fun preload(): Map<String, Boolean> {
-        if (loaded.isNotEmpty()) return loaded
-        val dirs = candidateDirs()
         for (name in NAMES) {
-            val file = dirs.asSequence().map { it.resolve(fileName(name)) }.firstOrNull { it.isFile }
-            loaded[name] = if (file == null) {
-                Log.w(TAG, "$name not found in ${dirs.joinToString()}")
+            if (loaded[name] == true) continue
+            loaded[name] = try {
+                load(name)
+                true
+            } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "$name unavailable: ${e.message}")
                 false
-            } else {
-                try {
-                    System.load(file.absolutePath)
-                    true
-                } catch (e: UnsatisfiedLinkError) {
-                    Log.e(TAG, "failed to load ${file.absolutePath}", e)
-                    false
-                }
             }
         }
         Log.i(TAG, "native libraries: ${loaded.entries.joinToString { "${it.key}=${if (it.value) "ok" else "missing"}" }}")
-        return loaded
+        return loaded.toMap()
     }
 
+    @Synchronized
     fun isLoaded(name: String): Boolean = loaded[name] == true
 }

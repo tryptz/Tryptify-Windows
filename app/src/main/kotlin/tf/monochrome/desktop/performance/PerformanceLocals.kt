@@ -18,9 +18,10 @@ import tf.monochrome.desktop.MonochromeApp
  */
 val LocalPerformanceProfile = compositionLocalOf<PerformanceProfile> {
     // Fallback for previews or unit-test composables that bypass the real root
-    // provider. Falls through to whatever MonochromeApp resolved at startup;
-    // if the Application class hasn't loaded (pure-JVM Compose preview tools),
-    // pick HIGH so the preview renders the full glass chrome.
+    // provider. Falls through to whatever MonochromeApp resolved at startup
+    // (desktop: an object main() touches first; reading it here just runs the
+    // DeviceCapabilities probe). If that fails, pick HIGH so the preview
+    // renders the full glass chrome.
     runCatching { MonochromeApp.profile }
         .getOrElse { PerformanceProfile.forTier(DeviceTier.HIGH) }
 }

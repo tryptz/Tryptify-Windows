@@ -1,5 +1,7 @@
 package tf.monochrome.desktop.audio.atmos
 
+import tf.monochrome.desktop.platform.NativeLibraries
+
 /**
  * JNI bridge to the clean-room Atmos metadata/object native code (the
  * Cavern-ported EMDF / OAMD / JOC chain in cpp/atmos).
@@ -15,7 +17,7 @@ object AtmosNative {
 
     init {
         available = try {
-            System.loadLibrary("monochrome_atmos_jni")
+            NativeLibraries.load("monochrome_atmos_jni")
             true
         } catch (e: UnsatisfiedLinkError) {
             false

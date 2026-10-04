@@ -2,10 +2,11 @@ package tf.monochrome.desktop.data.presence
 
 import android.content.Context
 import android.util.Log
-import coil3.BitmapImage
+import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
-import coil3.request.allowHardware
+import coil3.request.SuccessResult
+import coil3.toBitmap
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -25,7 +26,6 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
-import androidx.core.graphics.scale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -40,17 +40,19 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.jetbrains.skia.Bitmap
 import tf.monochrome.desktop.data.preferences.PreferencesManager
 import tf.monochrome.desktop.data.repository.GenreGraphRepository
-import tf.monochrome.desktop.ui.theme.DynamicColorExtractor
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -71,6 +73,11 @@ import kotlin.random.Random
  */
 @Singleton
 class DiscordPresenceManager @Inject constructor(
+    // Desktop: nothing reads this yet. Coil takes PlatformContext.INSTANCE on
+    // the JVM rather than a Context, and the cover palette comes from
+    // PresencePalette until ui/theme's DynamicColorExtractor (which takes this
+    // Context) is ported. Kept so the constructor and the injection graph
+    // match Android's.
     @ApplicationContext private val context: Context,
     private val httpClient: HttpClient,
     private val preferences: PreferencesManager,
@@ -187,6 +194,20 @@ class DiscordPresenceManager @Inject constructor(
     /** Playback is over for good: blank the card and drop the connection. */
     fun shutdown() {
         scope.launch { stop() }
+    }
+
+    /**
+     * [shutdown], waited for, for the app exiting.
+     *
+     * Desktop: Android called [shutdown] from the playback service's onDestroy,
+     * and the process outlived it long enough for the blank frame to land. The
+     * desktop's matching moment is the window closing, after which the JVM
+     * exits and a launched coroutine simply never runs — leaving the last track
+     * parked on the profile until Discord notices the dead socket. So the exit
+     * path waits for it, bounded, so a dead network never holds the window open.
+     */
+    fun shutdownBlocking(timeoutMs: Long = EXIT_TIMEOUT_MS) {
+        runBlocking { withTimeoutOrNull(timeoutMs) { stop() } }
     }
 
     private suspend fun handle(command: Command) {
@@ -469,15 +490,17 @@ class DiscordPresenceManager @Inject constructor(
             ?: return null
         val coverUrl = now.artworkUrl ?: return null
 
-        val palette = DynamicColorExtractor.extract(context, coverUrl)
+        // Desktop: DynamicColorExtractor.extract(context, coverUrl) on Android;
+        // see PresencePalette for why and for when to switch back.
+        val palette = PresencePalette.extract(coverUrl)
         val tint = (palette?.vibrant ?: palette?.dominant)?.let {
             val argb = it.value.toULong() shr 32
-            android.graphics.Color.rgb(
+            org.jetbrains.skia.Color.makeRGB(
                 ((argb shr 16) and 0xFFu).toInt(),
                 ((argb shr 8) and 0xFFu).toInt(),
                 (argb and 0xFFu).toInt(),
             )
-        } ?: android.graphics.Color.rgb(88, 101, 242)
+        } ?: org.jetbrains.skia.Color.makeRGB(88, 101, 242)
 
         val lineage = lineageOf(now.genreId)
         val groove = PresenceBadge.groove(lineage)
@@ -549,16 +572,8 @@ class DiscordPresenceManager @Inject constructor(
             // Square, and no larger than the card ever renders. Tag artwork runs
             // to a few thousand pixels either way, and posting that costs the
             // listener's data to produce something drawn at a couple of hundred.
-            val square = bitmap.scale(PresenceArtwork.SIZE, PresenceArtwork.SIZE)
-            val out = java.io.ByteArrayOutputStream()
-            @Suppress("DEPRECATION")
-            val ok = square.compress(
-                android.graphics.Bitmap.CompressFormat.WEBP,
-                PresenceArtwork.QUALITY,
-                out,
-            )
-            if (square !== bitmap) square.recycle()
-            if (ok) out.toByteArray() else null
+            // (PresenceArtwork.SIZE square, WebP at PresenceArtwork.QUALITY.)
+            PresenceArtwork.still(bitmap)
         } ?: return null
 
         val uploaded = upload(bytes, channel, token) ?: return null
@@ -567,15 +582,21 @@ class DiscordPresenceManager @Inject constructor(
         return asset
     }
 
-    /** Fetch a cover as a software bitmap, reusing the app-wide image cache. */
-    private suspend fun loadCover(url: String): android.graphics.Bitmap? = runCatching {
-        val request = ImageRequest.Builder(context)
+    /**
+     * Fetch a cover as a bitmap, reusing the app-wide image cache.
+     *
+     * Desktop: Coil's JVM images are Skia bitmaps in memory, so there is no
+     * hardware-bitmap opt-out to ask for (Android needed `allowHardware(false)`
+     * for Palette and Canvas to read the pixels). The bitmap may be shared with
+     * the memory cache, so it is only ever read.
+     */
+    private suspend fun loadCover(url: String): Bitmap? = runCatching {
+        val platformContext = PlatformContext.INSTANCE
+        val request = ImageRequest.Builder(platformContext)
             .data(url)
-            // Palette and Canvas both need pixels they can read.
-            .allowHardware(false)
             .build()
-        val result = SingletonImageLoader.get(context).execute(request)
-        (result.image as? BitmapImage)?.bitmap
+        val result = SingletonImageLoader.get(platformContext).execute(request)
+        (result as? SuccessResult)?.image?.toBitmap()
     }.onFailure { Log.w(TAG, "cover load failed", it) }.getOrNull()
 
     /**
@@ -637,7 +658,8 @@ class DiscordPresenceManager @Inject constructor(
         // back inside PresenceBadge, so every track gets a spectrum rather than
         // the card gaining and losing a graphic depending on how much the app
         // happens to know about what is playing.
-        val palette = DynamicColorExtractor.extract(context, now.artworkUrl)
+        // Desktop: DynamicColorExtractor.extract(context, …) on Android.
+        val palette = PresencePalette.extract(now.artworkUrl)
         val colour = palette?.vibrant ?: palette?.dominant
         val rgb = colour?.let {
             val argb = it.value.toULong() shr 32
@@ -699,6 +721,9 @@ class DiscordPresenceManager @Inject constructor(
 
         /** How long a queue has to read empty before it counts as stopped. */
         const val HIDE_GRACE_MS = 15_000L
+
+        /** The most the app's exit waits for the card to be blanked. */
+        const val EXIT_TIMEOUT_MS = 1_500L
         val json = Json { ignoreUnknownKeys = true; isLenient = true }
     }
 }

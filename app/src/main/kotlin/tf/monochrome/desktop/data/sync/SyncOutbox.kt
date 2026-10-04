@@ -5,7 +5,6 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
@@ -13,6 +12,9 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+// Desktop: the preferencesDataStore delegate is DesktopDataStores.kt's (one instance per
+// file under AppPaths.prefsDir); the file name and keys are Android's.
+import tf.monochrome.desktop.data.preferences.preferencesDataStore
 
 private val Context.syncOutboxDataStore: DataStore<Preferences> by
     preferencesDataStore(name = "sync_outbox")

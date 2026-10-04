@@ -1,6 +1,10 @@
 package tf.monochrome.desktop.player.engine
 
+import android.util.Base64
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.FileDataSource
 import dagger.Module
 import dagger.Provides
 import javax.inject.Singleton
@@ -21,6 +25,12 @@ import tf.monochrome.desktop.audio.stretch.StretchAudioProcessor
 import tf.monochrome.desktop.audio.tempo.BpmTapProcessor
 import tf.monochrome.desktop.audio.usb.ToFloatPcmAudioProcessor
 import tf.monochrome.desktop.audio.wasapi.WasapiNative
+import tf.monochrome.desktop.data.cache.DeezerPartialDataSource
+import tf.monochrome.desktop.data.cache.DeezerStreamCacheManager
+import tf.monochrome.desktop.data.cache.QobuzPartialDataSource
+import tf.monochrome.desktop.data.cache.QobuzStreamCacheManager
+import tf.monochrome.desktop.data.cache.SchemeRoutingDataSource
+import tf.monochrome.desktop.platform.AppPaths
 import tf.monochrome.desktop.visualizer.ProjectMAudioBus
 import tf.monochrome.desktop.visualizer.ProjectMAudioTapProcessor
 
@@ -68,8 +78,59 @@ object PlaybackModule {
 
     @Provides
     @Singleton
-    fun playbackEngine(processors: ChainProcessors, selection: OutputSelection): PlaybackEngine =
-        PlaybackEngine(processors.list, sinkFactory = { selection.createSink() })
+    fun playbackEngine(
+        processors: ChainProcessors,
+        selection: OutputSelection,
+        qobuzCache: QobuzStreamCacheManager,
+        deezerCache: DeezerStreamCacheManager,
+        paths: AppPaths,
+    ): PlaybackEngine {
+        val engine = PlaybackEngine(processors.list, sinkFactory = { selection.createSink() })
+        engine.sourceOpener = streamOpener(engine, qobuzCache, deezerCache, paths)
+        return engine
+    }
+
+    /**
+     * What PlaybackService.buildDataSourceFactory did, split by who is better
+     * at it. `qobuz://` and `deezer://` go through the app's own sources (the
+     * partial cache that plays a download while it is still arriving, and the
+     * Deezer stripe decryption), behind the same SchemeRoutingDataSource.
+     * Everything else goes to libavformat directly, so radio keeps its native
+     * HTTP reconnects, ICY handling and HLS, which a byte pipe cannot give it;
+     * an inline DASH manifest goes to its DASH demuxer.
+     */
+    private fun streamOpener(
+        engine: PlaybackEngine,
+        qobuzCache: QobuzStreamCacheManager,
+        deezerCache: DeezerStreamCacheManager,
+        paths: AppPaths,
+    ): PlaybackEngine.SourceOpener {
+        val qobuz = QobuzPartialDataSource.Factory(qobuzCache)
+        val deezer = DeezerPartialDataSource.Factory(deezerCache)
+        val routed = DataSource.Factory {
+            SchemeRoutingDataSource(FileDataSource(), qobuz.createDataSource(), deezer.createDataSource())
+        }
+        val direct = engine.sourceOpener
+        return PlaybackEngine.SourceOpener { item ->
+            val uri = item.localConfiguration?.uri ?: throw IllegalArgumentException("MediaItem without a uri: $item")
+            when (uri.scheme?.lowercase()) {
+                "qobuz", "deezer" -> FfmpegDecoder.open(routed.createDataSource(), uri)
+                "data" -> {
+                    val manifest = inlineDashManifest(uri.toString())
+                    if (manifest != null) FfmpegDecoder.openDash(manifest, paths.cacheDir.resolve("dash"), engine.userAgent)
+                    else direct.open(item)
+                }
+                else -> direct.open(item)
+            }
+        }
+    }
+
+    /** The MPD inside `data:application/dash+xml;base64,…`, or null for any other data: URI. */
+    internal fun inlineDashManifest(uri: String): String? {
+        val prefix = "data:${MimeTypes.APPLICATION_MPD};base64,"
+        if (!uri.startsWith(prefix)) return null
+        return String(Base64.decode(uri.substring(prefix.length), Base64.DEFAULT), Charsets.UTF_8)
+    }
 }
 
 /** The ordered processor list, wrapped so Dagger can tell it from any other List. */

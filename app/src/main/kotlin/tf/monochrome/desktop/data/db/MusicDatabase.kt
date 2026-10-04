@@ -3,7 +3,8 @@ package tf.monochrome.desktop.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 import tf.monochrome.desktop.data.db.dao.DownloadDao
 import tf.monochrome.desktop.data.db.dao.EqPresetDao
 import tf.monochrome.desktop.data.db.dao.FavoriteDao
@@ -89,6 +90,8 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun mixPresetDao(): MixPresetDao
     abstract fun playbackStateDao(): PlaybackStateDao
 
+    // Desktop: Room on the JVM hands migrations an androidx.sqlite SQLiteConnection
+    // instead of SupportSQLiteDatabase; the SQL in every migration is unchanged.
     companion object {
         /**
          * v8 → v9: THX Spatial Audio designation. Adds the `version` +
@@ -99,15 +102,15 @@ abstract class MusicDatabase : RoomDatabase() {
          * library scans survive the upgrade.
          */
         val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE downloaded_tracks ADD COLUMN version TEXT")
-                db.execSQL("ALTER TABLE downloaded_tracks ADD COLUMN isThxSpatialAudio INTEGER NOT NULL DEFAULT 0")
-                db.execSQL(
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE downloaded_tracks ADD COLUMN version TEXT")
+                connection.execSQL("ALTER TABLE downloaded_tracks ADD COLUMN isThxSpatialAudio INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL(
                     "UPDATE downloaded_tracks SET isThxSpatialAudio = 1 " +
                         "WHERE title LIKE '%THX Spatial Audio%'"
                 )
-                db.execSQL("ALTER TABLE local_tracks ADD COLUMN isThxSpatialAudio INTEGER NOT NULL DEFAULT 0")
-                db.execSQL(
+                connection.execSQL("ALTER TABLE local_tracks ADD COLUMN isThxSpatialAudio INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL(
                     "UPDATE local_tracks SET isThxSpatialAudio = 1 " +
                         "WHERE title LIKE '%THX Spatial Audio%' OR album LIKE '%THX Spatial Audio%'"
                 )
@@ -123,9 +126,9 @@ abstract class MusicDatabase : RoomDatabase() {
          * survive the upgrade.
          */
         val MIGRATION_9_10 = object : Migration(9, 10) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE local_tracks ADD COLUMN isDolbyAtmos INTEGER NOT NULL DEFAULT 0")
-                db.execSQL(
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE local_tracks ADD COLUMN isDolbyAtmos INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL(
                     "UPDATE local_tracks SET isDolbyAtmos = 1 " +
                         "WHERE title LIKE '%Dolby Atmos%' OR album LIKE '%Dolby Atmos%'"
                 )
@@ -139,8 +142,8 @@ abstract class MusicDatabase : RoomDatabase() {
          * so saved presets survive the upgrade.
          */
         val MIGRATION_10_11 = object : Migration(10, 11) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE eq_presets ADD COLUMN bandsRJson TEXT")
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE eq_presets ADD COLUMN bandsRJson TEXT")
             }
         }
 
@@ -161,8 +164,8 @@ abstract class MusicDatabase : RoomDatabase() {
          * for this table.
          */
         val MIGRATION_11_12 = object : Migration(11, 12) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
                     "CREATE INDEX IF NOT EXISTS " +
                         "`index_local_tracks_albumArtist_album_discNumber_trackNumber` " +
                         "ON `local_tracks` (`albumArtist`, `album`, `discNumber`, `trackNumber`)"
@@ -193,13 +196,13 @@ abstract class MusicDatabase : RoomDatabase() {
          * fails on open and fallbackToDestructiveMigration wipes the library.
          */
         val MIGRATION_12_13 = object : Migration(12, 13) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE `local_tracks` ADD COLUMN `titleSearchKey` TEXT")
-                db.execSQL(
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `local_tracks` ADD COLUMN `titleSearchKey` TEXT")
+                connection.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_local_tracks_titleSearchKey` " +
                         "ON `local_tracks` (`titleSearchKey`)"
                 )
-                db.execSQL("UPDATE `local_tracks` SET `titleSearchKey` = lower(`title`)")
+                connection.execSQL("UPDATE `local_tracks` SET `titleSearchKey` = lower(`title`)")
             }
         }
 
@@ -218,15 +221,15 @@ abstract class MusicDatabase : RoomDatabase() {
          * dropping every playlist, favourite and preset. Do not hand-edit.
          */
         val MIGRATION_13_14 = object : Migration(13, 14) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
                     "CREATE TABLE IF NOT EXISTS `playback_state` (`id` INTEGER NOT NULL, " +
                         "`currentIndex` INTEGER NOT NULL, `currentTrackId` INTEGER NOT NULL, " +
                         "`positionMs` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL, " +
                         "`shuffleEnabled` INTEGER NOT NULL, `repeatMode` TEXT NOT NULL, " +
                         "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
                 )
-                db.execSQL(
+                connection.execSQL(
                     "CREATE TABLE IF NOT EXISTS `playback_queue` (`id` INTEGER NOT NULL, " +
                         "`queueJson` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`id`))"

@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.audio.stretch
 
+import tf.monochrome.desktop.platform.NativeLibraries
 import java.nio.ByteBuffer
 
 /**
@@ -19,7 +20,7 @@ object StretchNative {
 
     init {
         available = try {
-            System.loadLibrary("monochrome_stretch")
+            NativeLibraries.load("monochrome_stretch")
             true
         } catch (e: UnsatisfiedLinkError) {
             false

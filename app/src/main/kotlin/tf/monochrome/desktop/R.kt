@@ -1615,6 +1615,7 @@ object R {
         val settings_mini_player_hide_with_tabs_desc = StringKey("settings_mini_player_hide_with_tabs_desc")
         val settings_nav_bar_slot_first = StringKey("settings_nav_bar_slot_first")
         val settings_nav_bar_slot_second = StringKey("settings_nav_bar_slot_second")
+        val desktop_copied_to_clipboard = StringKey("desktop_copied_to_clipboard")
     }
 
     object plurals {
@@ -1689,6 +1690,7 @@ object R {
     }
 
     object drawable {
+        val app_icon get() = Res.drawable.app_icon
         val ic_glass_lyrics get() = Res.drawable.ic_glass_lyrics
         val ic_glass_mixer get() = Res.drawable.ic_glass_mixer
         val ic_glass_pause get() = Res.drawable.ic_glass_pause

@@ -1,5 +1,7 @@
 package tf.monochrome.desktop.audio.dsp
 
+import tf.monochrome.desktop.platform.NativeLibraries
+
 /**
  * Single entry point for loading libmonochrome_dsp.so. Multiple call sites
  * (MixBusProcessor, InflatorNative, CompressorNative) used to invoke
@@ -15,7 +17,7 @@ package tf.monochrome.desktop.audio.dsp
  * processing runs on its own thread that necessarily blocks here as well.
  */
 internal object DspNativeLoader {
-    init { System.loadLibrary("monochrome_dsp") }
+    init { NativeLibraries.load("monochrome_dsp") }
 
     @JvmStatic
     fun ensureLoaded() {

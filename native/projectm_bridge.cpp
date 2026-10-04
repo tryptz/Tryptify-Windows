@@ -1,3 +1,8 @@
+#if defined(_WIN32)
+// Ahead of everything else: GLEW refuses to be included after <GL/gl.h>.
+#include <GL/glew.h>
+#endif
+
 #include "projectm_bridge.h"
 
 #include <algorithm>
@@ -6,6 +11,7 @@
 #include <cstring>
 #if defined(_WIN32)
 #include <process.h>
+#include <windows.h>
 #define TF_GETPID _getpid
 #else
 #include <unistd.h>
@@ -19,6 +25,75 @@ constexpr int kDefaultFps = 60;
 /** How many other presets a timed switch or Next tries when one fails to load. */
 constexpr int kMaxSwitchRetries = 3;
 constexpr const char* kTag = "ProjectMBridge";
+
+#if defined(_WIN32)
+/**
+ * Loads the OpenGL entry points projectM calls, with the render thread's
+ * context current.
+ *
+ * opengl32.dll exports OpenGL 1.1 and nothing newer. Everything projectM uses
+ * past that is a GLEW function pointer, null until glewInit has run against a
+ * current context -- and projectm_create compiles shaders straight away, so
+ * without this the first frame is a call through null. Run on every create
+ * rather than once per process: the context belongs to the visualizer's hidden
+ * window, which is made afresh for each session, and WGL only promises that a
+ * pointer carries over between contexts of the same pixel format on the same
+ * device. glewExperimental, because a core profile context lists no extension
+ * strings for core functions and GLEW would otherwise skip loading them.
+ */
+bool LoadGlEntryPoints() {
+    glewExperimental = GL_TRUE;
+    const GLenum result = glewInit();
+    // GLEW probes with queries a core profile rejects. Drained so the errors
+    // are not mistaken for projectM's own; bounded, because without a current
+    // context some drivers report an error on every call.
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {
+    }
+    if (result != GLEW_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, kTag, "glewInit failed: %s",
+                            reinterpret_cast<const char*>(glewGetErrorString(result)));
+        return false;
+    }
+    return true;
+}
+
+/**
+ * UTF-8, which is what JNI hands over, widened for the Win32 file calls.
+ *
+ * A narrow path given to fopen goes through the ANSI code page, so a profile
+ * folder outside it (C:\Users\Jürgen on a Cyrillic code page, any CJK name on
+ * a Western one) failed to open and left the crash sentinel unwritten.
+ */
+std::wstring Widen(const std::string& utf8) {
+    if (utf8.empty()) {
+        return {};
+    }
+    const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), length);
+    return wide;
+}
+#endif
+
+FILE* OpenForWriting(const std::string& path) {
+#if defined(_WIN32)
+    // Binary: the same bytes Android writes, "\n" and all.
+    return _wfopen(Widen(path).c_str(), L"wb");
+#else
+    return std::fopen(path.c_str(), "w");
+#endif
+}
+
+void RemoveFile(const std::string& path) {
+#if defined(_WIN32)
+    _wremove(Widen(path).c_str());
+#else
+    std::remove(path.c_str());
+#endif
+}
 }
 
 ProjectMBridge::ProjectMBridge(
@@ -36,6 +111,11 @@ ProjectMBridge::ProjectMBridge(
           texture_root_(std::move(texture_root)),
           excluded_presets_(std::move(excluded_presets)),
           crash_sentinel_path_(std::move(crash_sentinel_path)) {
+#if defined(_WIN32)
+    if (!LoadGlEntryPoints()) {
+        return;
+    }
+#endif
     projectm_ = projectm_create();
     if (projectm_ == nullptr) {
         return;
@@ -81,7 +161,7 @@ ProjectMBridge::ProjectMBridge(
 ProjectMBridge::~ProjectMBridge() {
     // A clean release: whatever was on screen did not take the process down.
     if (!crash_sentinel_path_.empty()) {
-        std::remove(crash_sentinel_path_.c_str());
+        RemoveFile(crash_sentinel_path_);
     }
     if (playlist_ != nullptr) {
         projectm_playlist_destroy(playlist_);
@@ -221,7 +301,7 @@ void ProjectMBridge::MarkLoading(const std::string& preset_path) const {
     if (crash_sentinel_path_.empty()) {
         return;
     }
-    FILE* file = std::fopen(crash_sentinel_path_.c_str(), "w");
+    FILE* file = OpenForWriting(crash_sentinel_path_);
     if (file == nullptr) {
         return;
     }

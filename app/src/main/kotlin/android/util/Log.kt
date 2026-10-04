@@ -20,7 +20,7 @@ object Log {
     /** Minimum level that is printed; DEBUG and below are dropped unless raised. */
     @JvmStatic @Volatile var minLevel: Int = INFO
 
-    /** Hook for the in-app log collector: every printed line also goes here. */
+    /** Hook for the in-app log collector: every line goes here, printed or not. */
     @JvmStatic @Volatile var sink: ((level: Int, tag: String, message: String) -> Unit)? = null
 
     @JvmStatic fun v(tag: String, msg: String): Int = println(VERBOSE, tag, msg)
@@ -46,15 +46,31 @@ object Log {
         return sw.toString()
     }
 
+    /**
+     * Every line reaches [sink], whatever its level: the in-app debug log shows
+     * DEBUG lines as logcat did. [minLevel] only gates the console. The
+     * console copy is printed under [isEmittingConsoleLine], which tells the
+     * debug collector's stderr tee that the sink already has this line.
+     */
     @JvmStatic
     fun println(priority: Int, tag: String, msg: String): Int {
+        sink?.invoke(priority, tag, msg)
         if (priority < minLevel) return 0
         val letter = when (priority) { VERBOSE -> 'V'; DEBUG -> 'D'; INFO -> 'I'; WARN -> 'W'; ERROR -> 'E'; else -> 'F' }
         val line = "$letter/$tag: $msg"
-        System.err.println(line)
-        sink?.invoke(priority, tag, msg)
+        emitting.set(true)
+        try {
+            System.err.println(line)
+        } finally {
+            emitting.set(false)
+        }
         return line.length
     }
+
+    private val emitting = ThreadLocal.withInitial { false }
+
+    /** True while this thread is printing a Log line to the console. */
+    @JvmStatic fun isEmittingConsoleLine(): Boolean = emitting.get()
 
     private fun stackTrace(tr: Throwable?): String = if (tr == null) "" else "\n" + getStackTraceString(tr)
 }

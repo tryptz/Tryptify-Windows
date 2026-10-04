@@ -12,6 +12,7 @@ project(tryptify_native LANGUAGES C CXX)
 #   monochrome_usb         libusb UAC1/UAC2 bit-perfect driver
 #   monochrome_visualizer  projectM 4.1.6 MilkDrop bridge
 #   monochrome_wasapi      NEW: WASAPI exclusive/shared output (Windows only)
+#   monochrome_smtc        NEW: System Media Transport Controls (Windows, MSVC)
 #
 # Platforms: Windows x64 (MSVC, or MinGW-w64 cross-compiled from Linux with
 # cmake/toolchain-mingw-w64-x86_64.cmake) and Linux x64 (what the unit tests
@@ -27,6 +28,7 @@ project(tryptify_native LANGUAGES C CXX)
 option(TF_BUILD_VISUALIZER "Build projectM and the visualizer bridge" ON)
 option(TF_BUILD_USB "Build libusb and the UAC driver" ON)
 option(TF_BUILD_WASAPI "Build the WASAPI output library (Windows only)" ON)
+option(TF_BUILD_SMTC "Build the media-keys/SMTC bridge (Windows, needs MSVC for C++/WinRT)" ON)
 option(TF_BUILD_TESTS "Build and register the host tests with CTest" ON)
 option(TF_STATIC_RUNTIME "Link the GCC runtime statically into each DLL (MinGW)" ON)
 set(TF_OUTPUT_DIR "" CACHE PATH "Where to put the finished .dll/.so files (default: build tree)")
@@ -238,6 +240,18 @@ if(TF_BUILD_WASAPI AND WIN32)
     tf_jni_library(monochrome_wasapi wasapi/wasapi_jni.cpp)
     target_compile_options(monochrome_wasapi PRIVATE $<IF:$<BOOL:${MSVC}>,/O2,-O2>)
     target_link_libraries(monochrome_wasapi PRIVATE ole32 oleaut32 uuid avrt ksuser mmdevapi)
+endif()
+
+# ── Media keys / System Media Transport Controls (Windows) ──────────────────
+# C++/WinRT comes with the Windows SDK, which MinGW does not have; a MinGW
+# build leaves this library out and the app runs without media-key support.
+if(TF_BUILD_SMTC AND WIN32 AND MSVC)
+    tf_jni_library(monochrome_smtc smtc/smtc_jni.cpp)
+    target_compile_features(monochrome_smtc PRIVATE cxx_std_20)
+    target_compile_options(monochrome_smtc PRIVATE /EHsc /O2 /permissive-)
+    target_link_libraries(monochrome_smtc PRIVATE windowsapp)
+elseif(TF_BUILD_SMTC AND WIN32)
+    message(STATUS "monochrome_smtc skipped: C++/WinRT needs MSVC")
 endif()
 
 # ── projectM visualizer ─────────────────────────────────────────────────────

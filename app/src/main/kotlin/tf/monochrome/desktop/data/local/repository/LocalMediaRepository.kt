@@ -1,8 +1,6 @@
 package tf.monochrome.desktop.data.local.repository
 
 import kotlinx.coroutines.Dispatchers
-import tf.monochrome.desktop.ui.library.LibrarySortKey
-import tf.monochrome.desktop.ui.library.LibrarySort
 import kotlinx.coroutines.withContext
 import androidx.paging.map
 import androidx.paging.PagingData
@@ -59,8 +57,17 @@ class LocalMediaRepository @Inject constructor(
     /** How many local tracks there are, without building a single one of them. */
     fun countTracks(): Flow<Int> = localMediaDao.countTracks()
 
+    // Desktop: the sort arrives as the LibrarySortKey's enum name and a
+    // direction, not as a LibrarySort. LibrarySort lives in ui/library, which
+    // is not ported yet (its label is an Android @StringRes Int), and the data
+    // layer cannot compile against it until it is. A caller holding a
+    // LibrarySort passes `sort.key.name, sort.ascending`; once ui/library
+    // moves, the Android signatures (sort: LibrarySort) come back as one-line
+    // overloads onto these.
+
     /**
-     * The songs list as pages, in [sort] order.
+     * The songs list as pages, in the order of the sort key named [sortKey]
+     * (a LibrarySortKey name: NAME, DATE, FILE_TYPE, TIME), [ascending] or not.
      *
      * [getAllTracks] above materialises the whole library on every emission —
      * measured at ~118 ms and 20,000 objects for a 20,000-track library, all
@@ -68,7 +75,7 @@ class LocalMediaRepository @Inject constructor(
      * instead. The ordering moved into SQL with it, because there is no longer
      * a full list in memory to sort.
      */
-    fun pagedTracks(sort: LibrarySort): Flow<PagingData<UnifiedTrack>> =
+    fun pagedTracks(sortKey: String, ascending: Boolean): Flow<PagingData<UnifiedTrack>> =
         Pager(
             // A page is comfortably more than a screenful, so scrolling at a
             // normal speed never waits on a query; the placeholder-free config
@@ -93,45 +100,45 @@ class LocalMediaRepository @Inject constructor(
                 // simply ignores the value.
                 jumpThreshold = 180,
             ),
-            pagingSourceFactory = { pagingSourceFor(sort) },
+            pagingSourceFactory = { pagingSourceFor(sortKey, ascending) },
         ).flow.map { page -> page.map { it.toUnifiedTrack() } }
 
     /**
-     * The whole library in [sort] order, for the moment a play queue is built.
+     * The whole library in the given sort order, for the moment a play queue is built.
      *
      * Tapping a row queues everything after it, and a paged list cannot answer
      * that — it only holds what is near the screen. So the cost is paid on tap,
      * off the main thread, rather than by holding the library in memory for the
      * whole session in case somebody presses play.
      */
-    suspend fun tracksForQueue(sort: LibrarySort): List<UnifiedTrack> =
+    suspend fun tracksForQueue(sortKey: String, ascending: Boolean): List<UnifiedTrack> =
         withContext(Dispatchers.Default) {
-            snapshotFor(sort).map { it.toUnifiedTrack() }
+            snapshotFor(sortKey, ascending).map { it.toUnifiedTrack() }
         }
 
     // The two mappings from a sort selection to a query. Kept side by side so
     // a new sort key cannot be added to one and forgotten in the other, which
     // would show the list in one order and play it in another.
-    private fun pagingSourceFor(sort: LibrarySort) = when (sort.key) {
-        LibrarySortKey.DATE ->
-            if (sort.ascending) localMediaDao.pagedByDateAsc() else localMediaDao.pagedByDateDesc()
-        LibrarySortKey.FILE_TYPE ->
-            if (sort.ascending) localMediaDao.pagedByFileTypeAsc() else localMediaDao.pagedByFileTypeDesc()
-        LibrarySortKey.TIME ->
-            if (sort.ascending) localMediaDao.pagedByTimeAsc() else localMediaDao.pagedByTimeDesc()
+    private fun pagingSourceFor(sortKey: String, ascending: Boolean) = when (sortKey) {
+        SORT_DATE ->
+            if (ascending) localMediaDao.pagedByDateAsc() else localMediaDao.pagedByDateDesc()
+        SORT_FILE_TYPE ->
+            if (ascending) localMediaDao.pagedByFileTypeAsc() else localMediaDao.pagedByFileTypeDesc()
+        SORT_TIME ->
+            if (ascending) localMediaDao.pagedByTimeAsc() else localMediaDao.pagedByTimeDesc()
         else ->
-            if (sort.ascending) localMediaDao.pagedByNameAsc() else localMediaDao.pagedByNameDesc()
+            if (ascending) localMediaDao.pagedByNameAsc() else localMediaDao.pagedByNameDesc()
     }
 
-    private suspend fun snapshotFor(sort: LibrarySort) = when (sort.key) {
-        LibrarySortKey.DATE ->
-            if (sort.ascending) localMediaDao.snapshotByDateAsc() else localMediaDao.snapshotByDateDesc()
-        LibrarySortKey.FILE_TYPE ->
-            if (sort.ascending) localMediaDao.snapshotByFileTypeAsc() else localMediaDao.snapshotByFileTypeDesc()
-        LibrarySortKey.TIME ->
-            if (sort.ascending) localMediaDao.snapshotByTimeAsc() else localMediaDao.snapshotByTimeDesc()
+    private suspend fun snapshotFor(sortKey: String, ascending: Boolean) = when (sortKey) {
+        SORT_DATE ->
+            if (ascending) localMediaDao.snapshotByDateAsc() else localMediaDao.snapshotByDateDesc()
+        SORT_FILE_TYPE ->
+            if (ascending) localMediaDao.snapshotByFileTypeAsc() else localMediaDao.snapshotByFileTypeDesc()
+        SORT_TIME ->
+            if (ascending) localMediaDao.snapshotByTimeAsc() else localMediaDao.snapshotByTimeDesc()
         else ->
-            if (sort.ascending) localMediaDao.snapshotByNameAsc() else localMediaDao.snapshotByNameDesc()
+            if (ascending) localMediaDao.snapshotByNameAsc() else localMediaDao.snapshotByNameDesc()
     }
 
     fun searchTracks(query: String): Flow<List<UnifiedTrack>> =
@@ -238,6 +245,11 @@ class LocalMediaRepository @Inject constructor(
     // ── Conversions ─────────────────────────────────────────────────
 
     companion object {
+        // LibrarySortKey names the two queries above switch on (see pagedTracks).
+        private const val SORT_DATE = "DATE"
+        private const val SORT_FILE_TYPE = "FILE_TYPE"
+        private const val SORT_TIME = "TIME"
+
         /**
          * Codec name → enum, without the exception.
          *

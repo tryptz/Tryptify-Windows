@@ -1,6 +1,8 @@
 package tf.monochrome.desktop.data.local.scanner
 
-import androidx.room.withTransaction
+import androidx.room.RoomDatabase
+import androidx.room.immediateTransaction
+import androidx.room.useWriterConnection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -24,6 +26,7 @@ import tf.monochrome.desktop.data.preferences.PreferencesManager
 import java.io.File
 import java.text.Normalizer
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,6 +38,17 @@ sealed class ScanProgress {
     data class Error(val message: String) : ScanProgress()
 }
 
+/**
+ * Desktop: the scan itself is Android's, over [MediaStoreSource]'s folder walk
+ * instead of a MediaStore query. Three things change with the source:
+ * - the minimum track length, which MediaStore applied in its query, is
+ *   applied here once the tags are read (see [shortFiles]);
+ * - the incremental scan also picks up files the library has never seen,
+ *   whatever their modification time (see [MediaStoreSource.queryModifiedSince]);
+ * - tracks under a library folder that cannot be reached right now (an
+ *   unplugged drive) are kept rather than pruned
+ *   (see [MediaStoreSource.unreachableRoots]).
+ */
 @Singleton
 class MediaScanner @Inject constructor(
     private val mediaStoreSource: MediaStoreSource,
@@ -46,6 +60,20 @@ class MediaScanner @Inject constructor(
     private val genreGraph: tf.monochrome.desktop.data.repository.GenreGraphRepository,
     private val artworkStore: tf.monochrome.desktop.data.local.tags.ArtworkStore,
 ) {
+
+    /**
+     * Desktop: files whose tags said they run shorter than the scan minimum,
+     * by library path, with the modification time that read saw.
+     *
+     * MediaStore filtered on `DURATION` before the scan saw a file; a folder
+     * walk only learns a file's length by reading it. A short file never gets
+     * a row, so without this every scan would read it again; remembered by
+     * modification time, a changed file is read afresh.
+     */
+    private val shortFiles = ConcurrentHashMap<String, Long>()
+
+    private fun isKnownShort(file: AudioFileInfo): Boolean =
+        shortFiles[file.absolutePath] == file.dateModified
 
     fun fullScan(
         minDurationMs: Long = 30_000,
@@ -76,6 +104,7 @@ class MediaScanner @Inject constructor(
             val titleFromFileName = preferences.localTitleFromFileName.first()
             val titleModeChanged = titleFromFileName != preferences.localTitleModeScanned.first()
 
+            val tooShort: MutableSet<String> = Collections.synchronizedSet(HashSet())
             val addedCount = processFiles(
                 files = mediaStoreFiles,
                 shouldRead = {
@@ -84,11 +113,17 @@ class MediaScanner @Inject constructor(
                 },
                 progressChunkSize = 50,
                 titleFromFileName = titleFromFileName,
+                minDurationMs = minDurationMs,
+                tooShort = tooShort,
             )
 
             // Prune deleted files
             emit(ScanProgress.Grouping("Removing deleted tracks..."))
-            val removedCount = pruneDeleted(mediaStoreFiles.mapTo(HashSet()) { it.absolutePath })
+            val present = mediaStoreFiles.mapTo(HashSet()) { it.absolutePath }
+            // Desktop: a file found too short is not in the library, as it
+            // was not in MediaStore's answer.
+            present.removeAll(tooShort)
+            val removedCount = pruneDeleted(present, mediaStoreSource.unreachableRoots(folderRoots))
 
             // Rebuild groupings
             emit(ScanProgress.Grouping("Building album & artist library..."))
@@ -110,7 +145,7 @@ class MediaScanner @Inject constructor(
             }
 
             emit(ScanProgress.Complete(
-                scanned = mediaStoreFiles.size,
+                scanned = mediaStoreFiles.size - tooShort.size,
                 added = addedCount,
                 removed = maxOf(0, removedCount)
             ))
@@ -132,8 +167,15 @@ class MediaScanner @Inject constructor(
             val scanState = localMediaDao.getScanState()
             val lastScan = scanState?.lastIncremental ?: scanState?.lastFullScan ?: 0
 
-            val modifiedFiles =
-                mediaStoreSource.queryModifiedSince(lastScan, minDurationMs, folderRoots, excluded)
+            // Desktop: knownPaths lets the walk report files the library has
+            // never seen however old their timestamp, and files already found
+            // too short are dropped before they make this scan look busy.
+            val modifiedFiles = mediaStoreSource
+                .queryModifiedSince(
+                    lastScan, minDurationMs, folderRoots, excluded,
+                    knownPaths = localMediaDao.getAllTrackPaths().toHashSet(),
+                )
+                .filterNot { isKnownShort(it) }
             if (modifiedFiles.isEmpty()) {
                 // No new tag content to read, but still rebuild groupings so
                 // album-cover-into-track propagation runs and the UI picks up
@@ -148,13 +190,17 @@ class MediaScanner @Inject constructor(
 
             emit(ScanProgress.Started(totalFiles = modifiedFiles.size))
 
-            // MediaStore already filtered to files modified since the last
-            // scan, so every one of them needs a fresh tag read.
+            // The walk already filtered to files modified since the last
+            // scan (or new to the library), so every one of them needs a
+            // fresh tag read.
+            val tooShort: MutableSet<String> = Collections.synchronizedSet(HashSet())
             val addedCount = processFiles(
                 files = modifiedFiles,
                 shouldRead = { true },
                 progressChunkSize = 20,
                 titleFromFileName = preferences.localTitleFromFileName.first(),
+                minDurationMs = minDurationMs,
+                tooShort = tooShort,
             )
 
             // Check for deleted files. Same roots filter as fullScan so the
@@ -162,7 +208,8 @@ class MediaScanner @Inject constructor(
             val allMediaStorePaths = mediaStoreSource
                 .queryAllAudio(minDurationMs, excluded, folderRoots)
                 .mapTo(HashSet()) { it.absolutePath }
-            pruneDeleted(allMediaStorePaths)
+            allMediaStorePaths.removeAll(tooShort)
+            pruneDeleted(allMediaStorePaths, mediaStoreSource.unreachableRoots(folderRoots))
 
             rebuildGroupings()
             rebuildFolders()
@@ -197,6 +244,8 @@ class MediaScanner @Inject constructor(
         shouldRead: (AudioFileInfo) -> Boolean,
         progressChunkSize: Int,
         titleFromFileName: Boolean,
+        minDurationMs: Long,
+        tooShort: MutableSet<String>,
     ): Int {
         val parallelism = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         val tagDispatcher = Dispatchers.IO.limitedParallelism(parallelism)
@@ -217,7 +266,21 @@ class MediaScanner @Inject constructor(
                     async(tagDispatcher) {
                         try {
                             if (!shouldRead(audioFile)) return@async null
+                            // Desktop: MediaStore's DURATION filter, applied
+                            // once the length is known. An unknown length (0)
+                            // is admitted, as a file the tag reader could not
+                            // open was on Android.
+                            if (isKnownShort(audioFile)) {
+                                tooShort += audioFile.absolutePath
+                                return@async null
+                            }
                             val tags = tagReader.readTags(audioFile.absolutePath, folderArtCache)
+                            if (tags.durationSeconds > 0 && tags.durationSeconds * 1000L < minDurationMs) {
+                                shortFiles[audioFile.absolutePath] = audioFile.dateModified
+                                tooShort += audioFile.absolutePath
+                                return@async null
+                            }
+                            shortFiles.remove(audioFile.absolutePath)
                             buildTrackEntity(audioFile, tags, titleFromFileName)
                         } catch (e: CancellationException) {
                             throw e
@@ -255,10 +318,15 @@ class MediaScanner @Inject constructor(
      * SQLite's 999 bound-variable limit (the old NOT IN variant bound the
      * entire MediaStore path set into a single statement).
      *
+     * Desktop: rows under [offlineRoots] — library folders that cannot be
+     * reached right now — are kept; their files are not gone, only away.
+     *
      * @return the number of rows removed.
      */
-    private suspend fun pruneDeleted(mediaStorePaths: Set<String>): Int {
-        val toDelete = localMediaDao.getAllTrackPaths().filterNot { it in mediaStorePaths }
+    private suspend fun pruneDeleted(mediaStorePaths: Set<String>, offlineRoots: Set<String> = emptySet()): Int {
+        val toDelete = localMediaDao.getAllTrackPaths().filterNot {
+            it in mediaStorePaths || MediaStoreSource.isExcluded(it, offlineRoots)
+        }
         if (toDelete.isNotEmpty()) {
             musicDatabase.withTransaction {
                 toDelete.chunked(DELETE_CHUNK_SIZE).forEach {
@@ -453,7 +521,9 @@ class MediaScanner @Inject constructor(
      * much cheaper than a scan: no MediaStore query and no tag reading.
      */
     suspend fun excludeFolder(path: String) {
-        val folder = path.trimEnd('/')
+        // Desktop: library form ("/"-separated), whatever separator the caller
+        // used, so the exclusion and the row delete match the stored paths.
+        val folder = path.replace('\\', '/').trimEnd('/')
         // trimEnd matches what addUserFolderRoot stores, so re-adding the same
         // folder finds the exclusion it needs to clear.
         if (folder.isEmpty()) return
@@ -462,6 +532,10 @@ class MediaScanner @Inject constructor(
         // there would have the next scan re-find what the exclusion just
         // removed — the two settings pulling against each other.
         preferences.removeUserFolderRoot(folder)
+        // Desktop: a root added from a folder picker may be stored in the
+        // platform's own spelling (C:\Music); drop that one too.
+        val native = File(folder).path
+        if (native != folder) preferences.removeUserFolderRoot(native)
         localMediaDao.deleteTracksUnder(folder)
         rebuildGroupings()
         rebuildFolders()
@@ -592,3 +666,13 @@ class MediaScanner @Inject constructor(
         }
     }
 }
+
+/**
+ * Desktop: Room on the JVM has no `androidx.room.withTransaction` (the
+ * room-ktx extension is Android-only). This is the equivalent the Room KMP
+ * guide gives, under the same name so the call sites read as on Android: the
+ * DAO calls inside the block run on the writer connection, in one immediate
+ * transaction, and observers see a single invalidation.
+ */
+private suspend fun <R> RoomDatabase.withTransaction(block: suspend () -> R): R =
+    useWriterConnection { transactor -> transactor.immediateTransaction { block() } }

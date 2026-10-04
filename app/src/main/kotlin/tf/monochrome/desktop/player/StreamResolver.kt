@@ -834,20 +834,6 @@ class StreamResolver @Inject constructor(
             Base64.encodeToString(mpd.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)).toUri()
 }
 
-// Desktop: the MediaMetadata shim carries neither a station nor a disc number,
-// and nothing in the app reads either off the metadata (the queue's Track and
-// UnifiedTrack carry the disc number; a station's name is its title). They are
-// accepted and dropped here so the builders above stay identical to the
-// Android source. Delete both once the shim grows the two fields — a member
-// then shadows these extensions.
-private fun MediaMetadata.Builder.setStation(
-    @Suppress("UNUSED_PARAMETER") station: CharSequence?,
-): MediaMetadata.Builder = this
-
-private fun MediaMetadata.Builder.setDiscNumber(
-    @Suppress("UNUSED_PARAMETER") discNumber: Int?,
-): MediaMetadata.Builder = this
-
 /**
  * Whether an artwork URI's path points at an audio file rather than a picture.
  *

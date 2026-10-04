@@ -4,8 +4,11 @@
 // a small part of it: the data and cache directories, the bundled assets, the
 // translated strings. This class offers exactly that part over AppPaths and the
 // desktop resources, so those files keep their constructor and their calls.
-// Anything Android-only that a file used (system services, content resolver,
-// intents, broadcasts) is not here on purpose: such a file needs a desktop
+// Two more pieces have a real desktop meaning and are here for that reason:
+// contentResolver reads and writes the files the desktop pickers return, and
+// startActivity opens links in the browser, files in Explorer and shares text
+// through the clipboard. Anything else Android-only (system services,
+// broadcasts) is not here on purpose: such a file needs a desktop
 // implementation, not a stub that pretends.
 package android.content
 
@@ -13,6 +16,7 @@ import android.content.res.AssetManager
 import android.content.res.Resources
 import java.io.File
 import tf.monochrome.desktop.platform.AppPaths
+import tf.monochrome.desktop.platform.DesktopActions
 import tf.monochrome.desktop.res.PluralKey
 import tf.monochrome.desktop.res.StringKey
 import tf.monochrome.desktop.res.Strings
@@ -42,8 +46,14 @@ open class Context(val paths: AppPaths) {
     fun getString(key: StringKey): String = Strings.get(key)
     fun getString(key: StringKey, vararg formatArgs: Any?): String = Strings.get(key, *formatArgs)
 
+    val contentResolver: ContentResolver get() = sharedResolver
+
+    /** See [DesktopActions]: VIEW, SEND and the chooser; anything else is not found. */
+    open fun startActivity(intent: Intent) = DesktopActions.start(intent)
+
     companion object {
         const val MODE_PRIVATE = 0
+        private val sharedResolver = ContentResolver()
     }
 }
 

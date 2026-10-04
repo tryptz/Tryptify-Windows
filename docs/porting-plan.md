@@ -121,26 +121,79 @@ runs stay in `native/dsp/tests/run_host_tests.sh`.
 
 The Android app's `QueueManager` is already a pure state holder and stays the
 queue's owner. `PlaybackService` (2254 lines of ExoPlayer wiring, Android
-services and listeners) is replaced by an in-process `PlaybackEngine` with the
-same responsibility list minus the Android-only items:
+services and listeners) is replaced by two classes in `player/engine`:
+`PlaybackEngine`, which implements the Media3 `Player` interface shim so the
+code that held a `MediaController` holds the engine instead, and
+`EngineController`, which carries the service's logic over (queue advance,
+retries with backoff, live reconnects, history, scrobbling, the Discord card,
+the visualizer's per-track preset, and every preference collector).
 
-- **decode thread** per open stream: FFmpeg demux + decode through JavaCV →
-  interleaved 16-bit or float PCM ring; the stream bytes come from a `ByteSource`
-  (file, HTTP with the app's headers, the Qobuz/Deezer partial caches) so
-  `StreamResolver` and the caches port with type changes only;
-- **render thread**: pulls from the ring, runs the app's `AudioProcessorChain`
-  (`[ToFloatPcm, ChannelDetector, BpmTap, Atmos, Upmix, MixBus, Downmix, AutoEq,
-  ParametricEq, SpectrumTap, ProjectMTee, VariRate, Stretch, FloatSonic]`, the
-  Android USB/hi-res chain), mixes the crossfade tail, applies gain and writes
-  to the sink with back-pressure;
-- **sinks** behind one interface: `WasapiSink` (shared, or exclusive for
-  bit-perfect output at the file's rate with the `[24, 16]` depth ladder),
-  `JavaSoundSink` (fallback, also what the Linux smoke test uses) and
-  `LibusbUacSink` (the bypass half of `LibusbAudioSink` + `LibusbUacDriver`);
-- the engine is the **only writer** of player state: `PlayerViewModel` stops
-  going through a `MediaController` and calls the engine; `PlaybackStateRepository`,
-  `CrossfadeController`'s stage logic, gapless pre-roll, the Discord card, history
-  and scrobbling keep their logic.
+- **Decode thread** per open stream: FFmpeg (JavaCV) demuxes and decodes into
+  a lock-free single-producer ring. It produces 16-bit when the codec is
+  natively 16-bit, so a CD-quality file can stay bit-exact, and float
+  otherwise. How the bytes arrive is the `PlaybackModule` opener's choice:
+  `qobuz://` and `deezer://` go through the app's own `DataSource`s (the
+  partial cache that plays a download while it is still arriving, and the
+  Deezer stripe decryption), behind the same `SchemeRoutingDataSource` as on
+  Android. Everything else is opened by libavformat itself, so radio keeps
+  native HTTP reconnects and HLS. TIDAL's inline DASH manifest goes to the
+  DASH demuxer with the segment protocols whitelisted.
+- **Render thread**: pulls from the ring and runs the app's
+  `AudioProcessorChain` (`[ToFloatPcm, ChannelDetector, BpmTap, Atmos, Upmix,
+  MixBus, Downmix, AutoEq, ParametricEq, SpectrumTap, ProjectMTap, VariRate,
+  Stretch, FloatSonic]`, the Android USB/hi-res chain). Membership is re-read
+  every block, so a stage that a live control wakes (a speed away from 1x, a
+  pitch shift) joins mid-track. The engine then packs to the device format and
+  writes to the sink with back-pressure. Crossfade mixes the outgoing and
+  incoming sources before the chain, so there is one DSP state, not two.
+- **Gapless**: when the next track's format matches, its ring is spliced onto
+  the same sink with no drain, and the transition is reported when it is
+  heard (the sink's played-frame clock), not when it is decoded.
+- **Sinks** behind one interface: `WasapiSink` (shared through the Windows
+  mixer; or exclusive and bit-perfect: 16-bit sources stay 16-bit, float
+  sources take the deepest integer format the device accepts from 24-in-32,
+  24, 16 and float), `LibusbUacSink` (a USB DAC driven directly, bound to
+  WinUSB) and `JavaSoundSink` (the fallback, and what the Linux smoke test
+  plays through). `AudioOutputController` persists the listener's choice,
+  follows WASAPI's endpoint notifications, and falls back to the default
+  device while the chosen one is unplugged.
+
+## Platform integration
+
+- **Native libraries** are loaded by absolute path from the installer's
+  resources folder (`NativeLibraries.load`). `System.loadLibrary` only
+  searches `java.library.path`, which is fixed at JVM start, so every loader
+  ported from Android goes through `NativeLibraries.load` instead.
+- **Graphics**: AGSL is Skia's SkSL under another name, and Compose for
+  Desktop draws with Skia. `android.graphics.RuntimeShader`, `RenderEffect`
+  and `BitmapShader` are therefore thin shims over Skia's `RuntimeEffect` and
+  `ImageFilter`. The liquid-glass shaders and their uniforms run unchanged,
+  which is what keeps `ui-invariants.md` true on Windows.
+- **Android's system UI** maps onto the desktop:
+  - Toasts are drawn by the window.
+  - `ActivityResultContracts` pickers open the native Windows dialogs and
+    return `file:` URIs, which the `ContentResolver` shim reads.
+  - `ACTION_VIEW` opens the browser or Explorer, and `ACTION_SEND` copies to
+    the clipboard.
+  - `BackHandler` is the Escape key.
+- **Windows-only additions**:
+  - System Media Transport Controls (`native/smtc`, C++/WinRT, MSVC only)
+    give the app media keys, the volume flyout's "now playing" card and
+    headset buttons, which Android got from its MediaSession.
+  - `WindowChrome` colours the title bar to match the theme through DWM.
+  - Download notifications go to the system tray.
+
+## Verification
+
+- The native DSP has host tests, run on Linux, under the sanitizers in CI and
+  with MSVC on Windows.
+- The Windows DLLs, cross-built with MinGW, have been run under Wine with
+  the Windows JRE. The WASAPI library enumerates endpoints, negotiates
+  formats, and opens and plays a shared stream with a correct played-frame
+  clock.
+- Exclusive mode cannot be exercised there: Wine does not implement
+  exclusive mode with event callbacks. So exclusive mode is verified only on
+  real Windows hardware.
 
 ## Resources and strings
 

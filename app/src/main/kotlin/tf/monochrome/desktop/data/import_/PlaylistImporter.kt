@@ -1,6 +1,8 @@
 package tf.monochrome.desktop.data.import_
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import tf.monochrome.desktop.R
 import tf.monochrome.desktop.data.api.SpotifyApiClient
 import javax.inject.Inject
@@ -85,10 +87,13 @@ class PlaylistImporter @Inject constructor(
      * CancellationException too, and reporting it would overwrite the
      * "Import cancelled" state [SpotifyImportJob.cancel] has just published
      * with the exception's own text. Rethrowing keeps the cancellation
-     * cooperative, so the caller's coroutine ends the way it asked to.
+     * cooperative, so the caller's coroutine ends the way it asked to. Only a
+     * real cancellation is rethrown: a CancellationException raised while
+     * this coroutine is still active (a client's own timeout) is a failure
+     * like any other and is reported as one.
      */
-    private fun reportFailure(error: Throwable) {
-        if (error is CancellationException) throw error
+    private suspend fun reportFailure(error: Throwable) {
+        if (error is CancellationException && !currentCoroutineContext().isActive) throw error
         importService.reportFailure(error.message ?: text(R.string.import_spotify_failed))
     }
 

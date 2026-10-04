@@ -1,15 +1,14 @@
 package tf.monochrome.desktop.di
 
-import android.content.Context
 import android.util.Log
 import androidx.room.Room
 import androidx.room.RoomDatabase
-import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import dagger.Module
 import dagger.Provides
-import dagger.hilt.InstallIn
-import dagger.hilt.android.qualifiers.ApplicationContext
-import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.Dispatchers
+import tf.monochrome.desktop.platform.AppPaths
 import tf.monochrome.desktop.data.db.MusicDatabase
 import tf.monochrome.desktop.data.db.dao.DownloadDao
 import tf.monochrome.desktop.data.db.dao.EqPresetDao
@@ -21,17 +20,21 @@ import tf.monochrome.desktop.data.db.dao.PlaylistDao
 import javax.inject.Singleton
 
 @Module
-@InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    /**
+     * Desktop: Room's JVM builder takes the database file's full path instead of
+     * a Context and a name (`AppPaths.dbFile`, `%LOCALAPPDATA%\Tryptify\data\monochrome_db`
+     * on Windows), runs on the bundled SQLite through [BundledSQLiteDriver], and
+     * dispatches its suspend and Flow queries on [Dispatchers.IO]. Migrations and
+     * the destructive-migration callback are the Android app's.
+     */
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): MusicDatabase {
-        return Room.databaseBuilder(
-            context,
-            MusicDatabase::class.java,
-            "monochrome_db"
-        )
+    fun provideDatabase(paths: AppPaths): MusicDatabase {
+        return Room.databaseBuilder<MusicDatabase>(name = paths.dbFile.absolutePath)
+            .setDriver(BundledSQLiteDriver())
+            .setQueryCoroutineContext(Dispatchers.IO)
             .addMigrations(
                 MusicDatabase.MIGRATION_8_9,
                 MusicDatabase.MIGRATION_9_10,
@@ -53,7 +56,7 @@ object DatabaseModule {
             // single most destructive thing this app does to its own data. It
             // does not get to be quiet about it.
             .addCallback(object : RoomDatabase.Callback() {
-                override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
+                override fun onDestructiveMigration(connection: SQLiteConnection) {
                     Log.e(
                         "MusicDatabase",
                         "Destructive migration: every local table was dropped " +

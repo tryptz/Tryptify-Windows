@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
-import androidx.browser.customtabs.CustomTabsIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
@@ -20,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -27,20 +27,26 @@ import tf.monochrome.desktop.BuildConfig
 import tf.monochrome.desktop.data.api.SpotifyAuthError
 import tf.monochrome.desktop.data.api.SpotifyTokenResponse
 import tf.monochrome.desktop.data.preferences.PreferencesManager
+import tf.monochrome.desktop.platform.DesktopActions
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Spotify OAuth via Authorization Code + PKCE — the only grant that works
  * from a mobile app without a client secret or backend. Mirrors the
- * Custom-Tab + deep-link pattern used by [SupabaseAuthManager]:
+ * browser + loopback-redirect pattern used by [SupabaseAuthManager]:
  *
- *  1. [connect] opens accounts.spotify.com/authorize in a Custom Tab.
- *  2. Spotify redirects to tryptify://spotify-callback, which MainActivity
- *     routes to [handleCallback].
+ *  1. [connect] opens accounts.spotify.com/authorize in the default browser.
+ *  2. Spotify redirects to http://127.0.0.1:48621/spotify-callback
+ *     ([BuildConfig.SPOTIFY_REDIRECT_URI]), which [LoopbackRedirectServer]
+ *     routes to [handleCallback]. (Android: tryptify://spotify-callback,
+ *     routed by MainActivity.) The Spotify app's dashboard must list that
+ *     redirect URI.
  *  3. The code is exchanged for access + refresh tokens, persisted in
  *     DataStore via [PreferencesManager].
  *  4. [getValidAccessToken] transparently refreshes on expiry. Spotify
@@ -53,13 +59,19 @@ class SpotifyAuthManager @Inject constructor(
     private val httpClient: HttpClient,
     private val json: Json,
     private val preferences: PreferencesManager,
+    private val loopback: LoopbackRedirectServer,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val refreshMutex = Mutex()
 
-    // PKCE verifier + state survive process death while the Custom Tab is
-    // open (same rationale as SharedPrefsCodeVerifierCache for Supabase).
-    private val pkcePrefs = context.getSharedPreferences("spotify_pkce", Context.MODE_PRIVATE)
+    // Desktop: the PKCE verifier and state live in memory. Android persisted
+    // them so they survived process death while the Custom Tab was open; here
+    // the callback can only arrive while this process's loopback server is
+    // listening, so they never need to outlive it (and never touch the disk).
+    private val pkce = PkceState()
+
+    /** The loopback wait of the connect attempt in flight, if any. */
+    @Volatile private var pendingCallback: LoopbackRedirectServer.Pending? = null
 
     val isConnected: StateFlow<Boolean> = preferences.spotifyRefreshToken
         .map { !it.isNullOrBlank() }
@@ -74,17 +86,14 @@ class SpotifyAuthManager @Inject constructor(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    /** Launch the Spotify consent page in a Custom Tab. */
-    fun connect(activityContext: Context) {
+    /** Launch the Spotify consent page in the default browser. */
+    fun connect(@Suppress("UNUSED_PARAMETER") activityContext: Context) {
         _errorMessage.value = null
         _isConnecting.value = true
 
         val verifier = randomUrlSafe(64)
         val state = randomUrlSafe(16)
-        pkcePrefs.edit()
-            .putString(KEY_VERIFIER, verifier)
-            .putString(KEY_STATE, state)
-            .apply()
+        pkce.set(verifier, state)
 
         val challenge = Base64.encodeToString(
             MessageDigest.getInstance("SHA-256")
@@ -102,19 +111,55 @@ class SpotifyAuthManager @Inject constructor(
             .appendQueryParameter("scope", SCOPES)
             .build()
 
-        try {
-            CustomTabsIntent.Builder().build().launchUrl(activityContext, url)
-        } catch (e: Exception) {
+        // Listen before the browser opens: a busy port is reported here, in the
+        // app, and a fast redirect cannot beat the server.
+        pendingCallback?.let { older ->
+            pendingCallback = null
+            older.close()
+        }
+        val pending = try {
+            loopback.expect(CALLBACK_PATH)
+        } catch (e: IOException) {
             _isConnecting.value = false
-            _errorMessage.value = "Could not open browser: ${e.message}"
+            _errorMessage.value = "Spotify connection failed: ${e.message}"
+            return
+        }
+        pendingCallback = pending
+
+        scope.launch {
+            try {
+                DesktopActions.openLink(url.toString())
+            } catch (e: Exception) {
+                pending.close()
+                if (pendingCallback === pending) pendingCallback = null
+                _isConnecting.value = false
+                _errorMessage.value = "Could not open browser: ${e.message}"
+                return@launch
+            }
+            val callback = try {
+                pending.await(CALLBACK_TIMEOUT)
+            } finally {
+                pending.close()
+            }
+            if (pendingCallback !== pending) return@launch // a newer connect() took over
+            pendingCallback = null
+            if (callback != null) {
+                handleCallback(callback)
+            } else {
+                // Desktop: Android had no timeout (the deep link simply never
+                // came); here the loopback server stops listening after one.
+                _isConnecting.value = false
+                _errorMessage.value = "Spotify authorization timed out. Please try connecting again."
+            }
         }
     }
 
-    /** Handle tryptify://spotify-callback?code=...&state=... from MainActivity.onNewIntent. */
+    /** Handle http://127.0.0.1:48621/spotify-callback?code=...&state=... from [LoopbackRedirectServer]. */
     suspend fun handleCallback(uri: Uri) {
         try {
-            val expectedState = pkcePrefs.getString(KEY_STATE, null)
-            val verifier = pkcePrefs.getString(KEY_VERIFIER, null)
+            val attempt = pkce.current()
+            val expectedState = attempt?.second
+            val verifier = attempt?.first
 
             uri.getQueryParameter("error")?.let { error ->
                 _errorMessage.value = if (error == "access_denied") {
@@ -163,7 +208,7 @@ class SpotifyAuthManager @Inject constructor(
                 refreshToken = refresh,
                 expiresAtMillis = System.currentTimeMillis() + tokens.expiresIn * 1000L,
             )
-            pkcePrefs.edit().remove(KEY_VERIFIER).remove(KEY_STATE).apply()
+            pkce.clear()
             _errorMessage.value = null
             Log.d(TAG, "Spotify connected; token expires in ${tokens.expiresIn}s")
         } catch (e: Exception) {
@@ -260,7 +305,16 @@ class SpotifyAuthManager @Inject constructor(
         private const val SCOPES = "playlist-read-private playlist-read-collaborative user-library-read"
         private const val EXPIRY_MARGIN_MS = 60_000L
         private const val BASE64_URL_FLAGS = Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
-        private const val KEY_VERIFIER = "code_verifier"
-        private const val KEY_STATE = "state"
+        private const val CALLBACK_PATH = "spotify-callback"
+        private val CALLBACK_TIMEOUT = 5.minutes
+    }
+
+    /** The in-flight attempt's verifier and state, replaced together and read together. */
+    private class PkceState {
+        @Volatile private var pair: Pair<String, String>? = null
+        /** (verifier, state), or null when no attempt is in flight. */
+        fun current(): Pair<String, String>? = pair
+        fun set(verifier: String, state: String) { pair = verifier to state }
+        fun clear() { pair = null }
     }
 }

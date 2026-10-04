@@ -1,46 +1,32 @@
 package tf.monochrome.desktop.data.auth
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import android.util.Log
-import androidx.browser.customtabs.CustomTabsIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.Auth
-import io.github.jan.supabase.auth.CodeVerifierCache
 import io.github.jan.supabase.auth.FlowType
+import io.github.jan.supabase.auth.MemoryCodeVerifierCache
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.user.UserInfo
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
+import java.io.IOException
+import kotlin.time.Duration.Companion.minutes
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import tf.monochrome.desktop.platform.DesktopActions
 import javax.inject.Inject
 import javax.inject.Singleton
-
-/**
- * Persists the PKCE code verifier in SharedPreferences so it survives
- * process death while the Custom Tab is open for Google OAuth.
- */
-private class SharedPrefsCodeVerifierCache(context: Context) : CodeVerifierCache {
-    private val prefs = context.getSharedPreferences("supabase_pkce", Context.MODE_PRIVATE)
-
-    override suspend fun saveCodeVerifier(codeVerifier: String) {
-        prefs.edit().putString("code_verifier", codeVerifier).apply()
-    }
-
-    override suspend fun loadCodeVerifier(): String? {
-        return prefs.getString("code_verifier", null)
-    }
-
-    override suspend fun deleteCodeVerifier() {
-        prefs.edit().remove("code_verifier").apply()
-    }
-}
 
 data class UserProfile(
     val id: String,
@@ -51,17 +37,30 @@ data class UserProfile(
 
 @Singleton
 class SupabaseAuthManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val loopback: LoopbackRedirectServer,
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     val supabase: SupabaseClient = createSupabaseClient(
         supabaseUrl = "https://lvzorvfhhopillzlwgau.supabase.co",
         supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx2em9ydmZoaG9waWxsemx3Z2F1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTc0NDQsImV4cCI6MjA4OTkzMzQ0NH0.Y_TN9r19WS96HyVZSQeNa0TyOqyBGuqFARaj8-7Ylow"
     ) {
         install(Auth) {
             flowType = FlowType.PKCE
-            scheme = "tf.monotrypt.android"
-            host = "login-callback"
-            codeVerifierCache = SharedPrefsCodeVerifierCache(context)
+            // Desktop: no scheme/host. Android's `tf.monotrypt.android://login-callback`
+            // deep link has no Windows equivalent; the OAuth redirect comes back to
+            // LoopbackRedirectServer instead (see signInWithGoogle).
+            //
+            // The PKCE verifier stays in memory: the callback can only arrive while
+            // this process's loopback server is listening, so it never has to outlive
+            // the process (Android persisted it because the Custom Tab could outlive it).
+            codeVerifierCache = MemoryCodeVerifierCache()
+            // The session (with its refresh token) in a DPAPI-sealed file rather than
+            // the JVM default, plaintext java.util.prefs under the shared root node.
+            sessionManager = SecureSessionManager(
+                AuthSecretStore(context.filesDir.resolve("auth").resolve("supabase_session.bin"))
+            )
         }
         install(Postgrest)
     }
@@ -74,10 +73,13 @@ class SupabaseAuthManager @Inject constructor(
     private val _isSigningIn = MutableStateFlow(false)
     val isSigningIn: StateFlow<Boolean> = _isSigningIn.asStateFlow()
 
-    // The Google OAuth Custom Tab has no "cancelled" callback, so track whether
-    // a deep-link callback ever arrived. If the user returns to the app without
-    // one, cancelPendingSignInIfNoCallback clears the stuck spinner.
+    // The browser has no "cancelled" callback, so track whether the loopback
+    // redirect ever arrived. If the user returns to the app without one,
+    // cancelPendingSignInIfNoCallback clears the stuck spinner.
     @Volatile private var oauthCallbackReceived = false
+
+    /** The loopback wait of the Google sign-in in flight, if any. */
+    @Volatile private var googleCallback: LoopbackRedirectServer.Pending? = null
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -99,43 +101,95 @@ class SupabaseAuthManager @Inject constructor(
 
     /**
      * Start Google OAuth via Supabase PKCE flow — generates the OAuth URL,
-     * then opens it in a Custom Tab. The app receives the callback via:
-     *   tf.monotrypt.android://login-callback?code=...
+     * then opens it in the default browser. The browser comes back to:
+     *   http://127.0.0.1:48621/supabase-callback?code=...
+     * where [LoopbackRedirectServer] hands it to [handleDeepLink].
+     *
+     * Desktop: Android opened a Custom Tab and MainActivity routed the
+     * `tf.monotrypt.android://login-callback` deep link back here. The redirect
+     * address must be in the Supabase project's Redirect URLs allow-list, or
+     * Supabase sends the browser to the Site URL instead and the wait times out.
+     * There is no Google Credential Manager path to drop: the Android app also
+     * signed in with Google through the browser, which is what this still does.
      */
-    suspend fun signInWithGoogle(context: Context) {
+    suspend fun signInWithGoogle(@Suppress("UNUSED_PARAMETER") context: Context) {
         oauthCallbackReceived = false
         _isSigningIn.value = true
         _errorMessage.value = null
         _successMessage.value = null
+        // Forget an older attempt before closing it, so its waiter sees it was
+        // superseded and does not report a timeout over this one.
+        googleCallback?.let { older ->
+            googleCallback = null
+            older.close()
+        }
+        val pending = try {
+            loopback.expect(CALLBACK_PATH)
+        } catch (e: IOException) {
+            _errorMessage.value = "Google sign-in failed: ${e.message}"
+            _isSigningIn.value = false
+            return
+        }
+        googleCallback = pending
         try {
-            val url = auth.getOAuthUrl(Google)
+            val url = auth.getOAuthUrl(Google, redirectUrl = loopback.redirectUri(CALLBACK_PATH))
             Log.d("SupabaseAuth", "OAuth URL: $url")
-            val customTab = CustomTabsIntent.Builder().build()
-            customTab.launchUrl(context, Uri.parse(url))
+            withContext(Dispatchers.IO) { DesktopActions.openLink(url) }
         } catch (e: Exception) {
+            pending.close()
+            if (googleCallback === pending) googleCallback = null
             _errorMessage.value = "Google sign-in failed: ${parseAuthError(e)}"
+            _isSigningIn.value = false
+            return
+        }
+        // Wait in the manager's own scope, as Android waited for the deep link
+        // outside any screen: leaving the profile screen must not drop a
+        // sign-in that is still being completed in the browser.
+        scope.launch {
+            val uri = try {
+                pending.await(CALLBACK_TIMEOUT)
+            } finally {
+                pending.close()
+            }
+            if (googleCallback !== pending) return@launch // superseded by a newer attempt
+            if (uri != null) {
+                oauthCallbackReceived = true
+                googleCallback = null
+                handleDeepLink(uri)
+            } else if (_isSigningIn.value && !oauthCallbackReceived) {
+                _isSigningIn.value = false
+                _errorMessage.value = "Google sign-in timed out. Please try again."
+                googleCallback = null
+            } else {
+                googleCallback = null
+            }
+        }
+    }
+
+    /**
+     * Clear a stuck "Signing in…" state when the user came back from the
+     * browser without completing it (there is no cancel callback, so the
+     * screen calls this on resume). No-op once the callback has arrived.
+     *
+     * Desktop: the loopback server keeps listening until its timeout, so a
+     * sign-in finished in the browser after this still completes, the way a
+     * late deep link still did on Android.
+     */
+    fun cancelPendingSignInIfNoCallback() {
+        if (_isSigningIn.value && !oauthCallbackReceived && googleCallback?.received != true) {
             _isSigningIn.value = false
         }
     }
 
     /**
-     * Handle the OAuth callback deep-link URI returned from the browser.
-     * Call this from MainActivity.onNewIntent().
+     * Handle the OAuth callback URI returned from the browser.
+     * On the desktop it comes from [LoopbackRedirectServer] (see [signInWithGoogle]).
      *
      * Implicit flow: tokens arrive in the URL fragment (#access_token=...&refresh_token=...)
      * PKCE fallback: code arrives as query param (?code=...)
+     * Desktop: a fragment never reaches an HTTP server, so only the PKCE
+     * branch runs here; the implicit branch is kept for a URI handed in directly.
      */
-    /**
-     * Clear a stuck "Signing in…" state when the user came back from the OAuth
-     * Custom Tab without completing it (there is no cancel callback, so the
-     * screen calls this on resume). No-op once a deep-link callback has arrived.
-     */
-    fun cancelPendingSignInIfNoCallback() {
-        if (_isSigningIn.value && !oauthCallbackReceived) {
-            _isSigningIn.value = false
-        }
-    }
-
     suspend fun handleDeepLink(uri: Uri) {
         oauthCallbackReceived = true
         Log.d("SupabaseAuth", "Deep-link received: $uri")
@@ -166,6 +220,12 @@ class SupabaseAuthManager @Inject constructor(
                     _errorMessage.value = "No access token in callback"
                 }
             } else {
+                // Supabase reports a refused or failed sign-in as query parameters.
+                val error = uri.getQueryParameter("error_description") ?: uri.getQueryParameter("error")
+                if (!error.isNullOrBlank()) {
+                    _errorMessage.value = "Google sign-in failed: $error"
+                    return
+                }
                 val code = uri.getQueryParameter("code")
                 Log.d("SupabaseAuth", "PKCE flow: code=${code?.take(20)}...")
                 if (code.isNullOrBlank()) {
@@ -296,6 +356,12 @@ class SupabaseAuthManager @Inject constructor(
                 if (firstLine.length > 120) firstLine.take(120) + "…" else firstLine
             }
         }
+    }
+
+    private companion object {
+        const val CALLBACK_PATH = "supabase-callback"
+        /** Long enough for a password manager, 2FA and a slow consent page. */
+        val CALLBACK_TIMEOUT = 5.minutes
     }
 
     private fun UserInfo.toProfile() = UserProfile(

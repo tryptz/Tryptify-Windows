@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.audio.wasapi
 
+import tf.monochrome.desktop.platform.NativeLibraries
 import java.nio.ByteBuffer
 
 /**
@@ -18,7 +19,7 @@ object WasapiNative {
     /** Whether the library loaded; false on Linux and when the DLL is missing. */
     val isAvailable: Boolean by lazy {
         try {
-            System.loadLibrary("monochrome_wasapi")
+            NativeLibraries.load("monochrome_wasapi")
             true
         } catch (e: UnsatisfiedLinkError) {
             false

@@ -8,8 +8,10 @@ import androidx.media3.common.audio.BaseAudioProcessor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 import tf.monochrome.desktop.audio.stretch.StretchAudioProcessor
+import tf.monochrome.desktop.audio.stretch.StretchNative
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -97,5 +99,17 @@ class TryptifyAudioProcessorChainTest {
         // Minus the kernel's lookahead, which comes out at end of stream.
         assertTrue("expected about $expected frames, got $out", abs(out - expected) < 64)
         assertEquals("the stage consumed its input", 0, block.remaining())
+    }
+
+    @Test
+    fun `anyActive lets in a stage that joined, for a caller that skips an idle chain`() {
+        // With the stretch library loaded its stage is always in, and the chain is never idle.
+        assumeFalse(StretchNative.isAvailable)
+        val c = chain()
+        c.configure(stereoFloat)
+        assertFalse("nothing to do at 1.00x", c.anyActive())
+
+        c.applyPlaybackParameters(PlaybackParameters(1.25f, 1.25f))
+        assertTrue("the resampler must be in before the first process call", c.anyActive())
     }
 }

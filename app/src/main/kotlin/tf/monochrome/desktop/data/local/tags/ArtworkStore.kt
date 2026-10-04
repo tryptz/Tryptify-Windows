@@ -1,14 +1,17 @@
 package tf.monochrome.desktop.data.local.tags
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.Canvas
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Image
+import org.jetbrains.skia.SamplingMode
+import org.jetbrains.skia.impl.use
 
 /**
  * Where extracted cover art lives, and what it is named. Two things about the
@@ -26,6 +29,15 @@ import javax.inject.Singleton
  *
  * Keys stay absolute paths: the column already holds paths to sidecar covers
  * and raw audio files, and every reader treats it as "a path to an image".
+ *
+ * Desktop: the root is `filesDir/artwork` through the Context shim, i.e.
+ * `AppPaths.dataDir/artwork` (`%LOCALAPPDATA%\Tryptify\data\artwork`). Keys
+ * are native absolute paths (`File.absolutePath`, backslashes on Windows), not
+ * the forward-slash form library track paths use: Coil reads a string
+ * `C:\…\x.jpg` as a file, but would read `C:/…/x.jpg` as a URI with scheme
+ * "C". Decoding, downscaling and the JPEG encode go through Skia — the
+ * decoder Compose and Coil already use on the desktop — in place of
+ * `BitmapFactory` and `Bitmap.compress`.
  */
 @Singleton
 class ArtworkStore @Inject constructor(
@@ -65,11 +77,17 @@ class ArtworkStore @Inject constructor(
                 // under a content hash is permanent: the name claims those
                 // exact bytes, so nothing ever rewrites it and every track
                 // sharing that cover renders torn for good.
-                val tmp = File(root, "$name.tmp")
+                //
+                // Desktop: a temp name of its own per writer. The scan reads an
+                // album's tracks in parallel, so two workers routinely store the
+                // same cover at once; sharing one "$name.tmp" let one rename the
+                // file while the other still had it open, which Windows refuses.
+                // Losing the rename to an identical copy is not a failure.
+                val tmp = File.createTempFile("$name.", ".tmp", root)
                 FileOutputStream(tmp).use { it.write(encoded) }
                 if (!tmp.renameTo(file)) {
                     tmp.delete()
-                    return fallbackPath
+                    if (!file.exists()) return fallbackPath
                 }
             }
             file.absolutePath
@@ -82,39 +100,68 @@ class ArtworkStore @Inject constructor(
      * Decode, downscale to [MAX_EDGE_PX] on the longest edge, re-encode as JPEG.
      * Null when the bytes are not a decodable image — the one case the caller
      * must read as "no art" rather than a write failure.
+     *
+     * Android decoded at a power-of-two `inSampleSize` first and then landed
+     * the size exactly; Skia decodes lazily and samples straight to the target
+     * size in one draw, so there is one step where there were two.
      */
     private fun encode(artworkBytes: ByteArray): ByteArray? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(artworkBytes, 0, artworkBytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-        val opts = BitmapFactory.Options().apply {
-            inSampleSize = ArtworkKeys.sampleSizeFor(bounds.outWidth, bounds.outHeight, MAX_EDGE_PX)
+        val image = try {
+            Image.makeFromEncoded(artworkBytes)
+        } catch (_: Exception) {
+            return null
         }
-        val decoded = BitmapFactory.decodeByteArray(artworkBytes, 0, artworkBytes.size, opts)
-            ?: return null
+        try {
+            val srcWidth = image.width
+            val srcHeight = image.height
+            if (srcWidth <= 0 || srcHeight <= 0) return null
+            val (width, height) = scaledSize(srcWidth, srcHeight)
 
-        // inSampleSize only halves, so the result can still be up to twice the
-        // target on its longest edge. Land it exactly.
-        val scaled = scaleDown(decoded)
-        return try {
-            ByteArrayOutputStream().use { out ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-                out.toByteArray()
+            val bitmap = Bitmap()
+            try {
+                if (!bitmap.allocN32Pixels(width, height)) return null
+                Canvas(bitmap).use { canvas ->
+                    canvas.drawImageRect(
+                        image = image,
+                        srcLeft = 0f,
+                        srcTop = 0f,
+                        srcRight = srcWidth.toFloat(),
+                        srcBottom = srcHeight.toFloat(),
+                        dstLeft = 0f,
+                        dstTop = 0f,
+                        dstRight = width.toFloat(),
+                        dstBottom = height.toFloat(),
+                        samplingMode = SamplingMode.MITCHELL,
+                        paint = null,
+                        strict = false,
+                    )
+                }
+                // JPEG has no alpha; a transparent PNG cover comes out over
+                // black, as Bitmap.compress(JPEG) wrote it on Android.
+                val scaled = Image.makeFromBitmap(bitmap)
+                try {
+                    return scaled.encodeToData(EncodedImageFormat.JPEG, JPEG_QUALITY)?.bytes
+                } finally {
+                    scaled.close()
+                }
+            } finally {
+                bitmap.close()
             }
+        } catch (_: Exception) {
+            return null
         } finally {
-            if (scaled !== decoded) scaled.recycle()
-            decoded.recycle()
+            image.close()
         }
     }
 
-    private fun scaleDown(bitmap: Bitmap): Bitmap {
-        val longest = maxOf(bitmap.width, bitmap.height)
-        if (longest <= MAX_EDGE_PX) return bitmap
+    /** [srcWidth] x [srcHeight] brought down to [MAX_EDGE_PX] on the longest edge; never up. */
+    private fun scaledSize(srcWidth: Int, srcHeight: Int): Pair<Int, Int> {
+        val longest = maxOf(srcWidth, srcHeight)
+        if (longest <= MAX_EDGE_PX) return srcWidth to srcHeight
         val ratio = MAX_EDGE_PX.toFloat() / longest
-        val width = (bitmap.width * ratio).toInt().coerceAtLeast(1)
-        val height = (bitmap.height * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(bitmap, width, height, true)
+        val width = (srcWidth * ratio).toInt().coerceAtLeast(1)
+        val height = (srcHeight * ratio).toInt().coerceAtLeast(1)
+        return width to height
     }
 
     /**

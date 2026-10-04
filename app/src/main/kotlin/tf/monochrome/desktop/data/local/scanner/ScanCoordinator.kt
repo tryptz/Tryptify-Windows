@@ -10,8 +10,9 @@ import javax.inject.Singleton
 
 /**
  * Process-wide scan state. Scans can be started from several places —
- * the Library tab, the FileObserver watcher, and the onboarding-enqueued
- * ScanWorker — but progress used to live in per-ViewModel StateFlows, so a
+ * the Library tab, the file watcher (FileObserverService), and the
+ * onboarding-started ScanRunner (Android's ScanWorker) — but progress used to
+ * live in per-ViewModel StateFlows, so a
  * scan started anywhere else was invisible to the Library UI and nothing
  * stopped two entry points from scanning concurrently. All entry points go
  * through here instead: one shared progress stream, one global in-flight
@@ -69,7 +70,7 @@ class ScanCoordinator @Inject constructor(
      * The tree used to be written without its intermediate folders, and it is
      * only rebuilt during a scan — so the fix would not reach anyone's existing
      * library until they thought to rescan. This is not a scan: one query for
-     * the track paths and one table rewrite, no MediaStore and no tag reading.
+     * the track paths and one table rewrite, no folder walk and no tag reading.
      */
     suspend fun rebuildFolderTreeIfStale() {
         if (preferences.folderTreeRebuildVersion.first() >= FOLDER_TREE_REBUILD_VERSION) return

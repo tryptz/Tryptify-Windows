@@ -3,8 +3,6 @@ package tf.monochrome.desktop.data.auth
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import androidx.core.net.toUri
-import androidx.browser.customtabs.CustomTabsIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
@@ -20,11 +18,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import tf.monochrome.desktop.data.preferences.PreferencesManager
 import tf.monochrome.desktop.data.scrobbling.LastFmSigning
+import tf.monochrome.desktop.platform.DesktopActions
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Connecting a Last.fm account, the way Last.fm intends it to be done.
@@ -39,10 +39,14 @@ import javax.inject.Singleton
  * The real flow is the same three steps every OAuth-shaped handshake has, and
  * mirrors [SpotifyAuthManager] deliberately so there is one pattern here:
  *
- *  1. [connect] opens last.fm/api/auth in a Custom Tab, carrying `cb` — the
- *     callback that brings the browser back to this app.
- *  2. Last.fm redirects to `tryptify://lastfm-callback?token=…`, which
- *     MainActivity routes to [handleCallback].
+ *  1. [connect] opens last.fm/api/auth in the default browser, carrying `cb` —
+ *     the callback that brings the browser back to this app.
+ *  2. Last.fm redirects to `http://127.0.0.1:48621/lastfm-callback?token=…`,
+ *     which [LoopbackRedirectServer] routes to [handleCallback].
+ *     (Android: `tryptify://lastfm-callback`, routed by MainActivity. A
+ *     desktop app cannot claim a URL scheme portably, so the callback is the
+ *     loopback address — [callbackUrl] — rather than
+ *     [LastFmSigning.CALLBACK_URL].)
  *  3. The token is traded for a session key via `auth.getSession`, signed with
  *     the shared secret, and the key is stored. Session keys do not expire, so
  *     unlike Spotify there is nothing to refresh — this runs once.
@@ -58,8 +62,12 @@ class LastFmAuthManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val httpClient: HttpClient,
     private val preferences: PreferencesManager,
+    private val loopback: LoopbackRedirectServer,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** The loopback wait of the connect attempt in flight, if any. */
+    @Volatile private var pendingCallback: LoopbackRedirectServer.Pending? = null
 
     val isConnected: StateFlow<Boolean> = preferences.lastFmEnabled
         .stateIn(scope, SharingStarted.Eagerly, false)
@@ -74,7 +82,7 @@ class LastFmAuthManager @Inject constructor(
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     /** The address to paste into the Last.fm application's Callback URL field. */
-    val callbackUrl: String get() = LastFmSigning.CALLBACK_URL
+    val callbackUrl: String get() = loopback.redirectUri(CALLBACK_PATH)
 
     /**
      * Send the listener to Last.fm's consent page.
@@ -84,7 +92,7 @@ class LastFmAuthManager @Inject constructor(
      * error in a browser tab is the hardest possible place to explain what the
      * app needs — so the missing-credentials case is answered here instead.
      */
-    fun connect(activityContext: Context) {
+    fun connect(@Suppress("UNUSED_PARAMETER") activityContext: Context) {
         scope.launch {
             _errorMessage.value = null
             val apiKey = runCatching { preferences.lastFmApiKey.first() }.getOrNull().orEmpty()
@@ -95,21 +103,50 @@ class LastFmAuthManager @Inject constructor(
                 return@launch
             }
             _isConnecting.value = true
-            // The Custom Tab has to be launched from the main thread; the
-            // credential read above is DataStore and must not be.
-            withContext(Dispatchers.Main) {
-                try {
-                    CustomTabsIntent.Builder().build()
-                        .launchUrl(activityContext, LastFmSigning.authorizeUrl(apiKey).toUri())
-                } catch (e: Exception) {
-                    _isConnecting.value = false
-                    _errorMessage.value = "Could not open browser: ${e.message}"
-                }
+            // Listen before the browser opens, so a busy port is reported in
+            // the app rather than as a dead page in the browser.
+            pendingCallback?.let { older ->
+                pendingCallback = null
+                older.close()
+            }
+            val pending = try {
+                loopback.expect(CALLBACK_PATH)
+            } catch (e: IOException) {
+                _isConnecting.value = false
+                _errorMessage.value = "Last.fm connection failed: ${e.message}"
+                return@launch
+            }
+            pendingCallback = pending
+            // Desktop: the browser is opened from this IO coroutine; Android
+            // had to hop to the main thread for the Custom Tab.
+            try {
+                DesktopActions.openLink(LastFmSigning.authorizeUrl(apiKey, callback = callbackUrl))
+            } catch (e: Exception) {
+                pending.close()
+                if (pendingCallback === pending) pendingCallback = null
+                _isConnecting.value = false
+                _errorMessage.value = "Could not open browser: ${e.message}"
+                return@launch
+            }
+            val callback = try {
+                pending.await(CALLBACK_TIMEOUT)
+            } finally {
+                pending.close()
+            }
+            if (pendingCallback !== pending) return@launch // a newer connect() took over
+            pendingCallback = null
+            if (callback != null) {
+                handleCallback(callback)
+            } else {
+                // Desktop: the loopback server stops listening after a while;
+                // Android simply never heard back.
+                _isConnecting.value = false
+                _errorMessage.value = "Last.fm didn't answer in time. Try connecting again."
             }
         }
     }
 
-    /** Handle `tryptify://lastfm-callback?token=…` from MainActivity. */
+    /** Handle `http://127.0.0.1:48621/lastfm-callback?token=…` from [LoopbackRedirectServer]. */
     suspend fun handleCallback(uri: Uri) {
         try {
             val token = uri.getQueryParameter("token")
@@ -177,5 +214,7 @@ class LastFmAuthManager @Inject constructor(
 
     private companion object {
         const val TAG = "LastFmAuth"
+        const val CALLBACK_PATH = "lastfm-callback"
+        val CALLBACK_TIMEOUT = 5.minutes
     }
 }

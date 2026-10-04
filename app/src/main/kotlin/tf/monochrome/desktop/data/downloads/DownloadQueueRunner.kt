@@ -5,11 +5,14 @@ import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,7 +96,7 @@ class DownloadQueueRunner @Inject constructor(
         synchronized(jobLock) {
             val current = drainJob
             if (current != null && current.isActive && !current.isCancelled) return
-            drainJob = scope.launch { drainLock.withLock { drain() } }
+            drainJob = scope.launch { drainLock.withLock { drainUntilIdle() } }
         }
     }
 
@@ -102,7 +105,37 @@ class DownloadQueueRunner @Inject constructor(
         synchronized(jobLock) { drainJob?.cancel() }
     }
 
-    private suspend fun drain() {
+    /**
+     * Drains, and drains again if work arrived while the last pass was
+     * winding down.
+     *
+     * A [start] that lands between the drain's last look at the queue and the
+     * job completing sees the job still active and returns — KEEP — trusting
+     * the drain to pick the work up, which it no longer will. WorkManager had
+     * the same window. Here the decision to stop is taken under [jobLock], the
+     * lock [start] takes: either that [start] already ran, and its entries are
+     * in the queue for the check below to see, or it runs after, finds no
+     * active job and launches one.
+     */
+    private suspend fun drainUntilIdle() {
+        val self = currentCoroutineContext()[Job]
+        while (true) {
+            val finished = drain()
+            synchronized(jobLock) {
+                val waiting = queue.entries.value.any { it.status == DownloadStatus.QUEUED }
+                // A drain that stopped on an unexpected error is not rerun
+                // here: the next enqueue restarts it, as on Android, rather
+                // than this spinning on the same failure.
+                if (!finished || !waiting) {
+                    if (drainJob === self) drainJob = null
+                    return
+                }
+            }
+        }
+    }
+
+    /** One pass over the queue; true when it ran until nothing was left to start. */
+    private suspend fun drain(): Boolean {
         queue.onCancel = { trackId -> running.remove(trackId)?.cancel() }
         // Anything still marked as running belongs to a process that died
         // mid-transfer; nothing is going to finish it.
@@ -111,6 +144,9 @@ class DownloadQueueRunner @Inject constructor(
 
         try {
             while (queue.hasWork()) {
+                // Checked before takeNext marks anything as running, so a
+                // cancelled drain does not leave a batch flagged DOWNLOADING.
+                currentCoroutineContext().ensureActive()
                 val room = DownloadQueue.CONCURRENCY - queue.runningCount()
                 val batch = queue.takeNext(room)
                 if (batch.isEmpty()) {
@@ -122,19 +158,31 @@ class DownloadQueueRunner @Inject constructor(
                     continue
                 }
                 notify(initial = false)
+                // Joined, not awaited. The Android worker used async/awaitAll,
+                // and awaitAll throws as soon as any one deferred is cancelled
+                // — which is exactly what cancelling one download does — so
+                // removing one track tore down the whole batch and the worker
+                // with it, leaving the rest "Queued" until the next enqueue.
+                // run() settles every outcome itself, so there is nothing to
+                // await; join waits for the batch without inheriting a
+                // sibling's cancellation. Started lazily so each transfer is
+                // in [running] before it can be cancelled.
                 coroutineScope {
                     batch.map { item ->
-                        async { run(item) }.also { running[item.trackId] = it }
-                    }.awaitAll()
+                        launch(start = CoroutineStart.LAZY) { run(item) }
+                            .also { running[item.trackId] = it }
+                    }.onEach { it.start() }.joinAll()
                 }
                 notify(initial = false)
             }
+            return true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // The loop itself failing must not lose the queue. Leave it as it
             // stands and let the next enqueue restart the runner.
             Log.w(TAG, "download queue stopped unexpectedly", e)
+            return false
         } finally {
             queue.onCancel = null
             running.clear()
@@ -155,12 +203,21 @@ class DownloadQueueRunner @Inject constructor(
             // Cancelled by the user: the entry is already off the queue, so
             // there is nothing left to mark.
             running.remove(item.trackId)
-            return
+            if (!currentCoroutineContext().isActive) return
+            // Still active, so this was not our cancellation but a client's
+            // own timeout surfacing as one: an ordinary, retryable failure.
+            Log.w(TAG, "download cancelled itself for \"${item.title}\"", e)
+            TrackDownloader.Outcome.RETRYABLE
         } catch (e: Exception) {
             Log.w(TAG, "download threw for \"${item.title}\"", e)
             TrackDownloader.Outcome.RETRYABLE
         }
         running.remove(item.trackId)
+        // TrackDownloader's catch-all also sees a CancellationException and
+        // answers RETRYABLE. A transfer that was cancelled has no verdict to
+        // record — the user dropped it, stop() emptied the queue, or the app
+        // is closing — and charging it an attempt would be wrong.
+        if (!currentCoroutineContext().isActive) return
         when (outcome) {
             TrackDownloader.Outcome.SUCCESS -> queue.complete(item.trackId)
             TrackDownloader.Outcome.RETRYABLE -> queue.fail(item.trackId, retryable = true)

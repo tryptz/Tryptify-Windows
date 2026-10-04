@@ -2,6 +2,7 @@ package tf.monochrome.desktop.data.import_
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import tf.monochrome.desktop.R
 import tf.monochrome.desktop.data.downloads.AppNotifier
 import tf.monochrome.desktop.platform.AppScope
@@ -57,6 +59,14 @@ class SpotifyImportJob @Inject constructor(
 
     @Volatile
     private var importJob: Job? = null
+
+    // Set once per import by whichever side reports its end first — the import
+    // finishing, or [cancel] — so a cancel racing the last track cannot leave
+    // two summaries, or a "complete" over a "cancelled".
+    @Volatile
+    private var settled = AtomicBoolean(true)
+
+    @Volatile
     private var lastNotifyNanos = 0L
 
     val isRunning: Boolean get() = importJob?.isActive == true
@@ -75,13 +85,26 @@ class SpotifyImportJob @Inject constructor(
         launchImport { playlistImporter.importSpotifyLikedSongs(strictAlbumMatch) }
 
     /** Stops the running import, if any, and reports it as cancelled. */
+    @Synchronized
     fun cancel() {
         val job = importJob ?: return
         if (!job.isActive) return
+        if (!settled.compareAndSet(false, true)) return
         job.cancel()
         val message = context.getString(R.string.import_cancelled)
         importService.reportFailure(message)
         finish(success = false, message = message)
+        // The import can publish one more Matching tick between the cancel and
+        // its next suspension point, which would leave Settings counting a
+        // stopped import. Once it has unwound, put the cancelled state back —
+        // unless another import has started meanwhile and owns the flow now.
+        scope.launch {
+            job.join()
+            val now = importService.progress.value
+            if (importJob === job && (now is ImportProgress.Fetching || now is ImportProgress.Matching)) {
+                importService.reportFailure(message)
+            }
+        }
     }
 
     /**
@@ -95,8 +118,11 @@ class SpotifyImportJob @Inject constructor(
 
         val preparing = context.getString(R.string.import_preparing)
         _state.value = State.Running(preparing, 0, 0)
+        lastNotifyNanos = 0L
         notifier.post(ONGOING_NOTIFICATION_ID, context.getString(R.string.import_progress_title), preparing, ongoing = true)
 
+        val settledFlag = AtomicBoolean(false)
+        settled = settledFlag
         importJob = scope.launch {
             // Mirror the shared progress flow into the notification while the
             // import runs in the sibling job below.
@@ -115,12 +141,21 @@ class SpotifyImportJob @Inject constructor(
                     }
                 }
             }
-            val result = request()
+            val result = try {
+                request()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // PlaylistImporter returns its failures as a Result; anything
+                // that escapes anyway still has to end the import visibly
+                // rather than leave the ongoing entry up for good.
+                Result.failure(e)
+            }
             progressMirror.cancel()
             // cancel() has already published its own terminal state; a request
             // that returned anyway (a Result wrapping the cancellation) must
             // not post a second summary over it.
-            if (!isActive) return@launch
+            if (!isActive || !settledFlag.compareAndSet(false, true)) return@launch
             result
                 .onSuccess { done ->
                     finish(
@@ -158,9 +193,15 @@ class SpotifyImportJob @Inject constructor(
      * [state] is updated on every tick, since a StateFlow conflates for free.
      */
     private fun notifyProgress(text: String, current: Int, total: Int) {
+        // A tick that arrives after the import was settled (the mirror is a
+        // child of a job cancel() has just stopped) must not re-post the
+        // ongoing entry finish() took down.
+        if (settled.get()) return
         _state.value = State.Running(text, current, total)
         val now = System.nanoTime()
-        if (now - lastNotifyNanos < 500_000_000L) return
+        // 0 means "nothing posted yet": nanoTime's origin is arbitrary and may
+        // be negative, so it cannot be compared against a zero start value.
+        if (lastNotifyNanos != 0L && now - lastNotifyNanos < 500_000_000L) return
         lastNotifyNanos = now
         notifier.post(
             ONGOING_NOTIFICATION_ID,

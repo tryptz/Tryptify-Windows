@@ -1,9 +1,5 @@
 package tf.monochrome.desktop.data.repository
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -34,7 +30,8 @@ class MusicRepository @Inject constructor(
     private val netEaseLyricsClient: NetEaseLyricsClient,
     private val kugouLyricsClient: KugouLyricsClient,
     private val preferences: PreferencesManager,
-    @ApplicationContext private val context: Context
+    // Desktop: Android also took a Context here, only to reach ConnectivityManager
+    // for isOnWifi(); see there.
 ) {
     // --- Search ---
 
@@ -250,10 +247,13 @@ class MusicRepository @Inject constructor(
         }
     }
 
-    private fun isOnWifi(): Boolean {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-    }
+    /**
+     * Desktop: always true. Android asked ConnectivityManager whether the active
+     * network was Wi-Fi so a phone on mobile data streamed at the cellular
+     * quality. A desktop is on an unmetered connection (Ethernet or Wi-Fi) in
+     * all but rare tethered cases, and the JVM has no metered-network signal,
+     * so the Wi-Fi quality setting is the one that applies; the cellular one
+     * stays stored (it syncs with the phone) but is not consulted here.
+     */
+    private fun isOnWifi(): Boolean = true
 }

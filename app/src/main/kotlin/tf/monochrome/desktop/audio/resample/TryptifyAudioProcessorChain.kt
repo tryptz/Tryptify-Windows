@@ -167,10 +167,7 @@ class TryptifyAudioProcessorChain(
      * since the last call first.
      */
     fun process(input: ByteBuffer): ByteBuffer {
-        if (membershipDirty) {
-            membershipDirty = false
-            pipeline.refreshActive()
-        }
+        refreshIfDirty()
         return pipeline.process(input)
     }
 
@@ -191,7 +188,25 @@ class TryptifyAudioProcessorChain(
 
     fun outputFormat(): AudioFormat = pipeline.outputFormat()
 
-    fun anyActive(): Boolean = pipeline.anyActive()
+    /**
+     * Whether any stage would touch the audio. Render thread only, like
+     * [process]: it applies a pending membership change first, because a
+     * caller that skips [process] while this is false -- the engine's render
+     * loop does -- would otherwise never let in a stage that joined after
+     * [configure], and a speed change on an otherwise idle chain would do
+     * nothing.
+     */
+    fun anyActive(): Boolean {
+        refreshIfDirty()
+        return pipeline.anyActive()
+    }
+
+    private fun refreshIfDirty() {
+        if (membershipDirty) {
+            membershipDirty = false
+            pipeline.refreshActive()
+        }
+    }
 
     private companion object {
         const val TAG = "TryptifyAudioProcessorChain"

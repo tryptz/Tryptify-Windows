@@ -2,6 +2,7 @@ package tf.monochrome.desktop.player.engine
 
 import android.util.Log
 import androidx.media3.common.C
+import androidx.core.net.toFile
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -60,7 +61,8 @@ class PlaybackEngine(
     /** Default opener: file and http(s) URIs straight into libavformat. */
     var sourceOpener: SourceOpener = SourceOpener { item ->
         val uri = item.localConfiguration?.uri ?: throw IllegalArgumentException("MediaItem without a uri: $item")
-        val target = if (uri.scheme == "file") uri.path ?: uri.toString() else uri.toString()
+        // toFile, not uri.path: on Windows the path of file:///C:/x is "/C:/x".
+        val target = if (uri.scheme == "file") uri.toFile().absolutePath else uri.toString()
         FfmpegDecoder.open(target, userAgent = userAgent)
     }
 
@@ -70,7 +72,12 @@ class PlaybackEngine(
         FfmpegDecoder.open(factory.createDataSource(), uri)
     }
 
-    var userAgent: String = "Tryptify/${tf.monochrome.desktop.BuildConfig.VERSION_NAME} (Windows)"
+    /**
+     * Sent on every direct network open. The Android app's radio agent, kept
+     * as it was: a fair number of Icecast servers answer a generic agent with
+     * a 403, and this one is known to get through.
+     */
+    var userAgent: String = RADIO_USER_AGENT
 
     // ── Observable state (volatile, read from any thread) ────────────────────
     @Volatile private var _playbackState = Player.STATE_IDLE
@@ -383,6 +390,12 @@ class PlaybackEngine(
             timeline.reset(0, _playbackParameters.speed.toDouble())
             framesWritten = 0
         }
+        // Membership is re-read every block, not only at configure: stages whose
+        // activity follows a live control (VariRate's ratio, the stretch stage's
+        // semitones) would otherwise stay out of a chain configured while they
+        // were idle. Android got this from DefaultAudioSink re-flushing on a
+        // parameter change; nothing re-flushes this chain.
+        chain.refreshActive()
         val processed = if (chain.anyActive()) chain.process(inputBuf) else inputBuf
         if (processed.hasRemaining()) {
             pendingProcessed = processed
@@ -608,6 +621,8 @@ class PlaybackEngine(
 
     companion object {
         private const val TAG = "PlaybackEngine"
+        /** The Android app's PlaybackService.RADIO_USER_AGENT, verbatim. */
+        const val RADIO_USER_AGENT = "Tryptify/1.0 ( https://github.com/tryptz/tryptify )"
         /** Resume from a stall once this much is buffered again. */
         private const val MIN_BUFFER_US = 500_000L
         /** Ten seconds of PCM per source, capped for very high rates and channel counts. */

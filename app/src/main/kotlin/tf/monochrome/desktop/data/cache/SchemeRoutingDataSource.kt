@@ -14,6 +14,12 @@ import androidx.media3.datasource.TransferListener
  * DefaultDataSource has a closed set of schemes and no extension point, so this
  * sits in front of it rather than trying to replace it — the standard schemes
  * keep their standard handling.
+ *
+ * Desktop: there is no DefaultDataSource. The engine hands file paths and
+ * http(s) URLs straight to libavformat and only opens through a DataSource for
+ * the schemes that need one of the app's own sources, so [default] is the
+ * fallback for anything else: [HttpDataSource] (the desktop DefaultHttpDataSource)
+ * or the shim's FileDataSource, whichever the caller expects.
  */
 @UnstableApi
 class SchemeRoutingDataSource(
@@ -33,10 +39,10 @@ class SchemeRoutingDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val uri = dataSpec.uri.toString()
+        val target = dataSpec.uri.toString()
         val source = when {
-            QobuzPartialDataSource.isQobuzUri(uri) -> qobuz
-            DeezerPartialDataSource.isDeezerUri(uri) -> deezer
+            QobuzPartialDataSource.isQobuzUri(target) -> qobuz
+            DeezerPartialDataSource.isDeezerUri(target) -> deezer
             else -> default
         }
         active = source
@@ -46,10 +52,12 @@ class SchemeRoutingDataSource(
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
         requireNotNull(active) { "read() before open()" }.read(buffer, offset, length)
 
-    override fun getUri(): Uri? = active?.uri
+    // Desktop: the DataSource shim exposes Media3's getUri()/getResponseHeaders()
+    // as Kotlin properties.
+    override val uri: Uri? get() = active?.uri
 
-    override fun getResponseHeaders(): Map<String, List<String>> =
-        active?.responseHeaders ?: emptyMap()
+    override val responseHeaders: Map<String, List<String>>
+        get() = active?.responseHeaders ?: emptyMap()
 
     override fun close() {
         try {

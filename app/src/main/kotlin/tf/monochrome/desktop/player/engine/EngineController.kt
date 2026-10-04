@@ -346,10 +346,12 @@ class EngineController @Inject constructor(
 
     private fun pushPlaybackParameters(speed: Float, preservePitch: Boolean) {
         val pitch = if (preservePitch) 1f else speed
-        engine.playbackParameters = PlaybackParameters(speed, pitch)
-        // Preserve-pitch speed goes to the time-stretch stage; vinyl-style speed to the resampler.
+        // Preserve-pitch speed goes to the time-stretch stage; vinyl-style speed to
+        // the resampler. Set before the engine hears of it, so the render thread's
+        // next membership check already sees the stage that has to join.
         if (preservePitch) { floatSonic.setSpeed(speed); variRateProcessor.setRatio(1f) }
         else { floatSonic.setSpeed(1f); variRateProcessor.setRatio(speed) }
+        engine.playbackParameters = PlaybackParameters(speed, pitch)
         lastPitchRatio = pitch
         pushAutoEqWarp()
     }

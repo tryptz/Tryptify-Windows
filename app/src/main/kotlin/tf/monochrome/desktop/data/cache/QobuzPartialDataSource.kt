@@ -99,7 +99,8 @@ class QobuzPartialDataSource(
         return read
     }
 
-    override fun getUri(): Uri? = dataSpec?.uri
+    // Desktop: the DataSource shim exposes Media3's getUri() as a Kotlin property.
+    override val uri: Uri? get() = dataSpec?.uri
 
     override fun close() {
         try {

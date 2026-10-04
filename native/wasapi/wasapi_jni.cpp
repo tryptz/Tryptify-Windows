@@ -347,6 +347,10 @@ Stream* openStream(const std::wstring& id, int sampleRate, int channels, int for
         HRESULT hr = device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, probe.putVoid());
         if (FAILED(hr)) { setError("IMMDevice::Activate", hr); delete s; return nullptr; }
         hr = probe->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, reinterpret_cast<const WAVEFORMATEX*>(&wf), nullptr);
+        // Released before the real client is initialised: some drivers (and
+        // Wine) open the endpoint for a probe and answer DEVICE_IN_USE to an
+        // exclusive Initialize while it is alive.
+        probe.reset();
         if (hr != S_OK) { setError("format not supported in exclusive mode", hr); delete s; return nullptr; }
     }
 

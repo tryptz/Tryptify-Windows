@@ -22,6 +22,11 @@ import javax.inject.Singleton
  * original size. They land in [ArtworkStore.legacyRoot] so
  * `MediaScanner.needsReRead` recognises them and the next *manual* rescan
  * replaces them a row at a time, with nothing forced on the user meanwhile.
+ *
+ * Desktop: no install ever had the cache-keyed store, so there is nothing to
+ * move: the listing is empty, the three repoints match no row, and the flag is
+ * set. Kept so a startup that calls it, and a diff against Android, need no
+ * special case; skipping it at startup loses nothing.
  */
 @Singleton
 class ArtworkStoreMigration @Inject constructor(

@@ -77,7 +77,8 @@ class DecryptingDataSource(
         return bytesRead
     }
 
-    override fun getUri(): Uri? = upstream.uri
+    // Desktop: the DataSource shim exposes Media3's getUri() as a Kotlin property.
+    override val uri: Uri? get() = upstream.uri
 
     override fun close() {
         decryptedStream?.close()
