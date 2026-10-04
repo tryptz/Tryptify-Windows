@@ -1,3 +1,4 @@
+#include <exception>
 // Tries to break the mixer. Every effect at every rate the hi-res paths
 // deliver (8 kHz to 384 kHz), at every oversampling factor, at the ends of
 // every knob, on block sizes from one frame to the largest; then input no
@@ -567,6 +568,20 @@ void alignment() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Unbuffered, so a crash still shows the last phase reached; and an
+    // uncaught exception says what it was instead of a bare abort.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::set_terminate([] {
+        try {
+            if (auto e = std::current_exception()) std::rethrow_exception(e);
+            std::printf("FAIL  terminate without an exception\n");
+        } catch (const std::exception& ex) {
+            std::printf("FAIL  uncaught exception: %s\n", ex.what());
+        } catch (...) {
+            std::printf("FAIL  uncaught non-standard exception\n");
+        }
+        std::abort();
+    });
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     if (argc < 2 || !loadRanges(argv[1])) {
         std::printf("FAIL  could not read the range table (%s)\n", argc > 1 ? argv[1] : "no path");
