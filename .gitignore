@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+build/
+**/build/
+!native/**/build.ninja
+.kotlin/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Native build trees and probes
+/build/
+cmake-build-*/
+compile_commands.json
+
+# Signing and secrets
+keystore.properties
+*.jks
+*.pfx
+*.p12
+
+# OS
+.DS_Store
+Thumbs.db
