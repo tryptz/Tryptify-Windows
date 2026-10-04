@@ -43,7 +43,7 @@ jobs:
         run: cmake -S native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release "-DTF_OUTPUT_DIR=${{ github.workspace }}/app/resources/windows-x64"
 
       - name: Build native libraries
-        run: cmake --build build/native --config Release
+        run: cmake --build build/native --config Release -- -k 0   # report every failing file, not just the first
 
       - name: Run native host tests
         run: ctest --test-dir build/native --output-on-failure -C Release

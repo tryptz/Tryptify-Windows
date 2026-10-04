@@ -68,6 +68,11 @@ target_include_directories(tf_common INTERFACE
 # M_PI and friends are hidden behind _USE_MATH_DEFINES on MSVC and on MinGW in
 # strict -std=c++17 mode; the DSP headers use them freely, as the NDK allows.
 target_compile_definitions(tf_common INTERFACE _USE_MATH_DEFINES)
+if(MSVC)
+    # MSVC's <math.h> macros (OVERFLOW, DOMAIN, ...) collide with enum names
+    # in the shared DSP sources; see compat/msvc_compat.h.
+    target_compile_options(tf_common INTERFACE "/FI${CMAKE_CURRENT_SOURCE_DIR}/compat/msvc_compat.h")
+endif()
 if(WIN32)
     target_compile_definitions(tf_common INTERFACE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
