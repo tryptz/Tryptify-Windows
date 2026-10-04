@@ -1,0 +1,74 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Native DLLs, tests and installer
+    runs-on: windows-latest
+    steps:
+      - name: Check out source (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      # The native layer: the same C++ as the Android app plus the WASAPI sink,
+      # built with MSVC straight into the folder the installer ships.
+      - name: Configure native build
+        run: cmake -S native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release "-DTF_OUTPUT_DIR=${{ github.workspace }}/app/resources/windows-x64"
+
+      - name: Build native libraries
+        run: cmake --build build/native --config Release
+
+      - name: Run native host tests
+        run: ctest --test-dir build/native --output-on-failure -C Release
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon :app:test
+
+      - name: Build installer (MSI)
+        run: ./gradlew --no-daemon :app:packageReleaseMsi
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: tryptify-windows-msi
+          path: app/build/compose/binaries/main-release/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload native libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: tryptify-windows-native
+          path: app/resources/windows-x64/*.dll
+
+      - name: Attach installer to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/compose/binaries/main-release/msi/*.msi

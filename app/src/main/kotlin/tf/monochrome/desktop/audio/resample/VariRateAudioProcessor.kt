@@ -171,7 +171,7 @@ class VariRateAudioProcessor @Inject constructor() : AudioProcessor {
     override fun queueEndOfStream() {
         // Push the filter's own latency out as zeros so the last few
         // milliseconds of the track are not swallowed by the tail.
-        if (!inputEnded && inputFormat != AudioFormat.NOT_SET && isActive) {
+        if (!inputEnded && inputFormat != AudioFormat.NOT_SET && isActive()) {
             val halfWidth = active.kernel.halfWidth
             val channels = inputFormat.channelCount
             val bytesPerSample =

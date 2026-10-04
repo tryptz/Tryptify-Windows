@@ -26,3 +26,8 @@ keystore.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Built native libraries: produced by native/ (CMake) on each platform; the
+# release workflow builds them, so they are not committed.
+app/resources/*/*.dll
+app/resources/*/*.so

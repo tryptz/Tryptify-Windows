@@ -48,7 +48,7 @@ internal class AudioProcessorChain(
             val p = processors[i]
             try {
                 val out = p.configure(fmt)
-                active[i] = p.isActive
+                active[i] = p.isActive()
                 if (active[i] && out != AudioProcessor.AudioFormat.NOT_SET) {
                     fmt = out
                 }
@@ -107,7 +107,7 @@ internal class AudioProcessorChain(
                 endQueued[i] = true
             }
             current = p.getOutput()
-            upstreamEnded = endQueued[i] && p.isEnded
+            upstreamEnded = endQueued[i] && p.isEnded()
         }
         return current
     }
@@ -122,7 +122,7 @@ internal class AudioProcessorChain(
 
     /** Every stage has been told the input ended and has given up all it held. */
     fun isEnded(): Boolean = inputEnded &&
-        processors.indices.all { !active[it] || (endQueued[it] && processors[it].isEnded) }
+        processors.indices.all { !active[it] || (endQueued[it] && processors[it].isEnded()) }
 
     private fun clearEnd() {
         inputEnded = false
@@ -151,7 +151,7 @@ internal class AudioProcessorChain(
     fun refreshActive() {
         var changed = false
         for (i in processors.indices) {
-            val nowActive = processors[i].isActive
+            val nowActive = processors[i].isActive()
             if (nowActive == active[i]) continue
             active[i] = nowActive
             changed = true

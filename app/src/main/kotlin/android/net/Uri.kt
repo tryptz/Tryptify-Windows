@@ -207,8 +207,17 @@ class Uri private constructor(private val raw: String) : Comparable<Uri> {
 
         @JvmStatic fun parse(uriString: String): Uri = Uri(uriString)
 
+        /**
+         * `file:///C:/Music/a.flac` on Windows, `file:///home/x/a.flac` elsewhere:
+         * the drive colon stays literal so java.io.File(URI) and toFile() can read
+         * it back (Android percent-encoded it; nothing here depends on that).
+         */
         @JvmStatic
-        fun fromFile(file: File): Uri = Builder().scheme("file").encodedAuthority("").encodedPath(encode(file.absolutePath.replace('\\', '/'), "/")).build()
+        fun fromFile(file: File): Uri {
+            var path = file.absolutePath.replace('\\', '/')
+            if (!path.startsWith("/")) path = "/$path"
+            return Builder().scheme("file").encodedAuthority("").encodedPath(encode(path, "/:")).build()
+        }
 
         @JvmStatic
         fun fromParts(scheme: String, ssp: String, fragment: String?): Uri =
