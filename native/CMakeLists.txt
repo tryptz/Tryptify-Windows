@@ -347,6 +347,14 @@ if(TF_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
         target_link_libraries(${name} PRIVATE tf_common)
         target_include_directories(${name} PRIVATE dsp dsp/util dsp/snapins dsp/oxford dsp/tests/host_include ${T_INCLUDES})
         target_compile_options(${name} PRIVATE $<IF:$<BOOL:${MSVC}>,/O2,-O2> ${T_OPTIONS})
+        # The tests build whole engines as locals (the app heap-allocates them
+        # in JNI); Linux gives a thread 8 MB of stack, Windows 1 MB, which
+        # overflowed. Give the test executables Linux's size.
+        if(MSVC)
+            target_link_options(${name} PRIVATE /STACK:8388608)
+        elseif(WIN32)
+            target_link_options(${name} PRIVATE -Wl,--stack,8388608)
+        endif()
         if(NOT MSVC)
             find_package(Threads REQUIRED)
             target_link_libraries(${name} PRIVATE Threads::Threads)
