@@ -1,0 +1,11 @@
+# Check text files out with LF on every OS. On Windows git would otherwise
+# convert them to CRLF, and tests that compare a committed file with generated
+# text (snapin_ranges.csv) fail on the line endings alone.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Third-party licence texts with mixed endings, kept byte for byte.
+app/src/main/resources/fonts/LICENSES.txt -text
