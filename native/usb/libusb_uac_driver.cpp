@@ -4,6 +4,9 @@
 #include "libusb_uac_driver.h"
 
 #include <android/log.h>
+#if defined(_MSC_VER)
+#include <winsock2.h>  // struct timeval: MSVC has no <sys/time.h>
+#endif
 #include <libusb.h>
 
 #include <algorithm>

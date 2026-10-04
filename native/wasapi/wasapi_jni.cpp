@@ -35,6 +35,17 @@
 
 #include <jni.h>
 
+#ifdef _MSC_VER
+// The Windows SDK declares these COM identifiers but ships no library that
+// defines them (MinGW's libuuid does), so MSVC builds define them here.
+extern "C" const CLSID CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
+extern "C" const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
+extern "C" const IID IID_IMMNotificationClient = __uuidof(IMMNotificationClient);
+extern "C" const IID IID_IAudioClient = __uuidof(IAudioClient);
+extern "C" const IID IID_IAudioRenderClient = __uuidof(IAudioRenderClient);
+extern "C" const IID IID_IAudioClock = __uuidof(IAudioClock);
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>

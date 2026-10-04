@@ -17,3 +17,20 @@
 #undef UNDERFLOW
 #undef TLOSS
 #undef PLOSS
+
+// clock_gettime(CLOCK_MONOTONIC, ...) for the scope's frame clock: MinGW gets
+// it from winpthreads, MSVC has no equivalent, so steady_clock stands in.
+#ifdef __cplusplus
+#include <chrono>
+#include <ctime>
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+static inline int clock_gettime(int, struct timespec* ts) {
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    ts->tv_sec = static_cast<time_t>(ns / 1000000000);
+    ts->tv_nsec = static_cast<long>(ns % 1000000000);
+    return 0;
+}
+#endif
+#endif
