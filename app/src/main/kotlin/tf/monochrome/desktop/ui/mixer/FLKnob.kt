@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.mixer
 
+import tf.monochrome.desktop.ui.input.wheelAdjust
 import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap

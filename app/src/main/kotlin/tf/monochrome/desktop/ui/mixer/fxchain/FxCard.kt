@@ -58,7 +58,7 @@ import tf.monochrome.desktop.ui.components.liquidGlass
 import tf.monochrome.desktop.ui.mixer.FLKnobControl
 import tf.monochrome.desktop.ui.mixer.ParamDef
 import tf.monochrome.desktop.ui.mixer.getParamDefs
-import tf.monochrome.desktop.ui.mixer.wheelAdjust
+import tf.monochrome.desktop.ui.input.wheelAdjust
 import tf.monochrome.desktop.ui.theme.MonoDimens
 import androidx.compose.ui.res.stringResource
 import tf.monochrome.desktop.R

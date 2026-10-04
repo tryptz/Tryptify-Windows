@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.mixer
 
+import tf.monochrome.desktop.ui.input.wheelAdjust
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectVerticalDragGestures

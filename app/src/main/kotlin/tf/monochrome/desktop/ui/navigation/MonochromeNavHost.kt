@@ -1,5 +1,9 @@
 package tf.monochrome.desktop.ui.navigation
 
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.compose.runtime.mutableFloatStateOf
+import tf.monochrome.desktop.ui.input.AppShortcutBindings
+import tf.monochrome.desktop.ui.input.ShortcutActions
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -372,6 +376,45 @@ fun MonochromeNavHost(initialRoute: String? = null) {
         if (tab == AppTab.SEARCH) focusSearch = true
         selectPageWith(pageForTab(tab, pages, lastLibrarySection, navBarSlots), false)
     }
+
+    // ── Keyboard shortcuts ───────────────────────────────────────────────
+    // What the window's shortcuts act on (see AppShortcuts for the keys).
+    // Ctrl+1 to Ctrl+9 follow the bar's own order, Search last, so the number
+    // is the button's place on screen.
+    var volumeBeforeMute by remember { mutableFloatStateOf(1f) }
+    AppShortcutBindings(
+        ShortcutActions(
+            playPause = playerViewModel::togglePlayPause,
+            next = playerViewModel::skipToNext,
+            previous = playerViewModel::skipToPrevious,
+            seekBy = playerViewModel::seekBy,
+            volumeBy = { by ->
+                playerViewModel.setVolume((playerViewModel.volume.value + by).coerceIn(0f, 1f))
+            },
+            toggleMute = {
+                val now = playerViewModel.volume.value
+                if (now > 0f) {
+                    volumeBeforeMute = now
+                    playerViewModel.setVolume(0f)
+                } else {
+                    playerViewModel.setVolume(volumeBeforeMute.takeIf { it > 0f } ?: 1f)
+                }
+            },
+            toggleShuffle = playerViewModel::toggleShuffle,
+            cycleRepeat = playerViewModel::cycleRepeatMode,
+            toggleLike = playerViewModel::toggleLikeCurrentTrack,
+            openSearch = { onTab(AppTab.SEARCH) },
+            tabs = (pillTabs(pages, navBarSlots) + AppTab.SEARCH).map { tab -> { onTab(tab) } },
+            openSettings = {
+                // Settings is a nested graph: on any of its screens, stay put.
+                val inSettings = currentDestination?.hierarchy?.any { it.route == Screen.Settings.route } == true
+                if (!inSettings) navController.navigateSafe(Screen.Settings.route)
+            },
+            openNowPlaying = {
+                if (currentDestination?.route != Screen.NowPlaying.route) navController.navigateSafe(Screen.NowPlaying.route)
+            },
+        ),
+    )
 
     // The bar folds the mini player into itself while the listener scrolls down
     // through a page, and unfolds it when they scroll back up — measured from

@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.main
 
+import tf.monochrome.desktop.ui.input.ThemedScrollbars
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.foundation.layout.fillMaxSize
@@ -204,7 +205,9 @@ fun TryptifyApp(
                     false -> OnboardingScreen(
                         onFinished = { pendingPostRoute = it }
                     )
-                    true -> MonochromeNavHost(initialRoute = pendingPostRoute)
+                    // Scrollbars in the theme's ink: Compose's default is black,
+                    // and the app's grounds are mostly dark.
+                    true -> ThemedScrollbars { MonochromeNavHost(initialRoute = pendingPostRoute) }
                 }
             }
         }

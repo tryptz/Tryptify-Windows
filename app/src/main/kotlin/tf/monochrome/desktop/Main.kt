@@ -18,9 +18,11 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toAwtImage
-import androidx.compose.ui.input.pointer.PointerButton
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -29,7 +31,9 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import androidx.lifecycle.ViewModelStore
@@ -38,7 +42,6 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import java.awt.Dimension
 import java.awt.GraphicsEnvironment
 import java.awt.Rectangle
-import java.awt.event.KeyEvent
 import kotlinx.coroutines.delay
 import tf.monochrome.desktop.audio.eq.FrequencyTargets
 import tf.monochrome.desktop.data.downloads.LogNotifier
@@ -53,6 +56,9 @@ import tf.monochrome.desktop.platform.FilePickers
 import tf.monochrome.desktop.platform.ToastHost
 import tf.monochrome.desktop.platform.windows.WindowChrome
 import tf.monochrome.desktop.res.stringResource
+import tf.monochrome.desktop.ui.input.AppShortcuts
+import tf.monochrome.desktop.ui.input.DesktopInput
+import tf.monochrome.desktop.ui.input.LocalAppShortcuts
 import tf.monochrome.desktop.ui.main.LocalWindowTitleBar
 import tf.monochrome.desktop.ui.main.MainViewModel
 import tf.monochrome.desktop.ui.main.TrayNotifier
@@ -86,6 +92,9 @@ fun main() {
     // as the window, and are cleared when the app exits.
     val windowOwner = WindowViewModelStoreOwner()
 
+    // Mouse side buttons, and whether focus came from the keyboard.
+    DesktopInput.install()
+
     val smoke = System.getProperty("tryptify.smoke") == "true" || System.getenv("TRYPTIFY_SMOKE") == "1"
     application {
         DisposableEffect(windowOwner) {
@@ -102,11 +111,15 @@ fun main() {
                 position = WindowPosition(Alignment.Center),
             )
             val appIcon = painterResource(R.drawable.app_icon)
+            // The keyboard shortcuts: the nav host registers what they act on.
+            val shortcuts = remember { AppShortcuts() }
             Window(
                 onCloseRequest = ::exitApplication,
                 state = windowState,
                 title = stringResource(R.string.app_name),
                 icon = appIcon,
+                onPreviewKeyEvent = shortcuts::preview,
+                onKeyEvent = { shortcuts.handle(it) || toggleFullscreen(it, windowState) },
             ) {
                 // File dialogs are modal to this window.
                 FilePickers.owner = window
@@ -149,16 +162,13 @@ fun main() {
                     )
                     // Escape is Back: Compose's window hands an Escape nobody
                     // consumed to the back dispatcher BackHandler and the NavHost
-                    // listen on. The mouse's back button is sent as that Escape.
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .onPointerEvent(PointerEventType.Release) { event ->
-                                if (event.button == PointerButton.Back) pressEscape(window)
-                            },
-                    ) {
-                        TryptifyApp(onThemeColors = titleBar::setTheme)
-                        ToastHost()
+                    // listen on. The mouse's back button is sent as that Escape,
+                    // by DesktopInput, wherever the pointer is.
+                    CompositionLocalProvider(LocalAppShortcuts provides shortcuts) {
+                        Box(Modifier.fillMaxSize()) {
+                            TryptifyApp(onThemeColors = titleBar::setTheme)
+                            ToastHost()
+                        }
                     }
                 }
                 if (smoke) {
@@ -244,14 +254,11 @@ private suspend fun ComposeWindow.awaitHandle(): Long {
 }
 
 /**
- * The mouse's back button, as an Escape press. Compose's window turns an
- * unconsumed Escape into Back, so the button walks back exactly as the key
- * does, through the same handlers.
+ * F11, as in a browser: the window fills the screen with no frame, and F11
+ * again puts it back where it was.
  */
-private fun pressEscape(window: ComposeWindow) {
-    val target = window.mostRecentFocusOwner ?: window
-    val now = System.currentTimeMillis()
-    for (id in intArrayOf(KeyEvent.KEY_PRESSED, KeyEvent.KEY_RELEASED)) {
-        target.dispatchEvent(KeyEvent(target, id, now, 0, KeyEvent.VK_ESCAPE, KeyEvent.CHAR_UNDEFINED))
-    }
+private fun toggleFullscreen(event: KeyEvent, state: WindowState): Boolean {
+    if (event.key != Key.F11 || event.type != KeyEventType.KeyDown) return false
+    state.placement = if (state.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating else WindowPlacement.Fullscreen
+    return true
 }

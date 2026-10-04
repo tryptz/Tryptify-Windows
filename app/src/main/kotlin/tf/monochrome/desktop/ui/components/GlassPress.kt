@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.FocusInteraction
+import androidx.compose.foundation.interaction.HoverInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
@@ -18,20 +20,27 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import dev.chrisbanes.haze.HazeState
+import tf.monochrome.desktop.ui.input.DesktopInput
 import tf.monochrome.desktop.ui.player.LocalPlayerGlass
 import tf.monochrome.desktop.ui.player.playerGlass
 import tf.monochrome.desktop.ui.theme.MonoDimens
-import tf.monochrome.desktop.ui.theme.glassTint
 import tf.monochrome.desktop.ui.theme.PressSpring
+import tf.monochrome.desktop.ui.theme.glassTint
 import tf.monochrome.desktop.ui.theme.reduceMotion
 
 /**
@@ -57,10 +66,18 @@ class GlassPress internal constructor(
     internal var boxSize by mutableStateOf(IntSize.Zero)
     internal var pressPoint by mutableStateOf<Offset?>(null)
     internal var held by mutableStateOf(false)
+    internal var hovered by mutableStateOf(false)
+    internal var focused by mutableStateOf(false)
 
-    /** The swell, 0 at rest and 1 held down. Animated, so it never jumps. */
+    /**
+     * The swell: 0 at rest, [GlassPressDefaults.HOVER] under the mouse or with
+     * keyboard focus, 1 held down. Animated, so it never jumps.
+     */
     var amount by mutableFloatStateOf(0f)
         internal set
+
+    /** How far the pane gives: only a press, never a hover. */
+    internal var give by mutableFloatStateOf(0f)
 
     /**
      * Where the finger is, as a fraction of the pane. The shader wants it in
@@ -102,6 +119,14 @@ object GlassPressDefaults {
      * it — at a sixth of a full-width bar the dome is a dimple.
      */
     const val BULGE = 0.42f
+
+    /**
+     * The swell under a resting mouse, or around keyboard focus. The desktop's
+     * hover: the same glass, lensing a little where the pointer is, so a pane
+     * says it can be pressed before it is. A third of a press, so the press
+     * still reads as more.
+     */
+    const val HOVER = 0.3f
 }
 
 /**
@@ -124,19 +149,38 @@ fun rememberGlassPress(): GlassPress {
                     press.held = true
                 }
                 is PressInteraction.Release, is PressInteraction.Cancel -> press.held = false
+                is HoverInteraction.Enter -> press.hovered = true
+                is HoverInteraction.Exit -> press.hovered = false
+                is FocusInteraction.Focus -> press.focused = true
+                is FocusInteraction.Unfocus -> press.focused = false
             }
         }
     }
 
     val instant = reduceMotion()
+    // Focus swells the pane only when it came from the keyboard: a click
+    // focuses what it hits, and that pane is already answering the click.
+    val resting = press.hovered || (press.focused && DesktopInput.focusVisible)
     val amount by animateFloatAsState(
-        targetValue = if (press.held) 1f else 0f,
+        targetValue = when {
+            press.held -> 1f
+            resting -> GlassPressDefaults.HOVER
+            else -> 0f
+        },
         // The dock's spring, so the mini player's slab answers a press exactly
         // the way the player's does.
         animationSpec = if (instant) snap() else PressSpring,
         label = "glassPress",
     )
-    SideEffect { press.amount = amount }
+    val give by animateFloatAsState(
+        targetValue = if (press.held) 1f else 0f,
+        animationSpec = if (instant) snap() else PressSpring,
+        label = "glassGive",
+    )
+    SideEffect {
+        press.amount = amount
+        press.give = give
+    }
     return press
 }
 
@@ -156,7 +200,13 @@ fun rememberGlassPress(): GlassPress {
  * No ripple: the deformation *is* the feedback, and a Material ripple on top of
  * it is a second answer to a question already answered — and a rectangular one,
  * over a pane whose corners are round.
+ *
+ * On the desktop the dome also rests, smaller, under the mouse and follows it
+ * across the pane, and sits in the middle of a pane reached with Tab. That is
+ * the hover state, and it stays in the glass: no tint, no pane drawn under it.
+ * The pane does not give until it is pressed.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 fun Modifier.glassSqueeze(
     press: GlassPress,
     enabled: Boolean = true,
@@ -167,12 +217,22 @@ fun Modifier.glassSqueeze(
     val flat = reduceMotion()
     this
         .onSizeChanged { press.boxSize = it }
+        .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+        // The dome follows a resting mouse. Once the button is down it stays
+        // where the press landed, as it does under a finger.
+        .onPointerEvent(PointerEventType.Move) { event ->
+            if (!press.held) press.pressPoint = event.changes.firstOrNull()?.position
+        }
+        .onPointerEvent(PointerEventType.Enter) { event ->
+            if (!press.held) press.pressPoint = event.changes.firstOrNull()?.position
+        }
+        .onFocusChanged { if (it.isFocused && DesktopInput.focusVisible) press.pressPoint = null }
         .then(
             if (flat) {
                 Modifier
             } else {
                 Modifier.graphicsLayer {
-                    val s = 1f - (1f - squeeze) * press.amount
+                    val s = 1f - (1f - squeeze) * press.give
                     scaleX = s
                     scaleY = s
                 }
