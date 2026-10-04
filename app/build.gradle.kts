@@ -10,6 +10,8 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val isWindowsHost = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+
 group = "tf.monochrome"
 version = "1.9.3"
 
@@ -104,7 +106,9 @@ dependencies {
     implementation(libs.jaudiotagger)
     implementation(libs.javacpp)
     implementation(libs.ffmpeg)
-    for (platform in listOf("windows-x86_64", "linux-x86_64")) {
+    // Natives for the OS doing the build only: the Windows CI job packages the
+    // MSI, the Linux one runs the tests, and each installer carries one set.
+    for (platform in listOf(if (isWindowsHost) "windows-x86_64" else "linux-x86_64")) {
         implementation(variantOf(libs.javacpp) { classifier(platform) })
         implementation(variantOf(libs.ffmpeg) { classifier(platform) })
     }
@@ -114,7 +118,7 @@ dependencies {
     implementation(libs.lwjgl)
     implementation(libs.lwjgl.glfw)
     implementation(libs.lwjgl.opengl)
-    for (platform in listOf("natives-windows", "natives-linux")) {
+    for (platform in listOf(if (isWindowsHost) "natives-windows" else "natives-linux")) {
         runtimeOnly(variantOf(libs.lwjgl) { classifier(platform) })
         runtimeOnly(variantOf(libs.lwjgl.glfw) { classifier(platform) })
         runtimeOnly(variantOf(libs.lwjgl.opengl) { classifier(platform) })
@@ -185,6 +189,10 @@ ksp {
 compose.desktop {
     application {
         mainClass = "tf.monochrome.desktop.MainKt"
+        // No ProGuard: JavaCV, JNA, Room and kotlinx-serialization load classes
+        // by name, and a shrinker that drops one fails only at runtime, on the
+        // listener's machine. The size it would save is small next to FFmpeg.
+        buildTypes.release.proguard { isEnabled.set(false) }
         jvmArgs += listOf("-Xss4m", "-Dfile.encoding=UTF-8")
 
         nativeDistributions {
@@ -195,7 +203,13 @@ compose.desktop {
             vendor = "tryptz"
             copyright = "tryptz"
             appResourcesRootDir.set(nativeResources)
-            modules("java.sql", "java.naming", "java.management", "jdk.unsupported", "jdk.crypto.ec", "java.net.http", "jdk.zipfs")
+            // jdeps (./gradlew :app:suggestRuntimeModules) plus what is reached
+            // reflectively: jdk.httpserver for the OAuth loopback server,
+            // java.prefs and jdk.management for the auth and performance probes.
+            modules(
+                "java.sql", "java.naming", "java.management", "jdk.unsupported", "jdk.crypto.ec",
+                "java.net.http", "jdk.zipfs", "java.instrument", "java.prefs", "jdk.httpserver", "jdk.management",
+            )
 
             windows {
                 menuGroup = "Tryptify"
@@ -204,10 +218,10 @@ compose.desktop {
                 perUserInstall = true
                 // Fixed for the life of the product so an MSI upgrades the previous install.
                 upgradeUuid = "4d2f3a6e-5b1c-4c6b-9c7e-7f0e2a1b9d31"
-                iconFile.set(project.file("packaging/tryptify.ico"))
+                iconFile.set(rootProject.file("packaging/tryptify.ico"))
             }
             linux {
-                iconFile.set(project.file("packaging/tryptify.png"))
+                iconFile.set(rootProject.file("packaging/tryptify.png"))
             }
         }
     }
@@ -217,6 +231,8 @@ tasks.withType<Test>().configureEach {
     useJUnit()
     // The native libraries for in-process tests (the DSP engine, the stretch
     // shifter) come from the CMake build tree when it exists.
-    systemProperty("tryptify.native.dir", nativeResources.dir("linux-x64").asFile.absolutePath)
+    val os = System.getProperty("os.name").lowercase()
+    val folder = if (os.startsWith("windows")) "windows-x64" else if (os.startsWith("mac")) "macos-arm64" else "linux-x64"
+    systemProperty("tryptify.native.dir", nativeResources.dir(folder).asFile.absolutePath)
     maxHeapSize = "2g"
 }
