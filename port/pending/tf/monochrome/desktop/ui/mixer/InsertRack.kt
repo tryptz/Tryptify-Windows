@@ -1,0 +1,655 @@
+package tf.monochrome.desktop.ui.mixer
+
+import tf.monochrome.desktop.ui.mixer.fxchain.FxPreset
+import tf.monochrome.desktop.ui.mixer.fxchain.FxPresetRow
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import tf.monochrome.desktop.audio.dsp.DspEngineManager
+import tf.monochrome.desktop.audio.dsp.model.BusConfig
+import tf.monochrome.desktop.audio.dsp.model.PluginInstance
+import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.theme.MonoDimens
+import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.R
+
+/**
+ * FL Studio-style insert effect rack — right-side panel.
+ *
+ * Shows numbered effect slots for the selected bus, with inline
+ * plugin parameter editing.  Uses liquidGlass surfaces and MaterialTheme
+ * colours so it blends with the rest of the app's aesthetic.
+ *
+ * Matches the "Mixer – Insert N" panel from FL Studio's mixer layout.
+ */
+@Composable
+fun InsertRack(
+    bus: BusConfig?,
+    busIndex: Int,
+    editingPlugin: Pair<Int, Int>?,
+    modifier: Modifier = Modifier,
+    allBuses: List<BusConfig> = emptyList(),
+    onSlotTap: (slotIndex: Int) -> Unit,
+    onAddPlugin: () -> Unit,
+    onPluginReplace: (busIndex: Int, slotIndex: Int) -> Unit = { _, _ -> },
+    onPluginBypass: (busIndex: Int, slotIndex: Int) -> Unit,
+    onPluginRemove: (busIndex: Int, slotIndex: Int) -> Unit,
+    onParameterChange: (busIndex: Int, slotIndex: Int, paramIndex: Int, value: Float) -> Unit,
+    onApplyPreset: (busIndex: Int, slotIndex: Int, preset: FxPreset) -> Unit = { _, _, _ -> },
+    onPluginDryWet: (busIndex: Int, slotIndex: Int, dryWet: Float) -> Unit = { _, _, _ -> },
+    onBusInputToggle: (busIndex: Int, enabled: Boolean) -> Unit = { _, _ -> },
+    onSendLevel: (src: Int, dst: Int, level: Float) -> Unit = { _, _, _ -> },
+    spreadChannels: Boolean = true,
+    onSpreadChannelsChange: (Boolean) -> Unit = {},
+    onDismissEditor: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val scrollState = rememberScrollState()
+    // Show one empty "add" slot past the current plugins, capped at the engine max.
+    val plugins = bus?.plugins ?: emptyList()
+    val maxSlots = (plugins.size + 1).coerceAtMost(DspEngineManager.MAX_PLUGINS_PER_BUS)
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(200.dp)
+            .liquidGlass(
+                shape     = MonoDimens.shapeSm,
+                tintAlpha = 0.30f
+            )
+    ) {
+        // ── Header ─────────────────────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingSm),
+            verticalAlignment  = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text       = stringResource(R.string.mixer_rack_title, bus?.name ?: stringResource(R.string.mixer_insert)),
+                style      = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines   = 1,
+                overflow   = TextOverflow.Ellipsis,
+                modifier   = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick  = onClose,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.action_close),
+                    tint     = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        HorizontalDivider(
+            color    = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+            modifier = Modifier.padding(horizontal = MonoDimens.spacingSm)
+        )
+
+        // ── Slot list ──────────────────────────────────────────────────
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(scrollState)
+                .padding(MonoDimens.spacingXs),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            for (slotIndex in 0 until maxSlots) {
+                val plugin    = plugins.getOrNull(slotIndex)
+                val isEditing = editingPlugin == Pair(busIndex, slotIndex)
+
+                InsertSlot(
+                    slotIndex = slotIndex,
+                    plugin    = plugin,
+                    isEditing = isEditing,
+                    onTap     = {
+                        if (plugin != null) onSlotTap(slotIndex)
+                        else onAddPlugin()
+                    },
+                    onBypass  = {
+                        if (plugin != null) onPluginBypass(busIndex, slotIndex)
+                    },
+                    onDryWetChange = { dw ->
+                        if (plugin != null) onPluginDryWet(busIndex, slotIndex, dw)
+                    },
+                    onReplace = { onPluginReplace(busIndex, slotIndex) },
+                    onRemove  = { onPluginRemove(busIndex, slotIndex) }
+                )
+
+                // Inline plugin editor (expands below the slot)
+                if (isEditing && plugin != null) {
+                    InlinePluginEditor(
+                        plugin           = plugin,
+                        busIndex         = busIndex,
+                        slotIndex        = slotIndex,
+                        onParameterChange = onParameterChange,
+                        onApplyPreset    = { preset -> onApplyPreset(busIndex, slotIndex, preset) },
+                        onDismiss        = onDismissEditor
+                    )
+                }
+            }
+        }
+
+        // ── Output routing (mix buses) ──────────────────────────────
+        // Where this bus goes and how loud. Routes are made with the arrows at
+        // the foot of the strips; here they are levelled and removed, and the
+        // bus's feed from the player is switched.
+        if (bus != null && !bus.isMaster) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                modifier = Modifier.padding(horizontal = MonoDimens.spacingSm, vertical = 4.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = MonoDimens.spacingSm, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.mixer_routing_caps),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .liquidGlass(shape = MonoDimens.shapeSm, tintAlpha = if (bus.inputEnabled) 0.15f else 0.06f)
+                        .clickable { onBusInputToggle(bus.index, !bus.inputEnabled) }
+                        .padding(horizontal = MonoDimens.spacingSm, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(stringResource(R.string.mixer_player_input), fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        text = if (bus.inputEnabled) "ON" else "OFF",
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (bus.inputEnabled) Color(0xFF4CAF50)
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                }
+                val sends = bus.sends.entries.filter { it.value > 0f }
+                    .sortedBy { if (it.key == BusConfig.MASTER_INDEX) -1 else BusConfig.numberFor(it.key) }
+                if (sends.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.mixer_routed_nowhere),
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                sends.forEach { (dst, level) ->
+                    val dstName = allBuses.firstOrNull { it.index == dst }?.name ?: BusConfig.nameFor(dst)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .liquidGlass(shape = MonoDimens.shapeSm, tintAlpha = 0.10f)
+                            .padding(horizontal = MonoDimens.spacingSm, vertical = 2.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "→ $dstName",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = if (level >= 0.995f) "0 dB"
+                                else "%.1f dB".format(20f * kotlin.math.log10(level.coerceAtLeast(0.001f))),
+                                fontSize = 9.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            IconButton(onClick = { onSendLevel(bus.index, dst, 0f) }, modifier = Modifier.size(24.dp)) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = stringResource(R.string.mixer_remove_route_to, dstName),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                        // Removing is the × — the slider stops just above
+                        // silence, so dragging it down never deletes the cable.
+                        Slider(
+                            value = level,
+                            onValueChange = { onSendLevel(bus.index, dst, it.coerceAtLeast(0.01f)) },
+                            valueRange = 0.01f..1f,
+                            modifier = Modifier.height(24.dp),
+                            colors = SliderDefaults.colors(
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                activeTrackColor = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Bus routing section (shown on Master bus) ─────────────────
+        if (bus?.isMaster == true) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                modifier = Modifier.padding(horizontal = MonoDimens.spacingSm, vertical = 4.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = MonoDimens.spacingSm, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.mixer_input_routing_caps),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+                MultichannelModeRow(
+                    spread = spreadChannels,
+                    onChange = onSpreadChannelsChange,
+                )
+                val mixBuses = allBuses.filter { !it.isMaster }
+                mixBuses.forEach { mixBus ->
+                    // A bus a channel group is spread onto takes those channels,
+                    // whatever its switch says: shown as such, not toggleable.
+                    val routed = mixBus.channelGroup != null
+                    val takesInput = routed || mixBus.inputEnabled
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .liquidGlass(
+                                shape = MonoDimens.shapeSm,
+                                tintAlpha = if (takesInput) 0.15f else 0.06f
+                            )
+                            .clickable(enabled = !routed) {
+                                onBusInputToggle(mixBus.index, !mixBus.inputEnabled)
+                            }
+                            .padding(horizontal = MonoDimens.spacingSm, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingXs)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (takesInput) Color(0xFF4CAF50)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
+                                    )
+                            )
+                            Text(
+                                text = mixBus.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (takesInput) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = when {
+                                routed -> stringResource(R.string.mixer_channels_caps)
+                                mixBus.inputEnabled -> "ON"
+                                else -> "OFF"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (takesInput) Color(0xFF4CAF50)
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Multichannel mode ───────────────────────────────────────────────────
+
+/**
+ * How a stream wider than stereo (5.1, 7.1.4 Atmos…) meets the mixer: spread
+ * one channel group per bus — front, centre, LFE, surrounds and heights each
+ * on a strip of their own — or run whole through bus 1, as stereo does.
+ */
+@Composable
+private fun MultichannelModeRow(spread: Boolean, onChange: (Boolean) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier.padding(bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.mixer_multichannel),
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = colors.onSurface
+        )
+        // Two equal glass chips; the caption below says what each does, so
+        // the labels stay one line and the pair stays symmetrical.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(true to stringResource(R.string.mixer_spread), false to stringResource(R.string.mixer_one_bus)).forEach { (value, label) ->
+                GlassChoiceChip(
+                    label = label,
+                    selected = spread == value,
+                    accent = colors.primary,
+                    onClick = { if (spread != value) onChange(value) },
+                    modifier = Modifier.weight(1f),
+                    description = if (value) stringResource(R.string.mixer_spread_desc) else stringResource(R.string.mixer_one_bus_desc),
+                )
+            }
+        }
+        Text(
+            text = if (spread) stringResource(R.string.mixer_spread_on)
+                   else stringResource(R.string.mixer_spread_off),
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 9.sp,
+            color = colors.onSurfaceVariant
+        )
+    }
+}
+
+// ── Single insert slot row ──────────────────────────────────────────────
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun InsertSlot(
+    slotIndex: Int,
+    plugin: PluginInstance?,
+    isEditing: Boolean,
+    onTap: () -> Unit,
+    onBypass: () -> Unit,
+    onDryWetChange: (Float) -> Unit,
+    onReplace: () -> Unit = {},
+    onRemove: () -> Unit = {}
+) {
+    val bgAlpha = if (isEditing) 0.15f else 0.08f
+    var showContextMenu by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .liquidGlass(
+                shape       = MonoDimens.shapeSm,
+                tintAlpha   = bgAlpha,
+                borderAlpha = if (isEditing) MonoDimens.glassBorderAlpha * 2f
+                else MonoDimens.glassBorderAlpha
+            )
+    ) {
+        Box {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = onTap,
+                        onLongClick = { if (plugin != null) showContextMenu = true }
+                    )
+                    .padding(horizontal = MonoDimens.spacingSm, vertical = 5.dp),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingXs)
+            ) {
+            // Active indicator dot
+            if (plugin != null) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (plugin.bypassed)
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                            else Color(0xFF4CAF50)
+                        )
+                )
+            }
+
+            // Slot label / plugin name
+            Text(
+                text       = plugin?.displayName ?: stringResource(R.string.mixer_slot_n, slotIndex + 1),
+                style      = MaterialTheme.typography.labelSmall,
+                fontSize   = 10.sp,
+                fontWeight = if (plugin != null) FontWeight.Medium else FontWeight.Normal,
+                color      = if (plugin != null) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines   = 1,
+                overflow   = TextOverflow.Ellipsis,
+                modifier   = Modifier.weight(1f)
+            )
+
+            // Bypass toggle (for loaded plugins)
+            if (plugin != null) {
+                IconButton(
+                    onClick  = onBypass,
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        Icons.Default.PowerSettingsNew,
+                        contentDescription = stringResource(R.string.mixer_bypass),
+                        tint     = if (plugin.bypassed)
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            } else {
+                // Add hint for empty slots
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = stringResource(R.string.mixer_add_plugin),
+                    tint     = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+
+            // Context menu on long-press
+            DropdownMenu(
+                expanded = showContextMenu,
+                onDismissRequest = { showContextMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.mixer_replace)) },
+                    onClick = {
+                        showContextMenu = false
+                        // Defer removal to the picker's confirm — cancelling
+                        // must not destroy the current plugin.
+                        onReplace()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.api_remove)) },
+                    onClick = {
+                        showContextMenu = false
+                        onRemove()
+                    }
+                )
+            }
+        }
+
+        // Dry/Wet slider — only for loaded plugins
+        if (plugin != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = MonoDimens.spacingSm, vertical = 0.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "D/W",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 8.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Slider(
+                    value = plugin.dryWet,
+                    onValueChange = onDryWetChange,
+                    valueRange = 0f..1f,
+                    modifier = Modifier.weight(1f).height(20.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    )
+                )
+                Text(
+                    text = "${(plugin.dryWet * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 8.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+// ── Inline parameter editor (shown below the slot) ──────────────────────
+
+@Composable
+private fun InlinePluginEditor(
+    plugin: PluginInstance,
+    busIndex: Int,
+    slotIndex: Int,
+    onParameterChange: (Int, Int, Int, Float) -> Unit,
+    onApplyPreset: (FxPreset) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val paramDefs = getParamDefs(plugin.type)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .liquidGlass(
+                shape       = MonoDimens.shapeSm,
+                tintAlpha   = 0.20f,
+                borderAlpha = MonoDimens.glassBorderAlpha * 2f
+            )
+            .padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingSm),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        // Plugin name + close
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text       = plugin.displayName,
+                style      = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            IconButton(
+                onClick  = onDismiss,
+                modifier = Modifier.size(20.dp)
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.action_close),
+                    tint     = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+
+        FxPresetRow(plugin = plugin, accent = MaterialTheme.colorScheme.primary, onApply = onApplyPreset)
+
+        // Parameter sliders
+        paramDefs.forEachIndexed { paramIndex, def ->
+            val currentValue = plugin.parameters[paramIndex] ?: def.default
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text  = def.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text  = formatParamValue(currentValue, def),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Slider(
+                    value         = currentValue,
+                    onValueChange = { onParameterChange(busIndex, slotIndex, paramIndex, it) },
+                    valueRange    = def.min..def.max,
+                    modifier      = Modifier
+                        .fillMaxWidth()
+                        .height(24.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor        = MaterialTheme.colorScheme.primary,
+                        activeTrackColor  = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+    }
+}

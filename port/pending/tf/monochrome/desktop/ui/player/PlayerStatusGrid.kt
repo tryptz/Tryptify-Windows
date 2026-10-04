@@ -1,0 +1,165 @@
+package tf.monochrome.desktop.ui.player
+
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import tf.monochrome.desktop.ui.components.liquidGlass
+import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.R
+
+/**
+ * Bottom 2×2 grid surfacing the player's premium audio tools: sleep timer,
+ * sound/AutoEQ, playback speed and the DSP mixer.
+ *
+ * The timer sits here rather than in the dock, whose slot is shuffle now. It
+ * took the Output card's place: that read a hardcoded "Default" and only opened
+ * Settings, which the top bar's headphone button already does.
+ */
+@Composable
+fun PlayerStatusGrid(
+    accent: Color,
+    timerLabel: String,
+    soundLabel: String,
+    speedLabel: String,
+    mixerLabel: String,
+    onTimer: () -> Unit,
+    onSound: () -> Unit,
+    onSpeed: () -> Unit,
+    onMixer: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Four related hues derived from the album accent so the cards stay varied
+    // but track the current artwork.
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatusCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Timer,
+                title = stringResource(R.string.status_timer),
+                value = timerLabel,
+                accent = accent,
+                onClick = onTimer,
+            )
+            StatusCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Equalizer,
+                title = stringResource(R.string.status_sound),
+                value = soundLabel,
+                accent = accent.shiftHue(36f),
+                onClick = onSound,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatusCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Speed,
+                title = stringResource(R.string.speed),
+                value = speedLabel,
+                accent = accent.shiftHue(72f),
+                onClick = onSpeed,
+            )
+            StatusCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.Tune,
+                title = stringResource(R.string.status_mixer),
+                value = mixerLabel,
+                accent = accent.shiftHue(-36f),
+                onClick = onMixer,
+            )
+        }
+    }
+}
+
+/** Rotate a color's hue by [degrees], preserving saturation/value. */
+private fun Color.shiftHue(degrees: Float): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(this.toArgb(), hsv)
+    hsv[0] = ((hsv[0] + degrees) % 360f + 360f) % 360f
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+@Composable
+private fun StatusCard(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    title: String,
+    value: String,
+    accent: Color,
+    onClick: () -> Unit,
+) {
+    // The same glass button the transport and dock are: real haze behind, the
+    // shader dome under a finger, the squeeze on press. It used to be a Surface
+    // with a flat liquidGlass tint and a 3% scale — glass in name, not in
+    // behaviour — while the buttons an inch above it swelled. One material now.
+    tf.monochrome.desktop.ui.components.PressableGlass(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(PlayerDesignTokens.GlassCornerMedium),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Row(
+            // Tightened with the sheet: it lost 24dp of width when it stopped
+            // being full-bleed, and four cards at the old padding left the
+            // labels crowding their own edges.
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(19.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.6f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}

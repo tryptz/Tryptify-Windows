@@ -1,0 +1,370 @@
+package tf.monochrome.desktop.ui.detail
+
+import tf.monochrome.desktop.ui.navigation.popBackStackSafe
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import coil3.compose.AsyncImage
+import tf.monochrome.desktop.domain.model.UnifiedTrack
+import tf.monochrome.desktop.ui.components.ClickableArtists
+import tf.monochrome.desktop.ui.components.ErrorScreen
+import tf.monochrome.desktop.ui.components.LoadingScreen
+import tf.monochrome.desktop.ui.components.TrackListToolbar
+import tf.monochrome.desktop.ui.components.TrackOrder
+import tf.monochrome.desktop.ui.components.TrackSort
+import tf.monochrome.desktop.ui.components.TrackSortSaver
+import tf.monochrome.desktop.ui.components.UnifiedTrackContextMenuHost
+import tf.monochrome.desktop.ui.components.applyUnifiedSearchAndSort
+import tf.monochrome.desktop.ui.navigation.openArtist
+import tf.monochrome.desktop.ui.player.PlayerViewModel
+import tf.monochrome.desktop.ui.theme.MonoDimens
+import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.components.SearchOverlay
+import tf.monochrome.desktop.ui.components.SearchAction
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
+import tf.monochrome.desktop.R
+import androidx.compose.ui.platform.LocalContext
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LocalAlbumDetailScreen(
+    navController: NavController,
+    onPlayTrack: (UnifiedTrack, List<UnifiedTrack>) -> Unit,
+    onPlayAll: (List<UnifiedTrack>) -> Unit,
+    onShuffleAll: (List<UnifiedTrack>) -> Unit,
+    onAddToQueue: (UnifiedTrack) -> Unit,
+    playerViewModel: PlayerViewModel,
+    viewModel: LocalAlbumDetailViewModel = hiltViewModel()
+) {
+    val album by viewModel.album.collectAsStateWithLifecycle()
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+
+    var listQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var searchOpen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var listSort by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = TrackSortSaver) {
+        mutableStateOf(TrackSort())
+    }
+    val visibleTracks = remember(tracks, listQuery, listSort) {
+        tracks.applyUnifiedSearchAndSort(listQuery, listSort)
+    }
+
+    var menuTrack by remember { mutableStateOf<UnifiedTrack?>(null) }
+    UnifiedTrackContextMenuHost(
+        track = menuTrack,
+        onDismissRequest = { menuTrack = null },
+        navController = navController,
+        playerViewModel = playerViewModel,
+    )
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopAppBar(
+            actions = {
+                SearchAction(open = searchOpen, onToggle = {
+                    searchOpen = !searchOpen
+                    // Closing clears the filter. A hidden query in place is how
+                    // a list ends up looking like it has lost rows.
+                    if (!searchOpen) listQuery = ""
+                })
+            },
+            title = {},
+            navigationIcon = {
+                IconButton(onClick = { navController.popBackStackSafe() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.background
+            )
+        )
+
+        when {
+            isLoading -> LoadingScreen()
+            error != null -> ErrorScreen(
+                message = error?.resolve(LocalContext.current) ?: stringResource(R.string.unknown_error),
+                onRetry = { viewModel.retry() }
+            )
+            album != null -> {
+                val albumData = album ?: return
+                SearchOverlay(
+                    open = searchOpen,
+                    query = listQuery,
+                    onQueryChange = { listQuery = it },
+                    placeholder = stringResource(R.string.search_this_album),
+                    onClose = { searchOpen = false; listQuery = "" },
+                ) { searchTopInset ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        top = searchTopInset,
+                        bottom = 80.dp + LocalBottomChromeInset.current,
+                    )
+                ) {
+                    item {
+                        tf.monochrome.desktop.devedit.DevEditable("album_hero", Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (albumData.artworkUri != null) {
+                                AsyncImage(
+                                    model = albumData.artworkUri,
+                                    contentDescription = albumData.title,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.6f)
+                                        .aspectRatio(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.6f)
+                                        .aspectRatio(1f),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Album,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(80.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = albumData.title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = albumData.artistName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            val metaParts = buildList {
+                                albumData.year?.let { add(it.toString()) }
+                                add(pluralStringResource(R.plurals.track_count, albumData.trackCount, albumData.trackCount))
+                                albumData.qualitySummary?.let { add(it) }
+                            }
+                            Text(
+                                text = metaParts.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (albumData.genres.isNotEmpty()) {
+                                Text(
+                                    text = albumData.genres.joinToString(", "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                FilledIconButton(
+                                    onClick = { if (visibleTracks.isNotEmpty()) onPlayAll(visibleTracks) },
+                                    modifier = Modifier.size(48.dp),
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = stringResource(R.string.action_play_all),
+                                        tint = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                }
+                                FilledIconButton(
+                                    onClick = { if (visibleTracks.isNotEmpty()) onShuffleAll(visibleTracks) },
+                                    modifier = Modifier.size(48.dp),
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.Shuffle,
+                                        contentDescription = stringResource(R.string.visualizer_shuffle),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                        }
+                    }
+
+                    stickyHeader {
+                        TrackListToolbar(
+                            sort = listSort,
+                            onSortChange = { listSort = it },
+                            // No "Album": one album, one value.
+                            orders = listOf(
+                                TrackOrder.ORIGINAL,
+                                TrackOrder.TITLE,
+                                TrackOrder.ARTIST,
+                                TrackOrder.DURATION,
+                            ),
+                        )
+                    }
+
+                    itemsIndexed(visibleTracks, key = { _, track -> track.id }) { index, track ->
+                        LocalTrackRow(
+                            track = track,
+                            trackNumber = track.trackNumber ?: (index + 1),
+                            onClick = { onPlayTrack(track, visibleTracks) },
+                            onAddToQueue = { onAddToQueue(track) },
+                            onMoreClick = { menuTrack = track },
+                            navController = navController
+                        )
+                    }
+                }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalTrackRow(
+    track: UnifiedTrack,
+    trackNumber: Int,
+    onClick: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onMoreClick: () -> Unit,
+    navController: NavController
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs),
+        shape = MonoDimens.shapeMd,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = MonoDimens.cardAlpha),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingSm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = trackNumber.toString(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(32.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                ClickableArtists(
+                    artists = track.artists,
+                    fallbackName = track.artistName,
+                    onArtistClick = { ref -> ref.id?.let { navController.openArtist(track.sourceType, it) } },
+                )
+            }
+            // Where it plays from — on this screen, the device.
+            tf.monochrome.desktop.ui.components.SourcePill(track.sourceType)
+            androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(6.dp))
+            if (track.qualityBadge != null) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                ) {
+                    Text(
+                        text = track.qualityBadge!!,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(
+                text = formatDuration(track.durationSeconds),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            // Default IconButton size keeps the touch target at the 48dp
+            // minimum (was forced to 32dp); the glyph stays 20dp.
+            IconButton(onClick = onAddToQueue) {
+                Icon(
+                    Icons.AutoMirrored.Filled.PlaylistAdd,
+                    contentDescription = stringResource(R.string.action_add_to_queue),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(onClick = onMoreClick) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.action_more_options),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun formatDuration(seconds: Int): String {
+    val m = seconds / 60
+    val s = seconds % 60
+    return "$m:${s.toString().padStart(2, '0')}"
+}

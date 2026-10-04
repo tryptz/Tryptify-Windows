@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Skip previous: the next glyph mirrored about x=12.
+
+         Rounding is the renderer's job, not the path's. A polygon with radius-r
+         corners is that polygon inset by r, filled and stroked at width 2r with
+         round joins — so the corners are exact and the path keeps one node per
+         corner instead of a pair of hand-placed Bezier controls. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.8"
+        android:strokeLineJoin="round"
+        android:pathData="M17.1,15.17 L12.53,12.0 L17.1,8.83 Z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M6.3,6.4 V17.6" />
+</vector>

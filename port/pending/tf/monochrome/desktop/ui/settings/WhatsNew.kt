@@ -1,0 +1,1351 @@
+package tf.monochrome.desktop.ui.settings
+
+import tf.monochrome.desktop.BuildConfig
+
+/**
+ * The "What's New" entries shown in About, and the version they belong to.
+ *
+ * Deliberately hand-written rather than generated from the changelog: the
+ * changelog explains *how* something was fixed for whoever reads the diff,
+ * and this has to say what changed for someone who just wants their music to
+ * play. Two or three lines each, no jargon that isn't already on a settings
+ * screen.
+ *
+ * When cutting a release, add a new [WhatsNewRelease] at the top with the new
+ * versionCode. Anything with a versionCode above what the user has already
+ * acknowledged is what the update notice offers them.
+ */
+/**
+ * [section] groups consecutive entries under a heading of their own. Most
+ * releases are a flat list of unrelated fixes and don't want one; a release
+ * that carries a whole new page does, because reading eight lines about
+ * Discover interleaved with download and equaliser notes tells you far less
+ * than the same eight lines under a title saying what they are about.
+ */
+/**
+ * Whether an entry is something that was not there before, something that
+ * behaves differently, or something that is gone.
+ *
+ * A reader scanning release notes is usually answering one of three questions —
+ * what can I do now, what moved, and where did that go — and a flat list makes
+ * all three the same search. [heading] is what they are grouped under.
+ *
+ * Fixes live under [CHANGED]. Splitting them out reads as an apology list, and
+ * from the outside "this works now" and "this works differently now" are the
+ * same news: the thing does not do what it did.
+ */
+enum class WhatsNewKind(val heading: String) {
+    NEW("New"),
+    CHANGED("Changed"),
+    REMOVED("Removed"),
+}
+
+data class WhatsNewEntry(
+    val title: String,
+    val body: String,
+    val section: String? = null,
+    /**
+     * Null means unclassified, and prints ahead of the groups exactly as this
+     * list did before there were any. That is deliberate rather than a default
+     * of [WhatsNewKind.CHANGED]: the releases already shipped were written as
+     * one flat list, and filing a hundred of them after the fact would put a
+     * confident label on a lot of guesses. New entries should set it.
+     */
+    val kind: WhatsNewKind? = null,
+)
+
+data class WhatsNewRelease(
+    val versionCode: Int,
+    val versionName: String,
+    val entries: List<WhatsNewEntry>,
+)
+
+object WhatsNew {
+
+    /** What travels between this device and the signed-in account, and when. */
+    private const val ACCOUNT_SYNC = "Account sync"
+
+    /** The app as a whole: the languages it speaks, the size of its download. */
+    private const val APP = "The app"
+
+    /** The one section heading in use — the Discover page and everything under it. */
+    private const val DISCOVER = "Discover (Beta)"
+
+    /** What a downloaded file carries once it is on disk. */
+    private const val DOWNLOADS = "Downloads"
+
+    /** The equalizer's master switch and the system-wide correction under it. */
+    private const val EQUALIZER = "Equalizer"
+
+    /** The world radio globe and everything hanging off it. */
+    private const val GLOBE = "World radio"
+
+    /** Browsing what is on the device: the song list, the folder tree. */
+    private const val LIBRARY = "Library"
+
+    /** The app's own surfaces — glass, themes, search. */
+    private const val LOOK = "Look and feel"
+
+    /** The servers the app talks to, under Settings › Connections. */
+    private const val CONNECTIONS = "Connections"
+
+    /** What Search looks in, and how it shows where each result came from. */
+    private const val SEARCH = "Search and Deezer"
+
+    /** The DSP mixer, its buses and the presets that ship with it. */
+    private const val MIXER = "Mixer"
+
+    /** The pages you swipe between, their order and their visibility. */
+    private const val PAGES = "Pages and order"
+
+    /** The now-playing screen: its artwork, its transport and its dock. */
+    private const val PLAYER = "Now playing"
+
+    /** Where the sound goes after decoding, as the Audio Pipeline panel shows it. */
+    private const val PIPELINE = "Audio pipeline"
+
+    /** The playback speed panel and the two engines behind it. */
+    private const val SPEED = "Speed and pitch"
+
+    /** Talking to a USB DAC directly, over UAC2, instead of through Android. */
+    private const val USB_DAC = "Exclusive USB DAC"
+
+    /** Moving from one song to the next: crossfades and gapless. */
+    private const val PLAYBACK = "Playback"
+
+    /** The projectM visualizer, its preset browser and its rotation. */
+    private const val VISUALIZER = "Visualizer"
+
+    /** Newest first. */
+    val releases: List<WhatsNewRelease> = listOf(
+        WhatsNewRelease(
+            versionCode = 193,
+            versionName = "1.9.3",
+            entries = listOf(
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = LOOK,
+                    title = "Liquid glass",
+                    body = "The mini player, nav bar, search bars and panels bend what is behind them at their rounded edges, the way real glass does, and stay clear across the middle.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = LOOK,
+                    title = "New glass themes",
+                    body = "Clear, Tinted and Tilt, after iOS, then Pure, Droplet, Prism, Bubble, Mercury, Ice, Halo, Aurora, Dusk and Holo. Clear is the new starting look; glass you tuned yourself is kept.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = LOOK,
+                    title = "Shadows under the bars",
+                    body = "The nav bar and the mini player cast the same drop shadow as the play button, from the shadow depth, softness and tint in Player Visuals Studio.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Glass play button and dock",
+                    body = "The play button and the action dock bend the album art behind them too.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LOOK,
+                    title = "One clean glass edge",
+                    body = "Glass edges catch the light as one rim at the edge, instead of a second bright line inside it that made a pane look like two layers.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LOOK,
+                    title = "Mini player matches the nav bar",
+                    body = "The mini player's glass takes the nav bar's colour rather than the album's, so the two read as one piece of glass. Its text and cover still follow the album.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = LIBRARY,
+                    title = "Titles from file names",
+                    body = "Settings › Library can name local songs after their files instead of their title tags, for files whose tags are wrong or shared. Renaming a file then renames the song.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 192,
+            versionName = "1.9.2",
+            entries = listOf(
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = APP,
+                    title = "Seven languages",
+                    body = "English, Chinese, Japanese, French, Spanish, Turkish and German. Settings › Appearance › Language, or Android's app languages on 13 and later.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PAGES,
+                    title = "Glass nav bar",
+                    body = "Home, Library, Search and two pages you choose, in a glass bar. Scroll down and the mini player folds in.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PAGES,
+                    title = "New Home, Library and Search",
+                    body = "Home shows Recently Played and Liked Songs. Library switches sections with chips. Search is its own page.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PAGES,
+                    title = "Pick the nav bar's buttons",
+                    body = "The two between Home and Library can be Discover, World radio, Playlists, Local, Favorites or Downloads. Settings › Library › Nav bar.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PAGES,
+                    title = "Nav bar or mini player",
+                    body = "Turn on Hide mini player when the nav bar shows (Settings › Library › Nav bar): scroll up for the nav bar, down for the player. Tap the page you're on in the bar to bring the player back.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Spectrum waterfall",
+                    body = "Older lines of the spectrum recede behind what you hear now. Lines, Ridgeline, Heat or Neon, in Player Visuals Studio.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Glass and Legacy spectrum",
+                    body = "Glass draws the spectrum as one line of liquid glass over the cover. Legacy brings back the filled spectrum from before the waterfall.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Spectrum analysis",
+                    body = "Live average, Live max, Average or Max, with knobs for the averaging time and overlap, and the line in the album's colour or one you pick.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Wave Candy on the cover",
+                    body = "An FL-style oscilloscope along the bottom of the art: stereo or mono, neon or shadow. Settings › Equalizer.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "Kick punch",
+                    body = "The cover jumps on every kick drum. Strength and sensitivity in the Wave Candy settings.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = SEARCH,
+                    title = "Deezer",
+                    body = "Search Deezer's songs, albums and artists when an API serves it.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = SEARCH,
+                    title = "Source tags everywhere",
+                    body = "Every song, album and artist shows its catalog, and the player says \"via\" when it plays from another.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = DOWNLOADS,
+                    title = "Deezer in full",
+                    body = "Deezer songs play and download in full from Deezer, in FLAC or MP3 320.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = CONNECTIONS,
+                    title = "One list of APIs",
+                    body = "Add any server once; Tryptify finds out which catalogs it serves.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Route any bus to any bus",
+                    body = "Up to 48 buses, with cables, send knobs, and loops greyed out.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Atmos Upmix 9.1.6",
+                    body = "A preset that spreads stereo into 9.1.6 surround.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = SPEED,
+                    title = "BPM",
+                    body = "Each song's tempo is measured once and then holds. Tap the BPM to measure again, long-press it to type the song's tempo. Set speed in BPM, multiplier or semitones.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = SPEED,
+                    title = "Turntable bend",
+                    body = "Push the bar under the BPM to bend the tempo smoothly, with a click per beat.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = USB_DAC,
+                    title = "Crossfades on a USB DAC",
+                    body = "Crossfade works while Tryptify drives your DAC, across sample rates.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = APP,
+                    title = "31 MB smaller",
+                    body = "The visualizer's presets were packed into the app twice.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PLAYER,
+                    title = "Smoother spectrum",
+                    body = "The waterfall no longer slows the player down.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PLAYER,
+                    title = "Visual Studio in one tap",
+                    body = "Its chip in Settings opens the Studio straight away.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = VISUALIZER,
+                    title = "No more visualizer crashes",
+                    body = "Presets that use pictures Tryptify doesn't ship no longer crash the app. A preset that crashes your phone is flagged and skipped; clear the flags in the Studio's visualizer settings.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = SEARCH,
+                    title = "Cleaner search",
+                    body = "Source filters cover every result type, the bar no longer hides them, and albums open from their own catalog.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PAGES,
+                    title = "Steadier navigation",
+                    body = "A fast double back no longer blanks the screen, and local songs open their own artist and album.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "Mastering-style presets",
+                    body = "Master at 0 dB with a limiter last. Tap a strip to select, again to open.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = SPEED,
+                    title = "Clearer speed panel",
+                    body = "Same-shape buttons, values between − and +.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PLAYBACK,
+                    title = "Smoother crossfades",
+                    body = "No dropouts as a fade starts, and speed and pitch carry through.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PLAYBACK,
+                    title = "TIDAL asks before Qobuz",
+                    body = "When TIDAL can't play a song, you choose whether Qobuz does.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LIBRARY,
+                    title = "Better WAVs",
+                    body = "Float and 8-bit WAVs play right, tags and covers show, rows say \"WAV 24/48\", and \"Artist ~ Title\" names fill the artist.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.REMOVED,
+                    section = SPEED,
+                    title = "Nightcore button",
+                    body = "Use 1.10x with Preserve pitch off.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.REMOVED,
+                    section = CONNECTIONS,
+                    title = "Catalog picker and URL fields",
+                    body = "Replaced by the API list.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 191,
+            versionName = "1.9.1",
+            entries = listOf(
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Up to 16 buses",
+                    body = "Add buses with +, long-press to remove.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Surround across the mixer",
+                    body = "5.1, 7.1.4 and 9.1.6 tracks get a bus per channel group.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Place every channel",
+                    body = "Drag surround channels around a room map; on headphones you hear them there.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Drag the effect graphs",
+                    body = "Pull EQ bands, knees and tails by hand; double-tap to reset.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Five presets per effect",
+                    body = "Mastering-safe presets first, creative ones after.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "Every channel, every effect",
+                    body = "Mixer and EQs keep up to 16 channels.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "New knobs and cards",
+                    body = "Ticks, default marks, themed, with labelled graphs.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "Five effects fixed",
+                    body = "Pitch Shifter, Tape Stop, Dynamics, Resonator and Stereo behave.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "No more 6 dB drop",
+                    body = "The mixer is level with the mixer off.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "Cleaner oversampling",
+                    body = "Linear-phase 2x/4x that stays in time with the dry signal.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = MIXER,
+                    title = "Unbreakable mixer",
+                    body = "No setting can blow up an effect or crash a saved mix.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = SPEED,
+                    title = "Speed everywhere",
+                    body = "Works on hi-res, hi-res Bluetooth and Atmos.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PIPELINE,
+                    title = "Bluetooth explained",
+                    body = "The pipeline panel shows the Bluetooth link and spatial audio.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 190,
+            versionName = "1.9.0",
+            entries = listOf(
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = ACCOUNT_SYNC,
+                    title = "Deleted things stay deleted",
+                    body = "Unliking a track, deleting a playlist or taking a song out of one " +
+                        "could undo itself on the next launch, because the delete never " +
+                        "reached your account. Each change is now held until your account " +
+                        "confirms it.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = ACCOUNT_SYNC,
+                    title = "Changes made offline catch up",
+                    body = "Favourites, playlists, and EQ and mixer presets edited without a " +
+                        "connection are sent once you are back online. Before, favourites and " +
+                        "playlists only went up when you pressed Sync, and presets got one try.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = ACCOUNT_SYNC,
+                    title = "Devices no longer wipe each other's settings",
+                    body = "Saving settings from one device used to erase every setting it " +
+                        "did not have itself. Each device now only adds or changes what it " +
+                        "touched, and a setting changed offline is not undone at the next launch.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = ACCOUNT_SYNC,
+                    title = "Signing in keeps trying to restore your settings",
+                    body = "If fetching your settings fails, the app retries instead of " +
+                        "carrying on with the device's own, which could then overwrite the " +
+                        "copy saved to your account.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = ACCOUNT_SYNC,
+                    title = "Waiting changes stay with their account",
+                    body = "A change that has not gone through yet is only ever sent to the " +
+                        "account it was made under. Switching accounts before it does will " +
+                        "not hand it to the other one.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = DOWNLOADS,
+                    title = "Downloaded FLACs carry their own tags",
+                    body = "Title, album, track and disc number, album artist, year and genre " +
+                        "are written into every downloaded FLAC, so players like Auxio or " +
+                        "Symfonium file it under the right album, in order.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = DOWNLOADS,
+                    title = "Cover art is inside the file",
+                    body = "Each downloaded track has its album cover embedded, as well as " +
+                        "saved beside it. TIDAL downloads were getting no cover at all and " +
+                        "get one now.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 189,
+            versionName = "1.8.9",
+            entries = listOf(
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = USB_DAC,
+                    title = "Exclusive USB DAC output actually works now",
+                    body = "UAC2 exclusive mode was already in the app, but it never " +
+                        "delivered what it promised. Tryptify now drives the DAC itself, " +
+                        "so audio skips Android's mixer and its resampler entirely. The " +
+                        "DAC runs at the file's own rate and gets the samples untouched.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = USB_DAC,
+                    title = "24-bit and hi-res reach the DAC",
+                    body = "Up to 96 kHz at 24-bit, packed into whatever subslot width the " +
+                        "device asks for. Everything was being flattened to 16-bit before.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = USB_DAC,
+                    title = "The mixer and EQ run on 24-bit files",
+                    body = "On a 24-bit or 32-bit track the whole DSP chain used to drop " +
+                        "out with no sign of it: the mixer, both EQs, the spectrum and the " +
+                        "visualizer's audio all stopped while the music kept playing. They " +
+                        "run on those files now.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = USB_DAC,
+                    title = "Speed and pitch work over the DAC",
+                    body = "Semitone shift, and varispeed where pitch rides the tempo the " +
+                        "way a record does. Both took effect everywhere except the DAC.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "The headphones button shows the audio pipeline",
+                    body = "What is happening to the track, stage by stage: its format, the " +
+                        "decoder, the rates in and out, the DSP, and where it lands.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PLAYER,
+                    title = "The glass bends your artwork through it",
+                    body = "With Blurred Album Background on, the transport, the dock and " +
+                        "the panels refract the cover itself rather than a tint standing in " +
+                        "for it. The mini player carries it too, along the whole bar.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = VISUALIZER,
+                    title = "MilkDrop can play behind the music, not instead of it",
+                    body = "The ambient visualizer draws the preset into the album " +
+                        "background, over the blurred cover and under the controls, rather " +
+                        "than replacing the artwork.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = VISUALIZER,
+                    title = "Preset controls on the player",
+                    body = "Back, browse and next sit across the artwork while the ambient " +
+                        "visualizer is running, and fade out once you stop using them. Tap " +
+                        "the artwork to bring them back.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = MIXER,
+                    title = "Wide Stage joins the shipped presets",
+                    body = "A wider image without the hollow middle that usually comes with " +
+                        "it.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = PAGES,
+                    title = "Home is the list of pages, and World radio is one of them",
+                    body = "Pick a page instead of swiping to it. World radio has its own " +
+                        "page now, and Next moves down the city's stations.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.NEW,
+                    section = LIBRARY,
+                    title = "Browse by album artist, composer or year",
+                    body = "Local opens on a list of those instead of five swipes. Drag the " +
+                        "scrollbar to move through a big library, and the track playing is " +
+                        "coloured in the list.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = PLAYER,
+                    title = "Changing track no longer freezes the audio",
+                    body = "Every track change was loading the whole file into memory " +
+                        "looking for cover art. On a large WAV that stalled playback for " +
+                        "seconds at a time.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LOOK,
+                    title = "The glass is smooth again",
+                    body = "The artwork behind it was being sampled as flat blocks of " +
+                        "colour, worst on the mini player and the Audio tools sheet.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LOOK,
+                    title = "Visual Studio is a settings page of its own",
+                    body = "Glass, themes and the player's look live together, and colour " +
+                        "transitions no longer run for seconds.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = VISUALIZER,
+                    title = "The Visualizer chip turns the ambient one on and off",
+                    body = "It used to hand you the square visualizer on the second tap, " +
+                        "and leave the ambient setting switched off behind it.",
+                ),
+                WhatsNewEntry(
+                    kind = WhatsNewKind.CHANGED,
+                    section = LIBRARY,
+                    title = "Folders show your music, and open where it is",
+                    body = "Clear All Downloads says what it will delete, and sending a " +
+                        "file works for music on your phone.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 188,
+            versionName = "1.8.8",
+            entries = listOf(
+                WhatsNewEntry(
+                    section = PAGES,
+                    title = "Every page is in one list you can reorder",
+                    body = "Settings › Library › Page Order holds all seven pages you swipe " +
+                        "between, Discover included, and any of them can go anywhere in the " +
+                        "sequence.",
+                ),
+                WhatsNewEntry(
+                    section = PAGES,
+                    title = "Hide the pages you don't use",
+                    body = "A hidden page drops out of the swipe but keeps its slot, so " +
+                        "switching it back on puts it where it was. The last page showing " +
+                        "can't be hidden.",
+                ),
+                WhatsNewEntry(
+                    section = PAGES,
+                    title = "Your order carries over",
+                    body = "An upgrade keeps the pages as you were seeing them, with Home and " +
+                        "Discover in front. Each page has its own scroll position now, so those " +
+                        "reset once.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The glass stopped flashing",
+                    body = "A band of light used to slide across every glass surface every few " +
+                        "seconds. It is gone. The face swell, the edge shimmer and the glint " +
+                        "all stay.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Lists read as an even column",
+                    body = "Every list lays its rows out at one height, at whatever text size " +
+                        "you set. A wrapped subtitle used to make a single row taller than its " +
+                        "neighbours.",
+                ),
+                WhatsNewEntry(
+                    section = EQUALIZER,
+                    title = "The master switch says it covers AutoEQ",
+                    body = "\"Enable Equalizer\" is now \"Enable AutoEQ/Equalizer\". The one " +
+                        "switch has always been the master for the headphone correction as much " +
+                        "as for the bands.",
+                ),
+                WhatsNewEntry(
+                    section = EQUALIZER,
+                    title = "System-wide AutoEQ says what it costs",
+                    body = "It sits under the equalizer's switch now, marked Beta. It hands " +
+                        "other apps a coarser version of your correction, and some devices " +
+                        "ignore it entirely.",
+                ),
+                WhatsNewEntry(
+                    section = EQUALIZER,
+                    title = "Turning the equalizer off turns that off too",
+                    body = "Switching the equalizer off used to leave the system-wide effect " +
+                        "attached and running across the whole device.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 187,
+            versionName = "1.8.7",
+            entries = listOf(
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Pitch moved the tone controls, not the music",
+                    body = "Setting a pitch did nothing to the notes. The shifter was left out " +
+                        "of the audio chain for any track that started at zero, so the buttons " +
+                        "wrote a number nothing read, and what you heard was the EQ sliding " +
+                        "beside it. It works from the first press now.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Two pitch engines, and one is for drums",
+                    body = "Smooth resolves a note to a fraction of a hertz and softens attacks. " +
+                        "Punchy splices in the time domain, so a kick stays a kick and pads can " +
+                        "go phasey. Which suits a record is yours to pick, with Fast, Balanced " +
+                        "and High beneath it.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Pitch playback stopped stuttering",
+                    body = "The engine did a whole analysis block in one audio callback and " +
+                        "almost nothing in the next, which is the one shape a deadline cannot " +
+                        "absorb. The work is spread across calls now, and Balanced does a third " +
+                        "less of it per hop.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Speed reads in the unit you set it in",
+                    body = "Setting a speed in semitones and seeing it come back as 1.19x meant " +
+                        "doing the conversion in your head to check it had taken. The readout " +
+                        "leads with whichever unit you chose, and the other still follows " +
+                        "underneath.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The player lays out sideways",
+                    body = "Turning the phone squeezed the artwork into a sliver between the top " +
+                        "bar and the controls. A short, wide window gets an old-iTunes row " +
+                        "instead: cover on the left, everything else beside it, both sized to " +
+                        "the space rather than stretched into it.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The dock and the play button are glass",
+                    body = "They were coloured shapes laid over the artwork, their cut-out icons " +
+                        "opening onto the raw picture. They blur what is behind them now, the " +
+                        "cover and the reactive glow moving through them as it pulses, and the " +
+                        "frost fades in rather than snapping on.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The panes are glass, not slabs",
+                    body = "Create playlist, Import playlist and the preset browser were flat " +
+                        "panels. A dialog opens a window of its own and cannot blur the one " +
+                        "underneath, so they are drawn inside the player's window instead, " +
+                        "where the glass can actually be made.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The player's \u22EE carries the track, not the view",
+                    body = "It held Circular art, Visualizer and Equalizer, all a tap away " +
+                        "elsewhere, while adding the playing track to a playlist or sending the " +
+                        "file needed a list. Those two are in the menu now, beside Go to album " +
+                        "and Download.",
+                ),
+                WhatsNewEntry(
+                    section = VISUALIZER,
+                    title = "Nine thousand presets you can find",
+                    body = "The browser was one flat list. It has drawers now: by category, or " +
+                        "by author, since a Milkdrop preset is named for whoever made it and " +
+                        "Geiss looks like Geiss. Plus search, favourites, and a back button " +
+                        "that walks up a level.",
+                ),
+                WhatsNewEntry(
+                    section = VISUALIZER,
+                    title = "Preset rotation has an Off, and it stays put",
+                    body = "Two switches each claimed the job, so there was no single answer to " +
+                        "\"stop changing my preset\". It is one choice now, Off, On a timer, or " +
+                        "Each track, and it stops coming back as the timer every time you " +
+                        "relaunch.",
+                ),
+                WhatsNewEntry(
+                    section = VISUALIZER,
+                    title = "It stops rolling past the preset you picked",
+                    body = "Choosing a preset the timer had already moved past could do nothing " +
+                        "at all, and skipping a track with the visualizer closed queued a " +
+                        "change that fired the moment you reopened it, landing on something you " +
+                        "never chose.",
+                ),
+                WhatsNewEntry(
+                    title = "Playlist exports that actually import",
+                    body = "The importer read one file: Exportify's Spotify CSV. Apple Music " +
+                        "writes UTF-16 with tabs and came back as gibberish, and Spotify's own " +
+                        "byte-order mark hid the title column. Apple Music, Spotify, Soundiiz " +
+                        "and TuneMyMusic all load now.",
+                ),
+                WhatsNewEntry(
+                    title = "AutoEQ could install no correction at all",
+                    body = "A headphone profile could end up applying nothing. Not a cramped " +
+                        "curve, silence: the measured response was flat to six decimal places. " +
+                        "A late redesign was overwriting the built curve with the empty one it " +
+                        "had started from.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 186,
+            versionName = "1.8.6",
+            entries = listOf(
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Change key without changing tempo",
+                    body = "The speed panel gains a Pitch control that moves a track up or down " +
+                        "in semitones and leaves the tempo exactly where it was — up to two " +
+                        "octaves either way. It costs about a third of a second of delay, so it " +
+                        "only switches on when you move it off zero.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Speed in semitones, if you'd rather",
+                    body = "A unit toggle at the top of the panel. In semitones it steps whole " +
+                        "intervals, so every speed it can reach is in tune; in multipliers it " +
+                        "stays a free slider. Whichever you pick leads the readout and the other " +
+                        "follows underneath, so you can always see both.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "A speed panel with one control on it",
+                    body = "It offered four ways to set the same number at once — a slider, a " +
+                        "stepper, five preset chips and a Nightcore pill — and ran most of the " +
+                        "screen. Now it's the one control that matches the unit you chose, and " +
+                        "the panel is about half the height.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Playing faster doesn't sound harsh any more",
+                    body = "Speeding a track up folded everything above the top of your hearing " +
+                        "back down into it as a metallic whistle over the cymbals. A 15 kHz tone " +
+                        "at double speed came through 3 dB under full scale; it is now 108 dB " +
+                        "under.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Speeds you can actually tune to",
+                    body = "The sliders rounded to hundredths, which is nowhere near fine enough " +
+                        "to land on a musical interval — most of the scale was audibly out of " +
+                        "tune, the worst by a seventh of a semitone. Every semitone is now the " +
+                        "exact ratio it should be.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "AutoEQ follows the pitch",
+                    body = "With preserve-pitch off, a speed change dragged your headphone " +
+                        "correction off the resonances it was measured against and cut a hole in " +
+                        "clean sound beside them. It now moves with the music, sliding along as " +
+                        "you drag the control.",
+                ),
+                WhatsNewEntry(
+                    section = SPEED,
+                    title = "Push the panel down to close it",
+                    body = "It slid up from the bottom edge and could only be dismissed by " +
+                        "tapping the sliver of screen above it or pressing Back. It follows your " +
+                        "finger down now, and closes on a flick.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Rows play the genre, not its name",
+                    body = "The Neoclassical row was \"Neoclassical Cello\" and production " +
+                        "filler, because it searched the catalogue for the word. A row is built " +
+                        "from what people play in a genre now — its charted records and its " +
+                        "most-played artists — and it says which.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "It opens on what it already found",
+                    body = "What the feed learned is kept between sessions instead of thrown " +
+                        "away when you close the app, and tapping back onto a genre you just " +
+                        "left is instant rather than a full rebuild. Pull down to refresh when " +
+                        "you do want new music.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Rows appear as they're ready",
+                    body = "A page used to wait for its slowest shelf and then arrive all at " +
+                        "once. Each row now lands in its own slot as it resolves, and \"For " +
+                        "you\" leads with your liked tracks, which need no connection at all.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Opening the tab no longer closes the app",
+                    body = "The first launch of Discover could take the whole app down. It " +
+                        "doesn't, and a test now holds the class in the shape that prevents it.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Full screen",
+                    body = "Settings › System › Display gains a Full screen switch: the " +
+                        "notification bar and the gesture bar go away app-wide, the way they do " +
+                        "in a game, and a swipe in from an edge brings them back for a moment. " +
+                        "Every screen grows into the space on its own.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The mixer is made of the same glass as the app",
+                    body = "Its channel strips were drawn on their own flat panels. They use the " +
+                        "app's glass now, with the artwork behind them, like every other surface.",
+                ),
+                WhatsNewEntry(
+                    title = "Your EQ profiles and mixer presets follow your account",
+                    body = "AutoEQ profiles, parametric EQ profiles and mixer presets now travel " +
+                        "with you instead of living and dying on one device — the two things in " +
+                        "the app that take longest to build by hand. Whichever copy you edited " +
+                        "most recently wins.",
+                ),
+                WhatsNewEntry(
+                    title = "Your library comes back on its own",
+                    body = "A signed-in device restores its own playlists, favourites and mixes " +
+                        "at launch. They were saved to your account all along and only came back " +
+                        "if you found the Sync button, so an empty Playlists tab could sit there " +
+                        "for weeks.",
+                ),
+                WhatsNewEntry(
+                    title = "Settings that did nothing are gone",
+                    body = "Four switches stored a preference and changed nothing: Confirm " +
+                        "Before Clearing Queue, Scan on App Open, Minimum Track Duration and " +
+                        "Background Scan Interval. Show Explicit Badges was one of them, and " +
+                        "works now instead.",
+                ),
+                WhatsNewEntry(
+                    title = "The remote radio planner is gone",
+                    body = "It pointed at a server that no longer exists. Radio is unchanged — " +
+                        "the ranking has always run on your device, from the same eleven " +
+                        "weights, which are all still there.",
+                ),
+                WhatsNewEntry(
+                    title = "The mini player stops covering Oxford's controls",
+                    body = "CLIP 0 dB, BAND SPLIT and EFFECT IN sit at the foot of the fader " +
+                        "column on the Compressor and Inflator tabs, and the mini player was " +
+                        "drawn over them.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 185,
+            versionName = "1.8.5",
+            entries = listOf(
+                WhatsNewEntry(
+                    section = GLOBE,
+                    title = "Land and sea stop swapping places",
+                    body = "Turning the globe used to flip it inside out for a frame or two — " +
+                        "the sea filling in and the continents punched out of it — several " +
+                        "times a second. It looked like the theme flickering. It doesn't happen " +
+                        "any more, from any angle.",
+                ),
+                WhatsNewEntry(
+                    section = GLOBE,
+                    title = "Searching the globe finds things again",
+                    body = "Typing a station, city or country came back with nothing at all: the " +
+                        "search ran, and had nowhere to put what it found. The countries, cities " +
+                        "and stations are back under the box.",
+                ),
+                WhatsNewEntry(
+                    section = GLOBE,
+                    title = "Continents you can actually see",
+                    body = "Land is filled rather than outlined, so there's no guessing which " +
+                        "side of a coast is which, and the borders glow in your theme's colour. " +
+                        "The city you're listening to pulses so you can find it on the disc.",
+                ),
+                WhatsNewEntry(
+                    section = GLOBE,
+                    title = "The station list scrolls on the first try",
+                    body = "It used to take two or three attempts before a drag was recognised. " +
+                        "The globe underneath was swallowing them.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Pick your own colours",
+                    body = "Settings › Appearance gains a Custom colors switch: choose an accent " +
+                        "and a background and the whole app is built from them, overriding the " +
+                        "theme above. Light or dark is decided by the background you pick, and " +
+                        "text is kept readable on whatever you choose.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "A light version of every theme",
+                    body = "All fifteen themes now have a light variant, on your choice of two " +
+                        "papers — crisp white, or a warm off-white with less glare. Every one is " +
+                        "checked for contrast rather than eyeballed, so nothing comes out grey " +
+                        "on grey.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "One search bar, everywhere",
+                    body = "Every screen's search is the same bar now, opened from the icon in " +
+                        "the top bar. It floats over the page rather than pushing it down, hides " +
+                        "nothing when it appears, and the list slides under the glass as you " +
+                        "scroll.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Search your settings",
+                    body = "A search in Settings that knows where everything lives — type " +
+                        "\"crossfade\", \"scrobble\" or \"battery\" and tap the result to land on " +
+                        "the setting itself, scrolled into view, whichever tab or sub-screen it " +
+                        "is on.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Glass gives under your finger",
+                    body = "Press anything made of glass and it swells where you touched it, " +
+                        "the way the player's transport always has. Buttons, bars and cards used " +
+                        "to either do nothing or shrink like a flat rectangle.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Glass you can see through",
+                    body = "Search bars, settings rows and the mini player were sitting on solid " +
+                        "panels that defeated the point of them. The panels are gone, every " +
+                        "screen runs under the mini player, and the blur behind the glass is of " +
+                        "the page rather than a flat colour.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Let the album repaint the whole app",
+                    body = "Dynamic Colors gains \"Tint the menus too\": the cover sets the " +
+                        "accent and background everywhere, not just the player. A second switch " +
+                        "keeps your theme's background if you only want the accent to move.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "Set how fast the colours change",
+                    body = "A slider under Light paper, in seconds, for how long the album's " +
+                        "colours take to cross over on a track change — from instant to eight " +
+                        "seconds. Left alone it keeps step with Blend Between Tracks as before.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The home bar stops disappearing",
+                    body = "On a light theme the gesture pill was drawn dark against the black " +
+                        "foot of the player and vanished into it. The player sets the system " +
+                        "bars from its own background now, top and bottom judged separately.",
+                ),
+                WhatsNewEntry(
+                    section = LOOK,
+                    title = "The speed panel frosts what's behind it",
+                    body = "It was the last pane in the player painting a flat slab instead of " +
+                        "blurring the artwork — it was drawn in a window of its own, where there " +
+                        "was nothing to blur. It sits on the player now, and frosts it.",
+                ),
+                WhatsNewEntry(
+                    title = "A spinning record on Discord",
+                    body = "The \"Listening to\" card now turns the album art as a disc, once per " +
+                        "bar at the track's own tempo, instead of drawing a spectrum across the " +
+                        "sleeve.",
+                ),
+                WhatsNewEntry(
+                    title = "Your own files show their artwork on Discord",
+                    body = "A track ripped from a CD showed no cover at all, because there was " +
+                        "no address Discord could fetch it from. The artwork is uploaded now, " +
+                        "the same way the animation is.",
+                ),
+                WhatsNewEntry(
+                    title = "The mixer stops resetting itself",
+                    body = "Settings would quietly revert to an earlier state when the track " +
+                        "changed. They stay put now, and there's a reset button for when you " +
+                        "actually want defaults back.",
+                ),
+                WhatsNewEntry(
+                    title = "Top 100 opens where you are",
+                    body = "Tapping it on the genre panel expands the chart in place, with " +
+                        "artwork, rather than taking you to a separate page.",
+                ),
+            ),
+        ),
+        WhatsNewRelease(
+            versionCode = 184,
+            versionName = "1.8.4",
+            entries = listOf(
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Discover is its own tab, and it's in beta",
+                    body = "It used to be a couple of rows buried in Home. It's now the place " +
+                        "you go to look for something new, and every shelf says why it's there. " +
+                        "Beta because the genre data behind it is young and can be wrong.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Type any of 771 genres",
+                    body = "A search box that knows what you meant — dnb, d&b, liquid, phonk, " +
+                        "and a typo like \"hardstlye\" still lands on hardstyle. The row under " +
+                        "it changes as you type, instead of a fixed list you scroll past.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Moods you can stack",
+                    body = "Pick more than one — Late night and Focus together draw from both, " +
+                        "not from the sliver where they overlap. Anything in the mix you don't " +
+                        "want can be dropped, and it comes back when you change moods.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "The genre map",
+                    body = "Every genre as one picture, linked to its neighbours. Dots are sized " +
+                        "by how many people listen, so the big scenes read as big — or switch " +
+                        "the weighting to age, and the map becomes a picture of when things began.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "The same map, laid out by year",
+                    body = "One tap moves every genre to where it belongs in time, oldest left, " +
+                        "newest right, along a curve. Zoom in far enough and the axis goes from " +
+                        "decades to single years.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "A Top 100 for any genre",
+                    body = "Over the last 7 days, 30 days, 6 months or year. Built from what " +
+                        "people are actually listening to, and cross-checked against MusicBrainz " +
+                        "so the artists in it really belong to the genre.",
+                ),
+                WhatsNewEntry(
+                    section = DISCOVER,
+                    title = "Tapping a genre plays that genre",
+                    body = "It used to search the catalogue for the genre's name, which is " +
+                        "exactly the query machine-made filler is built to win — ask for hard " +
+                        "techno, get a track called \"Hard Techno\". It plays the charts now.",
+                ),
+                WhatsNewEntry(
+                    title = "Show what you're playing on Discord",
+                    body = "A \"Listening to\" card with the track, artist, album art and a live " +
+                        "progress bar. Off by default, and it needs your Discord token — read " +
+                        "what the setting says about that before switching it on.",
+                ),
+                WhatsNewEntry(
+                    title = "Connect Last.fm in a browser",
+                    body = "Connecting used to ask for a session key — something no listener " +
+                        "has, and nothing in the app could produce. Tap Last.fm, approve it on " +
+                        "Last.fm's own page, and it comes straight back connected.",
+                ),
+                WhatsNewEntry(
+                    title = "Your own files play first",
+                    body = "Tap a song anywhere and it plays the copy already on your device " +
+                        "instead of streaming it — including tracks you downloaded, which used " +
+                        "to re-stream from every screen but Downloads.",
+                ),
+                WhatsNewEntry(
+                    title = "Gapless playback actually works",
+                    body = "The toggle had never been connected to anything: it saved your " +
+                        "choice and nothing read it. The next track is now made ready while the " +
+                        "current one plays, so on-device files and Qobuz run straight on.",
+                ),
+                WhatsNewEntry(
+                    title = "Blend between tracks",
+                    body = "One slider in Settings decides what happens between songs. At zero " +
+                        "they run straight into each other with no gap; add time and they " +
+                        "overlap, one fading out as the next fades in.",
+                ),
+                WhatsNewEntry(
+                    title = "Songs start faster",
+                    body = "Playback begins after a quarter of the buffering it used to need, " +
+                        "and Qobuz tracks now start as soon as the first audio arrives instead " +
+                        "of waiting for the whole file to download.",
+                ),
+                WhatsNewEntry(
+                    title = "Qobuz plays from Qobuz",
+                    body = "Only the first track of a Qobuz album was actually coming from " +
+                        "Qobuz — every song after it was fetched from the wrong service, which " +
+                        "could fail outright or play a different recording.",
+                ),
+                WhatsNewEntry(
+                    title = "Tracks no longer stall at the start",
+                    body = "A song would sometimes load and then sit at 0:00 until you pressed " +
+                        "play, most often the first time you heard it. It now starts on its own.",
+                ),
+                WhatsNewEntry(
+                    title = "A song tapped straight after opening the app plays",
+                    body = "Tap one before playback had finished connecting and nothing " +
+                        "happened at all — no sound, no error, nothing to retry. The tap now " +
+                        "waits the moment it needs instead of being dropped.",
+                ),
+                WhatsNewEntry(
+                    title = "A slow track is no longer skipped past",
+                    body = "A song that took a moment to load could be given up on within " +
+                        "milliseconds and the queue would run on through it. It now gets a few " +
+                        "seconds to come good, and a blend waits for it rather than fading the " +
+                        "previous song out into silence.",
+                ),
+                WhatsNewEntry(
+                    title = "Download as many as you like",
+                    body = "Downloads are a proper queue now — send it fifty tracks and three " +
+                        "transfer at a time under one notification. Queueing more than one at " +
+                        "once used to be able to take the app down.",
+                ),
+                WhatsNewEntry(
+                    title = "You can see what's already downloaded",
+                    body = "Song rows show a ring with a down arrow when the track is on your " +
+                        "device, in Library, playlists, albums, artists, Home and search. " +
+                        "Unlike the progress spinner, it is still there after a restart.",
+                ),
+                WhatsNewEntry(
+                    title = "Auto-download liked songs",
+                    body = "Turn it on in Settings › Downloads and every song you like from " +
+                        "then on is saved for offline. Songs you liked earlier are left alone, " +
+                        "so switching it on never kicks off a huge download.",
+                ),
+                WhatsNewEntry(
+                    title = "Crossfeed for headphones",
+                    body = "A new toggle in the audio tools sheet sends a little of each " +
+                        "channel to the far ear, the way speakers do, softening hard-panned " +
+                        "old mixes. Long-press the row to set the speaker angle or pick a " +
+                        "classic network.",
+                ),
+                WhatsNewEntry(
+                    title = "Cleaner effects, and a louder ladder filter",
+                    body = "The Inflator and Compressor gain an Off / 2x / 4x anti-alias " +
+                        "control. The ladder filter is 25 dB cleaner and 6 dB louder — it had " +
+                        "been throwing away half its level — so old ladder presets may want " +
+                        "pulling down.",
+                ),
+                WhatsNewEntry(
+                    title = "ReplayGain is gone",
+                    body = "It never did anything: the mode had no control anywhere in the app, " +
+                        "so volume matching sat switched off on every track. It is removed " +
+                        "rather than left there looking functional. Nothing sounds different.",
+                ),
+                WhatsNewEntry(
+                    title = "Apple Music is off the menu",
+                    body = "Its settings, its onboarding card and its search results are gone, " +
+                        "and search now covers TIDAL and Qobuz. Apple tracks you have already " +
+                        "downloaded still play.",
+                ),
+                WhatsNewEntry(
+                    title = "Search and sort any list of tracks",
+                    body = "Playlists, album and artist pages, Liked Songs and every local " +
+                        "library screen share one toolbar. Play, shuffle, select and Download " +
+                        "All all follow what is on screen rather than what the filter hides.",
+                ),
+                WhatsNewEntry(
+                    title = "A track menu wherever there are tracks",
+                    body = "Local album, artist, genre, folder, Songs and Downloads rows gain " +
+                        "the menu they never had: play next, add to playlist, go to album or " +
+                        "artist, share the file.",
+                ),
+                WhatsNewEntry(
+                    title = "Ten fonts, built in",
+                    body = "The font library used to be empty until you found a .ttf yourself. " +
+                        "Ten typefaces now ship with the app, from Space Grotesk and Manrope to " +
+                        "JetBrains Mono, and the list folds away when you are not picking one.",
+                ),
+                WhatsNewEntry(
+                    title = "Settings you can find things in",
+                    body = "Instances, Scrobbling and Account merge into Connections, Appearance " +
+                        "and Interface become one tab, and Playback, Equalizer, Library and " +
+                        "Downloads each hold what belongs to them. Every tab looks the same now.",
+                ),
+                WhatsNewEntry(
+                    title = "The player changes colour at the speed the music does",
+                    body = "The background, the accents, the blurred backdrop and the album art " +
+                        "itself now cross into the next track across your blend time, so nothing " +
+                        "repaints while the previous song is still playing. Skip by hand and it " +
+                        "still changes at once.",
+                ),
+                WhatsNewEntry(
+                    title = "Tap the artwork to play",
+                    body = "Album art in a song row plays the song instead of opening the album, " +
+                        "and the artist and album links are harder to hit by accident.",
+                ),
+                WhatsNewEntry(
+                    title = "Lighter to move around",
+                    body = "The player rebuilt itself four times a second for the clock alone, " +
+                        "long lists redrew from any change downwards, and screens kept working " +
+                        "in the background. Scrolling and navigation are smoother for it.",
+                ),
+            ),
+        ),
+        // Written after the fact, from the commits between the 1.8.1 and 1.8.3
+        // releases. 1.8.3 shipped without notes — the entry above it was written
+        // to cover "the whole cycle that produced 1.8.4", which is all 1.8.4
+        // work, so none of this was ever described anywhere a listener looks.
+        WhatsNewRelease(
+            versionCode = 183,
+            versionName = "1.8.3",
+            entries = listOf(
+                WhatsNewEntry(
+                    title = "Correct each ear separately",
+                    body = "AutoEQ gains a stereo mode: pick a measurement for the left ear and " +
+                        "another for the right, and tune the bands per side. The preamp stays " +
+                        "shared, so it still guards both ears' headroom rather than letting one " +
+                        "side clip.",
+                ),
+                WhatsNewEntry(
+                    title = "Import an EqualizerAPO profile",
+                    body = "Point it at a .txt from EqualizerAPO or AutoEq and it becomes bands " +
+                        "you can edit. Anything it has to clamp or skip is listed before you " +
+                        "commit, and handing it a measurement curve by mistake sends you to the " +
+                        "right importer instead of failing.",
+                ),
+                WhatsNewEntry(
+                    title = "Surround folds down properly",
+                    body = "Multichannel music played in stereo used the ITU BS.775 fold, which " +
+                        "pulls the surrounds toward the middle. It uses a fixed hard-pan matrix " +
+                        "now, so the sides stay at the sides — and 16-channel 9.1.6 tracks are " +
+                        "understood.",
+                ),
+                WhatsNewEntry(
+                    title = "See what each effect is doing",
+                    body = "Every plugin in the FX chain draws its own visualisation from a live " +
+                        "tap of the audio passing through it, so a compressor shows its gain " +
+                        "reduction and a filter shows its curve rather than a row of numbers.",
+                ),
+                WhatsNewEntry(
+                    title = "One tip button",
+                    body = "Stripe donations are gone. There is a single Ko-fi button in " +
+                        "Settings instead.",
+                ),
+            ),
+        ),
+    )
+
+    /** The release the app is currently running, if it has notes. */
+    val current: WhatsNewRelease? get() = releases.firstOrNull()
+
+    /**
+     * Releases the user hasn't acknowledged yet — everything newer than
+     * [seenVersionCode]. Empty when they're up to date.
+     */
+    fun unseen(seenVersionCode: Int): List<WhatsNewRelease> =
+        releases.filter { it.versionCode > seenVersionCode }
+
+    /**
+     * Whether the update notice should appear.
+     *
+     * Someone upgrading has never written this preference either, so there is
+     * no way to tell them apart from a fresh install by the stored value
+     * alone. Showing it to both is the safe side of that: a new user sees one
+     * dismissible bar describing the app they just installed, whereas the
+     * other choice silently hides the notes from every existing user on the
+     * upgrade this exists for.
+     */
+    fun shouldNotify(seenVersionCode: Int, neverShow: Boolean): Boolean {
+        if (neverShow) return false
+        return unseen(seenVersionCode).isNotEmpty()
+    }
+
+    /** The versionCode to record once the notes have been read or dismissed. */
+    val currentVersionCode: Int get() = BuildConfig.VERSION_CODE
+}

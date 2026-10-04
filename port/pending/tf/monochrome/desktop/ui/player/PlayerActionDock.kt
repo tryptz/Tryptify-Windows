@@ -1,0 +1,311 @@
+package tf.monochrome.desktop.ui.player
+
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+import tf.monochrome.desktop.R
+import tf.monochrome.desktop.ui.theme.PressSpring
+import androidx.compose.ui.res.stringResource
+
+// Vertical paddings shared between the label overlay and the punch geometry, so
+// the hollow icons stay centred over their labels regardless of DPI.
+private val DockRowVerticalPadding = 6.dp
+private val DockItemVerticalPadding = 10.dp
+
+// The dome and the glyph squeeze both ride the app's shared press spring — see
+// Motion.kt, which is where this one moved to once every press in the app
+// started using it.
+
+// Room for the lit glyph's bloom. A blur only smears pixels it was given, and
+// Unbounded treats everything past the layer as transparent, so a glyph blurred
+// in a box its own size comes back a soft SQUARE. The dock's drawables fill
+// ~80% of their viewport: about 3dp of margin against an 11dp blur.
+private val DockBloomPadding = 16.dp
+private val DockBloomBox = PlayerDesignTokens.DockIconSize + DockBloomPadding * 2
+
+/**
+ * Erase the four dock glyphs from whatever has just been drawn, leaving
+ * icon-shaped holes. Shared by the glass slab and its drop shadow so the two
+ * can never disagree about where the holes are — a shadow whose holes drifted
+ * from the slab's would show up as dark smears through the cut-outs.
+ *
+ * Requires the caller's layer to be [CompositingStrategy.Offscreen], otherwise
+ * DstOut punches through everything behind the dock as well.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.punchDockIcons(
+    icons: List<Painter>,
+) {
+    val iconPx = PlayerDesignTokens.DockIconSize.toPx()
+    val cy = (DockRowVerticalPadding + DockItemVerticalPadding).toPx() + iconPx / 2f
+    // DstOut: dest * (1 - src.alpha) → the opaque icon pixels erase what is
+    // there, leaving an icon-shaped hole; everything else is untouched.
+    // Anti-aliased punch + whole-pixel glyph placement: Paint() defaults to
+    // isAntiAlias = false (hard stair-stepped hole edges), and a glyph drawn
+    // at a fractional offset gets resampled into soft, uneven edges.
+    val punch = Paint().apply {
+        blendMode = BlendMode.DstOut
+        isAntiAlias = true
+    }
+    val canvas = drawContext.canvas
+    canvas.saveLayer(Rect(0f, 0f, size.width, size.height), punch)
+    icons.forEachIndexed { i, painter ->
+        val cx = size.width * (i + 0.5f) / icons.size
+        translate(
+            kotlin.math.round(cx - iconPx / 2f),
+            kotlin.math.round(cy - iconPx / 2f),
+        ) {
+            with(painter) { draw(Size(iconPx, iconPx)) }
+        }
+    }
+    canvas.restore()
+}
+
+/**
+ * Compact tool row beneath the transport controls: Lyrics · Shuffle · Mixer/FX · Playlist.
+ *
+ * The whole rectangle is one liquid-glass slab with the four icons *hollowed out*
+ * of it — exactly like the play button: a solid translucent slab, the icon shapes
+ * punched to transparent (so the backdrop shows through the glyphs), and the
+ * player-glass shader bevels the slab rim and every cut-out edge into refractive
+ * 3D glass. The labels and tap targets sit as a transparent overlay aligned to
+ * the holes. (Monitoring + effect controls live in the pull-up "Audio tools" panel.)
+ */
+@Composable
+fun PlayerActionDock(
+    accent: Color,
+    lyricsActive: Boolean,
+    shuffleActive: Boolean,
+    onLyrics: () -> Unit,
+    onShuffle: () -> Unit,
+    onMixer: () -> Unit,
+    onPlaylist: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val icons = listOf(
+        painterResource(R.drawable.ic_glass_lyrics),
+        painterResource(R.drawable.ic_glass_shuffle),
+        painterResource(R.drawable.ic_glass_mixer),
+        painterResource(R.drawable.ic_glass_playlist),
+    )
+    // Press-bulge: one shared interaction source per slot so the parent knows
+    // which button is held and can swell the glass under it. The centre is
+    // *placed* on the last pressed slot, not animated to it: a press is never
+    // handed between sibling clickables, so an animated centre cannot glide
+    // under a finger — it only drags the dome over from the last button.
+    val sources = remember { List(icons.size) { MutableInteractionSource() } }
+    val pressed = sources.map { it.collectIsPressedAsState() }
+    val pressedIndex = pressed.indexOfFirst { it.value }
+    val bulgeSlot = remember { mutableIntStateOf(0) }
+    LaunchedEffect(pressedIndex) { if (pressedIndex >= 0) bulgeSlot.intValue = pressedIndex }
+    val bulgeAmt by animateFloatAsState(
+        targetValue = if (pressedIndex >= 0) 1f else 0f,
+        animationSpec = PressSpring,
+        label = "dockBulge",
+    )
+    val bulgeCenter = Offset((bulgeSlot.intValue + 0.5f) / icons.size, 0.5f)
+    Box(modifier = modifier.fillMaxWidth()) {
+        // Button glass tint: a custom colour chosen in the Studio, or the album
+        // accent when none is set (tintColor == 0).
+        val g = LocalPlayerGlass.current
+        val glassTint = if (g.tintColor != 0) Color(g.tintColor) else accent
+
+        // Drop shadow for the slab, honouring shadowDepth/Softness/Tint exactly
+        // like the play disc and skip glyphs do.
+        //
+        // A plain shadow can't be used here: it would sit behind the punched
+        // icon holes and show through them, turning true cut-outs into dark
+        // icon blobs. So the shadow gets the SAME holes punched out of it — a
+        // slab with holes casts a shadow with holes — which is both physically
+        // right and keeps light coming through the glyphs.
+        if (g.shadowDepth > 0.01f) {
+            val shadowColor = androidx.compose.ui.graphics.lerp(Color.Black, glassTint, g.shadowTint)
+                .copy(alpha = 0.28f + 0.55f * g.shadowDepth)
+            // Modifier order matters: the blur must be OUTSIDE the Offscreen
+            // layer. Offscreen always clips to bounds, so blurring inside it
+            // (graphicsLayer→blur) cut the soft spill back to a hard-edged
+            // rectangle around the slab. Blur-outside sees the already-punched,
+            // translated layer and lets the shadow feather past the bounds
+            // (Unbounded), like the skip glyphs' shadows.
+            Canvas(
+                modifier = Modifier
+                    .matchParentSize()
+                    .blur(
+                        radius = (5f + g.shadowSoftness * 22f).dp,
+                        edgeTreatment = BlurredEdgeTreatment.Unbounded,
+                    )
+                    .graphicsLayer {
+                        translationY = (2f + g.shadowDepth * 6f).dp.toPx()
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    },
+            ) {
+                val cornerPx = PlayerDesignTokens.GlassCornerLarge.toPx()
+                drawRoundRect(
+                    color = shadowColor,
+                    cornerRadius = CornerRadius(cornerPx, cornerPx),
+                )
+                punchDockIcons(icons)
+            }
+        }
+
+        // The blurred backdrop this slab is a sheet of glass over: the album
+        // art and the reactive glow behind the player, gaussian-blurred at the
+        // listener's Backdrop blur and washed by their Backdrop tint.
+        //
+        // Clipped to the slab's own shape, and drawn after the shadow so it
+        // covers the slab's footprint -- glass does not show the shadow it
+        // casts on itself -- while the spill still reads around the edges.
+        // Under the punched slab, so the four icon holes now open onto blurred
+        // light instead of onto the raw background.
+        PlayerGlassHaze(
+            modifier = Modifier.matchParentSize(),
+            shape = RoundedCornerShape(PlayerDesignTokens.GlassCornerLarge),
+            lensCorner = PlayerDesignTokens.GlassCornerLarge,
+        )
+
+        // The glass slab with the four icons carved out of it. Drawn in one
+        // offscreen layer so the DstOut punch clears only the glyph shapes (not
+        // the whole rectangle) and can't clear the player behind the dock.
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .playerGlass(
+                    tint = glassTint,
+                    bulgeCenter = bulgeCenter,
+                    bulgeAmount = { bulgeAmt },
+                    lensCorner = PlayerDesignTokens.GlassCornerLarge,
+                    liveUnder = rememberPlayerLiveLens(),
+                )
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
+        ) {
+            val cornerPx = PlayerDesignTokens.GlassCornerLarge.toPx()
+            // Same solid glass-tint fill as the play-button disc, so the slab reads
+            // as the same coloured glass — the shader's body opacity makes it
+            // see-through, matching the transport buttons exactly.
+            drawRoundRect(
+                color = glassTint,
+                cornerRadius = CornerRadius(cornerPx, cornerPx),
+            )
+            punchDockIcons(icons)
+        }
+        // Transparent overlay: labels + tap targets, one weighted slot per hole.
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = DockRowVerticalPadding)) {
+            DockLabel(Modifier.weight(1f), stringResource(R.string.mode_lyrics), icons[0], glassTint, lyricsActive, sources[0], onLyrics)
+            DockLabel(Modifier.weight(1f), stringResource(R.string.visualizer_shuffle), icons[1], glassTint, shuffleActive, sources[1], onShuffle)
+            DockLabel(Modifier.weight(1f), stringResource(R.string.dock_mixer_fx), icons[2], glassTint, false, sources[2], onMixer)
+            DockLabel(Modifier.weight(1f), stringResource(R.string.playlist), icons[3], glassTint, false, sources[3], onPlaylist)
+        }
+    }
+}
+
+@Composable
+private fun DockLabel(
+    modifier: Modifier,
+    label: String,
+    painter: Painter,
+    litColor: Color,
+    active: Boolean,
+    interactionSource: MutableInteractionSource,
+    onClick: () -> Unit,
+) {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val stillPress = tf.monochrome.desktop.ui.theme.reduceMotion()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed && !stillPress) 0.92f else 1f,
+        animationSpec = PressSpring,
+        label = "dockLabelScale",
+    )
+    // Fade the "lit" glyph in/out so toggling active glows on smoothly.
+    val lit by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "dockLit",
+    )
+
+    // No text label: the tap target is the whole slot, and the (bigger) hollow
+    // icon carved into the glass slab above fills the space the label used to take.
+    // When active, a bright glyph + soft glow lights up over the hole — the way
+    // the Lyrics label used to light up when lyrics were on.
+    Column(
+        modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClickLabel = label,
+                onClick = onClick,
+            )
+            .padding(vertical = DockItemVerticalPadding),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Fixed to the punched hole so the bloom can overflow without the row
+        // growing: punchDockIcons places the holes from the row's paddings, and
+        // a taller slot walks them off the glyphs.
+        Box(
+            modifier = Modifier.size(PlayerDesignTokens.DockIconSize),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (lit > 0.004f) {
+                // Soft bloom behind the lit glyph.
+                Icon(
+                    painter = painter,
+                    contentDescription = null,
+                    modifier = Modifier
+                        // Measured, never reported to the slot above.
+                        .requiredSize(DockBloomBox)
+                        // Blur OUTSIDE the alpha layer, as the slab's shadow
+                        // already does: partial alpha composites through an
+                        // offscreen buffer its own size, cutting the spill back
+                        // to a rectangle on every frame of the fade.
+                        .blur(radius = 11.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                        .graphicsLayer { alpha = lit }
+                        .padding(DockBloomPadding),
+                    tint = litColor.copy(alpha = 0.6f),
+                )
+                // Crisp lit glyph filling the hole.
+                Icon(
+                    painter = painter,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(PlayerDesignTokens.DockIconSize)
+                        .graphicsLayer { alpha = lit },
+                    tint = litColor,
+                )
+            }
+        }
+    }
+}

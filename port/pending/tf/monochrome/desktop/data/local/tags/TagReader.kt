@@ -1,0 +1,547 @@
+package tf.monochrome.desktop.data.local.tags
+
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.annotation.SuppressLint
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import dagger.hilt.android.qualifiers.ApplicationContext
+import tf.monochrome.desktop.domain.model.AudioCodec
+import java.io.File
+import javax.inject.Inject
+import javax.inject.Singleton
+
+data class AudioTags(
+    // Core identity
+    val title: String? = null,
+    val artist: String? = null,
+    val albumArtist: String? = null,
+    val album: String? = null,
+    val genre: String? = null,
+    val year: Int? = null,
+    val trackNumber: Int? = null,
+    val trackTotal: Int? = null,
+    val discNumber: Int? = null,
+    val discTotal: Int? = null,
+
+    // Extended metadata
+    val composer: String? = null,
+    val comment: String? = null,
+    val lyrics: String? = null,
+
+    // Audio properties
+    val codec: AudioCodec = AudioCodec.UNKNOWN,
+    val sampleRate: Int = 44100,
+    val bitDepth: Int? = null,
+    val bitRate: Int = 0,
+    val channels: Int = 2,
+    val durationSeconds: Int = 0,
+
+    // Replay Gain (parsed from custom tags when available)
+    val replayGainTrack: Float? = null,
+    val replayGainAlbum: Float? = null,
+
+    // Artwork
+    val hasEmbeddedArt: Boolean = false,
+    val artworkCacheKey: String? = null,
+
+    // THX Spatial Audio — detected from title/album text or, for FLAC, the
+    // embedded VERSION/COMMENT Vorbis fields a download wrote.
+    val isThxSpatialAudio: Boolean = false,
+
+    // Dolby Atmos — detected from the MIME type, file extension, or a "Dolby
+    // Atmos" phrase in title/album. Authoritative JOC detection arrives with
+    // the native demux (see cpp/atmos).
+    val isDolbyAtmos: Boolean = false,
+
+    // File info
+    val filePath: String = "",
+    val fileSizeBytes: Long = 0,
+    val lastModified: Long = 0
+)
+
+@Singleton
+class TagReader @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val artworkStore: ArtworkStore,
+) {
+
+    suspend fun readTags(
+        filePath: String,
+        folderArtCache: MutableMap<String, String?>? = null
+    ): AudioTags {
+        val file = File(filePath)
+        if (!file.exists()) return AudioTags(filePath = filePath)
+
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(filePath)
+            extractTags(retriever, file, folderArtCache)
+        } catch (e: Exception) {
+            AudioTags(
+                filePath = filePath,
+                fileSizeBytes = file.length(),
+                lastModified = file.lastModified(),
+                codec = detectCodecFromExtension(filePath)
+            )
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun extractTags(
+        retriever: MediaMetadataRetriever,
+        file: File,
+        folderArtCache: MutableMap<String, String?>? = null
+    ): AudioTags {
+        return extractTagsFromRetriever(
+            retriever,
+            file.absolutePath,
+            file.length(),
+            file.lastModified(),
+            folderArtCache
+        )
+    }
+
+    @SuppressLint("InlinedApi") // METADATA_KEY_SAMPLERATE/BITS_PER_SAMPLE: returns null on <31
+    private fun extractTagsFromRetriever(
+        retriever: MediaMetadataRetriever,
+        filePath: String,
+        fileSize: Long,
+        lastModified: Long,
+        folderArtCache: MutableMap<String, String?>? = null
+    ): AudioTags {
+        var title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+        var artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+        var albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
+        var album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+        var genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
+        var composer = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)
+        var yearStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
+        var durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+        val bitRateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+        val mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+        var numChannels = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_NUM_TRACKS)
+        var sampleRateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)
+        var bitsPerSample = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)
+
+        // Parse track number (handles "3/12" format)
+        val trackInfo = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+        var (trackNumber, trackTotal) = parseTrackNumber(trackInfo)
+        val discInfo = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER)
+        var (discNumber, discTotal) = parseTrackNumber(discInfo)
+
+        // Determine codec
+        val codec = detectCodec(mimeType, filePath)
+
+        // WAV keeps its tags where MediaMetadataRetriever does not look: a
+        // LIST/INFO chunk or an embedded ID3 chunk. The platform's WAV parser
+        // reads neither, so every tagged WAV arrived as its file name, by
+        // "Unknown Artist", with no cover. Read them here and fill what the
+        // retriever left empty.
+        val wav = if (codec == AudioCodec.WAV) readWavTags(filePath) else null
+        if (wav != null) {
+            fun String?.orWav(v: String?) = this?.takeIf { it.isNotBlank() } ?: v
+            title = title.orWav(wav.title)
+            artist = artist.orWav(wav.artist)
+            albumArtist = albumArtist.orWav(wav.albumArtist)
+            album = album.orWav(wav.album)
+            genre = genre.orWav(wav.genre)
+            composer = composer.orWav(wav.composer)
+            yearStr = yearStr.orWav(wav.year)
+            if (trackNumber == null) { trackNumber = wav.track; trackTotal = trackTotal ?: wav.trackTotal }
+            if (discNumber == null) { discNumber = wav.disc; discTotal = discTotal ?: wav.discTotal }
+            // The format comes from the fmt chunk itself, which outranks the
+            // retriever: its "channels" here is METADATA_KEY_NUM_TRACKS — the
+            // count of tracks, 1 for any WAV — so a stereo WAV read as mono.
+            wav.sampleRate?.let { sampleRateStr = it.toString() }
+            wav.bitsPerSample?.let { bitsPerSample = it.toString() }
+            wav.channels?.let { numChannels = it.toString() }
+            if (durationMs <= 0L && wav.durationSeconds != null) durationMs = wav.durationSeconds * 1000L
+        }
+
+        // THX Spatial Audio detection. Cheap first: the phrase in title/album
+        // (covers sideloaded releases named that way). For FLAC, fall back to a
+        // guarded read of the embedded VERSION/COMMENT Vorbis fields — the ones
+        // a Tryptify download writes — so a re-scan re-derives the flag even
+        // when the folded phrase never reached title/album.
+        val thxFromText = tf.monochrome.desktop.domain.model.isThxSpatialAudio(
+            title = title, albumTitle = album,
+        )
+        val isThx = thxFromText || (codec == AudioCodec.FLAC && detectThxInFlacTags(filePath))
+
+        // Dolby Atmos: best-effort from the MIME (eac3-joc / atmos) or a "Dolby
+        // Atmos" phrase in the metadata. A bare .ec3/.eac3 is only Atmos-capable,
+        // not necessarily Atmos, so the extension alone does not set the flag;
+        // authoritative JOC detection arrives with the native demux.
+        //
+        // The retriever's MIME is the *container* ("audio/mp4"), which never
+        // carries the joc marker, so pass the elementary-stream MIME instead —
+        // that is where "audio/eac3-joc" actually shows up.
+        val isAtmos = tf.monochrome.desktop.domain.model.isDolbyAtmos(
+            mimeType = audioTrackMime(filePath) ?: mimeType,
+            title = title,
+            albumTitle = album,
+        )
+
+        // Extract and cache artwork. For MP4/M4A this reads the `covr` atom;
+        // for FLAC/Vorbis/Opus this reads the METADATA_BLOCK_PICTURE/coverart;
+        // for ID3v2 this reads APIC. If nothing is embedded, fall back to a
+        // sidecar image in the track's folder (cover.jpg, folder.jpg, etc.).
+        val artworkBytes = retriever.embeddedPicture ?: wav?.artwork
+        val hasArt = artworkBytes != null
+        val artworkCacheKey = when {
+            hasArt && artworkBytes != null -> artworkStore.put(artworkBytes, filePath)
+            // Per-track sidecar: an image next to the audio file with the
+            // same stem (e.g. "song.flac" + "song.jpg"). yt-dlp, Bandcamp,
+            // and rip workflows all produce this convention. Checked before
+            // folder-level cover.* / albumart.* fallback.
+            else -> findPerTrackSidecar(filePath)
+                ?: findFolderCoverArt(filePath, folderArtCache)
+        }
+        val hasArtOrSidecar = artworkCacheKey != null
+
+        // Many sideloaded files (yt-dlp, loose rips) carry no ARTIST tag and
+        // stuff the whole "Artist - Title" string into the title. When the
+        // artist tag is genuinely absent, recover it from that convention so
+        // the library doesn't show a wall of "Unknown Artist".
+        val tagArtist = artist?.takeIf { it.isNotBlank() }
+        var finalArtist = tagArtist
+        var finalTitle = title?.takeIf { it.isNotBlank() }
+        if (tagArtist == null) {
+            val (derivedArtist, derivedTitle) = deriveArtistFromTitle(title, filePath)
+            if (derivedArtist != null) {
+                finalArtist = derivedArtist
+                finalTitle = derivedTitle
+            }
+        }
+
+        return AudioTags(
+            title = finalTitle,
+            artist = finalArtist,
+            albumArtist = albumArtist,
+            album = album,
+            genre = genre,
+            year = parseYear(yearStr),
+            trackNumber = trackNumber,
+            trackTotal = trackTotal,
+            discNumber = discNumber,
+            discTotal = discTotal,
+            composer = composer,
+            codec = codec,
+            sampleRate = sampleRateStr?.toIntOrNull() ?: 44100,
+            bitDepth = bitsPerSample?.toIntOrNull(),
+            bitRate = (bitRateStr?.toLongOrNull() ?: 0L).let { (it / 1000).toInt() },
+            channels = numChannels?.toIntOrNull() ?: 2,
+            durationSeconds = (durationMs / 1000).toInt(),
+            hasEmbeddedArt = hasArtOrSidecar,
+            artworkCacheKey = artworkCacheKey,
+            isThxSpatialAudio = isThx,
+            isDolbyAtmos = isAtmos,
+            filePath = filePath,
+            fileSizeBytes = fileSize,
+            lastModified = lastModified
+        )
+    }
+
+    /**
+     * Reads a FLAC's embedded VERSION / COMMENT / TITLE / ALBUM Vorbis comments
+     * and reports whether any names a THX Spatial Audio release. Only touches
+     * the metadata blocks (no audio decode), FLAC-only, and fully guarded — any
+     * failure returns false so scanning never breaks on a malformed file.
+     * MediaMetadataRetriever can't surface custom Vorbis comments, hence the
+     * dedicated read here.
+     */
+    private fun detectThxInFlacTags(filePath: String): Boolean = try {
+        val file = File(filePath)
+        if (!file.exists()) {
+            false
+        } else {
+            val tag = org.jaudiotagger.audio.AudioFileIO.read(file).tag
+            val candidates = listOfNotNull(
+                tag?.getFirst(org.jaudiotagger.tag.FieldKey.TITLE),
+                tag?.getFirst(org.jaudiotagger.tag.FieldKey.ALBUM),
+                tag?.getFirst(org.jaudiotagger.tag.FieldKey.COMMENT),
+                (tag as? org.jaudiotagger.tag.flac.FlacTag)?.getFirst("VERSION"),
+            )
+            candidates.any {
+                tf.monochrome.desktop.domain.model.isThxSpatialAudio(version = it)
+            }
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    /** What a WAV file's own tags say; null fields where they say nothing. */
+    private class WavTags(
+        val title: String?, val artist: String?, val albumArtist: String?, val album: String?,
+        val genre: String?, val composer: String?, val year: String?,
+        val track: Int?, val trackTotal: Int?, val disc: Int?, val discTotal: Int?,
+        val artwork: ByteArray?,
+        val sampleRate: Int?, val bitsPerSample: Int?, val channels: Int?, val durationSeconds: Int?,
+    )
+
+    /**
+     * A WAV's LIST/INFO and ID3 tags, its cover, and its real format, via
+     * jaudiotagger (which reads both tag chunks, ID3 preferred). Only the
+     * chunk headers and the tag chunks are read — the audio is skipped — and
+     * any failure yields null, so a malformed file never breaks a scan.
+     */
+    private fun readWavTags(filePath: String): WavTags? = try {
+        val file = File(filePath)
+        if (!file.isFile) {
+            null
+        } else {
+            val audio = org.jaudiotagger.audio.AudioFileIO.read(file)
+            val tag = audio.tag
+            fun get(key: org.jaudiotagger.tag.FieldKey): String? =
+                runCatching { tag?.getFirst(key) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+            fun num(key: org.jaudiotagger.tag.FieldKey): Int? =
+                get(key)?.substringBefore('/')?.trim()?.toIntOrNull()
+            val header = audio.audioHeader
+            WavTags(
+                title = get(org.jaudiotagger.tag.FieldKey.TITLE),
+                artist = get(org.jaudiotagger.tag.FieldKey.ARTIST),
+                albumArtist = get(org.jaudiotagger.tag.FieldKey.ALBUM_ARTIST),
+                album = get(org.jaudiotagger.tag.FieldKey.ALBUM),
+                genre = get(org.jaudiotagger.tag.FieldKey.GENRE),
+                composer = get(org.jaudiotagger.tag.FieldKey.COMPOSER),
+                year = get(org.jaudiotagger.tag.FieldKey.YEAR),
+                track = num(org.jaudiotagger.tag.FieldKey.TRACK),
+                trackTotal = num(org.jaudiotagger.tag.FieldKey.TRACK_TOTAL),
+                disc = num(org.jaudiotagger.tag.FieldKey.DISC_NO),
+                discTotal = num(org.jaudiotagger.tag.FieldKey.DISC_TOTAL),
+                artwork = runCatching { tag?.firstArtwork?.binaryData }.getOrNull(),
+                sampleRate = runCatching { header?.sampleRateAsNumber }.getOrNull()?.takeIf { it > 0 },
+                bitsPerSample = runCatching { header?.bitsPerSample }.getOrNull()?.takeIf { it > 0 },
+                channels = runCatching { header?.channels?.trim()?.toIntOrNull() }.getOrNull()?.takeIf { it > 0 },
+                durationSeconds = runCatching { header?.trackLength }.getOrNull()?.takeIf { it > 0 },
+            )
+        }
+    } catch (_: Exception) {
+        null
+    } catch (_: OutOfMemoryError) {
+        null
+    }
+
+    /**
+     * Recover "Artist" / "Title" from a title formatted as `Artist - Title`,
+     * used only when the file has no ARTIST tag at all. Falls back to the file
+     * name (sans extension) when the title tag is also missing.
+     *
+     * See [splitArtistTitle] for which separators count. Returns
+     * `(null, originalTitle)` when nothing can be confidently derived.
+     */
+    private fun deriveArtistFromTitle(rawTitle: String?, filePath: String): Pair<String?, String?> {
+        val base = rawTitle?.takeIf { it.isNotBlank() }
+            ?: File(filePath).nameWithoutExtension.takeIf { it.isNotBlank() }
+            ?: return null to rawTitle
+        return splitArtistTitle(base) ?: (null to rawTitle)
+    }
+
+    private fun parseTrackNumber(raw: String?): Pair<Int?, Int?> {
+        if (raw == null) return null to null
+        return if (raw.contains('/')) {
+            val parts = raw.split('/')
+            parts[0].trim().toIntOrNull() to parts.getOrNull(1)?.trim()?.toIntOrNull()
+        } else {
+            raw.trim().toIntOrNull() to null
+        }
+    }
+
+    private fun parseYear(raw: String?): Int? {
+        if (raw == null) return null
+        // Handle full date strings like "2023-01-15"
+        return raw.take(4).toIntOrNull()
+    }
+
+    private fun detectCodec(mimeType: String?, filePath: String): AudioCodec {
+        // Opus and Vorbis share the Ogg container, so MediaMetadataRetriever often
+        // reports both as "audio/ogg". ALAC and AAC share the MP4 container, so
+        // both report as "audio/mp4" on some Android versions. Check explicit
+        // codec MIMEs first, then fall back to the file extension.
+        //
+        // MP4/MKV/TS are containers: the retriever reports the container MIME
+        // ("audio/mp4", "video/mp4") and never the codec inside it, so an E-AC-3
+        // Atmos track was indistinguishable from AAC and got labelled "AAC 768".
+        // Resolve the real elementary-stream MIME for those first.
+        val mime = audioTrackMime(filePath) ?: mimeType
+        return when {
+            mime?.contains("eac3") == true || mime?.contains("e-ac-3") == true ->
+                AudioCodec.EAC3
+            mime?.contains("ac3") == true || mime?.contains("ac-3") == true ->
+                AudioCodec.AC3
+            mime?.contains("flac") == true -> AudioCodec.FLAC
+            mime?.contains("mpeg") == true -> AudioCodec.MP3
+            mime?.contains("alac") == true -> AudioCodec.ALAC
+            mime?.contains("mp4a") == true || mime?.contains("aac") == true ||
+                mime?.contains("mp4") == true -> {
+                val fromExt = detectCodecFromExtension(filePath)
+                if (fromExt == AudioCodec.ALAC) AudioCodec.ALAC else AudioCodec.AAC
+            }
+            mime?.contains("opus") == true -> AudioCodec.OPUS
+            mime?.contains("vorbis") == true -> AudioCodec.OGG_VORBIS
+            mime?.contains("ogg") == true -> {
+                val fromExt = detectCodecFromExtension(filePath)
+                if (fromExt == AudioCodec.OPUS) AudioCodec.OPUS else AudioCodec.OGG_VORBIS
+            }
+            mime?.contains("wav") == true || mime?.contains("wave") == true -> AudioCodec.WAV
+            mime?.contains("aiff") == true -> AudioCodec.AIFF
+            mime?.contains("x-ms-wma") == true -> AudioCodec.WMA
+            else -> detectCodecFromExtension(filePath)
+        }
+    }
+
+    /**
+     * The MIME of the file's first audio track, read straight from the
+     * container, or null when the file is not a multi-codec container (or could
+     * not be opened). [MediaExtractor] parses only the header and index, not the
+     * media data, so this costs about the same on a 130 MB file as on a 3 MB one.
+     *
+     * Only containers that can hold more than one audio codec are probed —
+     * a .flac or .mp3 needs no disambiguation and must not pay for an extra open.
+     */
+    private fun audioTrackMime(filePath: String): String? {
+        val ext = filePath.substringAfterLast('.', "").lowercase()
+        val ambiguous = ext == "mp4" || ext == "m4a" || ext == "m4v" || ext == "mov" ||
+            ext == "mkv" || ext == "ts" || ext == "m2ts" || ext == "mts"
+        if (!ambiguous) return null
+
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(filePath)
+            (0 until extractor.trackCount)
+                .asSequence()
+                .mapNotNull { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
+                .firstOrNull { it.startsWith("audio/") }
+        } catch (e: Exception) {
+            null
+        } catch (e: OutOfMemoryError) {
+            // A malformed container can make the platform extractor over-allocate.
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    private fun detectCodecFromExtension(filePath: String): AudioCodec {
+        return when (filePath.substringAfterLast('.').lowercase()) {
+            "flac" -> AudioCodec.FLAC
+            "mp3" -> AudioCodec.MP3
+            "alac" -> AudioCodec.ALAC
+            "m4a", "aac", "mp4" -> AudioCodec.AAC
+            "ogg", "oga" -> AudioCodec.OGG_VORBIS
+            "opus" -> AudioCodec.OPUS
+            "wav" -> AudioCodec.WAV
+            "aif", "aiff" -> AudioCodec.AIFF
+            "ape" -> AudioCodec.APE
+            "wma" -> AudioCodec.WMA
+            else -> AudioCodec.UNKNOWN
+        }
+    }
+
+    /**
+     * Look for a sidecar cover art file in the track's folder. Matches the common
+     * naming conventions (cover.*, folder.*, album.*, front.*, AlbumArt*.jpg) case-
+     * insensitively, prefers larger images when multiple candidates exist, and
+     * returns the file's absolute path (Coil will load it directly). Returns null
+     * when `filePath` isn't a real filesystem path (e.g. a content:// URI) or the
+     * folder has no recognisable image.
+     *
+     * Pass a [cache] keyed by parent directory to avoid re-listing the same folder
+     * for every track in an album. The scanner shares one (synchronized) cache
+     * across parallel tag-read workers; the containsKey/put sequence here is not
+     * atomic across calls, but a lost race just re-lists the same folder once
+     * with an identical result.
+     */
+    private fun findFolderCoverArt(
+        filePath: String,
+        cache: MutableMap<String, String?>? = null
+    ): String? {
+        val parent = File(filePath).parentFile ?: return null
+        if (!parent.isDirectory) return null
+        val parentKey = parent.absolutePath
+        cache?.let { if (it.containsKey(parentKey)) return it[parentKey] }
+        val resolved = scanFolderCoverArt(parent)
+        cache?.put(parentKey, resolved)
+        return resolved
+    }
+
+    /**
+     * Match an image file in the same directory whose stem equals the audio
+     * file's stem. Common naming convention from yt-dlp, Bandcamp, and
+     * various TIDAL/Qobuz rip workflows.
+     *
+     * Uses direct File.exists() rather than listFiles() — under Android's
+     * scoped storage (API 33+) listFiles() on /storage/emulated/0/...
+     * returns null even with READ_MEDIA_AUDIO/READ_MEDIA_IMAGES granted,
+     * but exists()/length() on a known indexed media path works. We pay
+     * up to 8 stat() calls per art-less track (4 extensions × 2 cases) to
+     * cover this.
+     */
+    private fun findPerTrackSidecar(filePath: String): String? {
+        val file = File(filePath)
+        val parent = file.parentFile ?: return null
+        val stem = file.nameWithoutExtension
+        for (ext in IMAGE_EXTENSIONS) {
+            val lower = File(parent, "$stem.$ext")
+            if (lower.exists()) return lower.absolutePath
+            val upper = File(parent, "$stem.${ext.uppercase()}")
+            if (upper.exists()) return upper.absolutePath
+        }
+        return null
+    }
+
+    private fun scanFolderCoverArt(parent: File): String? {
+        val files = parent.listFiles() ?: return null
+        val candidates = files.filter { f ->
+            if (!f.isFile) return@filter false
+            val name = f.name.lowercase()
+            val ext = name.substringAfterLast('.', "")
+            if (ext !in IMAGE_EXTENSIONS) return@filter false
+            val stem = name.substringBeforeLast('.')
+            stem in COVER_STEMS || COVER_STEM_PREFIXES.any { stem.startsWith(it) }
+        }
+        if (candidates.isEmpty()) return null
+        // Prefer exact stem match over prefix match, then the largest file
+        // (Windows Media Player writes both AlbumArt.jpg and AlbumArtSmall.jpg).
+        return candidates
+            .sortedWith(
+                compareByDescending<File> { f ->
+                    val stem = f.name.lowercase().substringBeforeLast('.')
+                    if (stem in COVER_STEMS) 1 else 0
+                }.thenByDescending { it.length() }
+            )
+            .first()
+            .absolutePath
+    }
+
+    companion object {
+        private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+        private val COVER_STEMS = setOf(
+            "cover", "folder", "album", "albumart", "front", "artwork"
+        )
+        private val COVER_STEM_PREFIXES = setOf(
+            "albumart" // AlbumArt_{GUID}_Large.jpg (WMP)
+        )
+    }
+}
+
+/**
+ * "Artist - Title" or "Artist ~ Title" → (artist, title), or null.
+ *
+ * Only a *spaced* hyphen-minus or tilde counts. A spaced tilde is how a lot of
+ * DJ and scene rips name files ("Banana Inc ~ Black Magic") and practically
+ * never sits inside a title. En/em dashes (`–`, `—`) are routinely used inside
+ * one ("Heroine — Pat B Remix"), so splitting on them would mangle good titles.
+ */
+internal fun splitArtistTitle(base: String): Pair<String, String>? {
+    val sep = listOf(" - ", " ~ ")
+        .mapNotNull { s -> base.indexOf(s).takeIf { it > 0 }?.let { it to s } }
+        .minByOrNull { it.first } ?: return null
+    val artist = base.substring(0, sep.first).trim()
+    val title = base.substring(sep.first + sep.second.length).trim()
+    return if (artist.isNotEmpty() && title.isNotEmpty()) artist to title else null
+}

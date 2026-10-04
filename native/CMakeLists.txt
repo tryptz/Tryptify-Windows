@@ -287,6 +287,13 @@ if(TF_BUILD_VISUALIZER)
     # submodule. Same patch set as the Android app.
     include(${CMAKE_CURRENT_SOURCE_DIR}/projectm_patches/projectm_patches.cmake)
 
+    # CMake's generate_export_header only tells the library itself that it is
+    # static; every consumer of a static projectM on Windows has to say so too,
+    # or its calls are compiled as __imp_ DLL imports and the link fails. The
+    # playlist library (its projectM_playlist_main object target) is one, and so
+    # is our bridge.
+    target_compile_definitions(projectM_playlist_main PRIVATE PROJECTM_STATIC_DEFINE)
+
     tf_jni_library(monochrome_visualizer
         projectm_bridge.cpp
         projectm_jni.cpp
@@ -298,6 +305,7 @@ if(TF_BUILD_VISUALIZER)
         ${CMAKE_CURRENT_BINARY_DIR}/projectm/src/api/include
         ${CMAKE_CURRENT_BINARY_DIR}/projectm/src/playlist/include
     )
+    target_compile_definitions(monochrome_visualizer PRIVATE PROJECTM_STATIC_DEFINE PROJECTM_PLAYLIST_STATIC_DEFINE)
     target_compile_options(monochrome_visualizer PRIVATE $<IF:$<BOOL:${MSVC}>,/O2,-O2>)
     find_package(OpenGL REQUIRED)
     target_link_libraries(monochrome_visualizer PRIVATE projectM_playlist projectM OpenGL::GL)

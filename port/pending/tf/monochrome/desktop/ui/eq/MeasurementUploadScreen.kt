@@ -1,0 +1,470 @@
+package tf.monochrome.desktop.ui.eq
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import tf.monochrome.desktop.domain.model.EqTarget
+import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.R
+import androidx.compose.ui.res.pluralStringResource
+
+/**
+ * MeasurementUploadScreen - Advanced calibration with headphone measurement upload
+ *
+ * Features:
+ * - Paste raw frequency response CSV data
+ * - Select target curve for calibration
+ * - Set number of EQ bands
+ * - Auto-calculate optimal EQ from measurement
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MeasurementUploadScreen(
+    viewModel: EqViewModel,
+    onDismiss: () -> Unit,
+    onCalibrationComplete: () -> Unit
+) {
+    val isCalculating by viewModel.isCalculating.collectAsStateWithLifecycle()
+    val error = viewModel.error.collectAsStateWithLifecycle().value?.resolve(androidx.compose.ui.platform.LocalContext.current)
+    val selectedTarget by viewModel.selectedTarget.collectAsStateWithLifecycle()
+    val availableTargets by viewModel.availableTargets.collectAsStateWithLifecycle()
+    val currentBands by viewModel.currentBands.collectAsStateWithLifecycle()
+
+    var measurementData by remember { mutableStateOf("") }
+    var bandCount by remember { mutableFloatStateOf(10f) }
+    var showTargetMenu by remember { mutableStateOf(false) }
+    var headphoneName by remember { mutableStateOf("") }
+    var calculationAttempted by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        try {
+            val rawData = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            if (rawData.isNullOrEmpty()) {
+                android.widget.Toast.makeText(context, context.getString(R.string.eq_couldnt_read_file), android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                measurementData = rawData
+                // Pull the file's display name off the SAF URI and use it as
+                // the headphone name (sans extension). This is what makes
+                // every file-pick upload auto-save under the Uploaded chip
+                // without the user having to type anything. Only fills the
+                // field when blank so a user who typed first isn't clobbered.
+                if (headphoneName.isBlank()) {
+                    val displayName = context.contentResolver.query(
+                        uri,
+                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                        null, null, null,
+                    )?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    }
+                    headphoneName = displayName
+                        ?.substringBeforeLast('.')
+                        ?.takeIf { it.isNotBlank() }
+                        ?: headphoneName
+                }
+            }
+        } catch (_: Exception) {
+            android.widget.Toast.makeText(context, context.getString(R.string.eq_couldnt_read_file), android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = LocalBottomChromeInset.current)
+    ) {
+        // Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                stringResource(R.string.eq_advanced_calibration),
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, stringResource(R.string.action_close))
+            }
+        }
+
+        Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+        // Instructions
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(8.dp)
+                )
+                .padding(12.dp)
+        ) {
+            Column {
+                Text(
+                    stringResource(R.string.eq_how_it_works),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.eq_1_measure_your_headphone_s_frequency_response),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.eq_2_paste_the_frequency_response_data_below_format),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.eq_3_select_your_target_curve_harman_diffuse_field),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.eq_4_the_algorithm_calculates_optimal_eq_bands_to),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Headphone Name
+        OutlinedTextField(
+            value = headphoneName,
+            onValueChange = { headphoneName = it },
+            label = { Text(stringResource(R.string.eq_headphone_name_optional)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Measurement Data Input
+        Text(
+            stringResource(R.string.eq_frequency_response_csv_data),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = measurementData,
+            onValueChange = { measurementData = it },
+            label = { Text(stringResource(R.string.eq_paste_measurement_data_frequency_gain)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .padding(horizontal = 16.dp)
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outline,
+                    RoundedCornerShape(4.dp)
+                ),
+            minLines = 6,
+            maxLines = 6
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                stringResource(R.string.eq_example_data),
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedButton(
+                onClick = { filePicker.launch("text/*") }
+            ) {
+                Icon(
+                    Icons.Default.UploadFile,
+                    contentDescription = null,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+                Text(stringResource(R.string.eq_import_file), fontSize = 12.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Target Curve Selector
+        Text(
+            stringResource(R.string.settings_target_curve),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+            OutlinedButton(
+                onClick = { showTargetMenu = !showTargetMenu },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(selectedTarget.label)
+            }
+
+            // Target dropdown menu (simplified - could use DropdownMenu)
+            if (showTargetMenu) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(top = 40.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                            .padding(8.dp)
+                    ) {
+                        availableTargets.forEach { target ->
+                            TextButton(
+                                onClick = {
+                                    viewModel.selectTarget(target.id)
+                                    showTargetMenu = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(target.label)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Band Count Selector
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    stringResource(R.string.eq_number_of_bands),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${bandCount.toInt()}",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Slider(
+                value = bandCount,
+                onValueChange = { bandCount = it },
+                valueRange = 3f..31f,
+                steps = 27,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                stringResource(R.string.eq_3_31_bands_more_bands_more_precise_but_harder_to),
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+        // Error message
+        if (!error.isNullOrEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .background(
+                        MaterialTheme.colorScheme.errorContainer,
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(12.dp)
+            ) {
+                Text(
+                    error!!,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        // Success message
+        if (calculationAttempted && error.isNullOrEmpty() && currentBands.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .background(
+                        MaterialTheme.colorScheme.tertiaryContainer,
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(12.dp)
+            ) {
+                Text(
+                    pluralStringResource(R.plurals.eq_calibration_done, currentBands.size, currentBands.size),
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Action Buttons
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(stringResource(R.string.action_cancel))
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            OutlinedButton(
+                onClick = {
+                    // Clear and reset
+                    measurementData = ""
+                    bandCount = 10f
+                    calculationAttempted = false
+                    viewModel.clearError()
+                },
+                modifier = Modifier.weight(1f),
+                enabled = !isCalculating
+            ) {
+                Text(stringResource(R.string.eq_clear))
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            OutlinedButton(
+                onClick = {
+                    calculationAttempted = true
+                    viewModel.setBandCount(bandCount.toInt())
+                    // When the user gave the upload a name, persist it as a
+                    // first-class entry so it appears under the "Uploaded"
+                    // rig chip on the next browse. Anonymous uploads stay
+                    // transient (one-shot calibration only).
+                    if (headphoneName.isNotBlank()) {
+                        viewModel.addUploadedMeasurement(headphoneName, measurementData)
+                    }
+                    viewModel.calculateAutoEq(measurementData)
+                },
+                modifier = Modifier.weight(1.5f),
+                enabled = measurementData.isNotEmpty() && !isCalculating
+            ) {
+                if (isCalculating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.CloudUpload,
+                        contentDescription = null,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+                Text(if (isCalculating) stringResource(R.string.eq_calculating) else stringResource(R.string.eq_calculate))
+            }
+        }
+
+        // Close button when complete
+        if (calculationAttempted && error.isNullOrEmpty() && currentBands.isNotEmpty()) {
+            OutlinedButton(
+                onClick = {
+                    onCalibrationComplete()
+                    onDismiss()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 16.dp)
+            ) {
+                Text(stringResource(R.string.eq_apply_eq_close))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}

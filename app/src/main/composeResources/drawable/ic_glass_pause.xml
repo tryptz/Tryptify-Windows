@@ -1,0 +1,25 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Pause: two bars with a 1.1 corner radius. Stadium ends read as too round
+         beside the play triangle, so these stay rectangles that are merely softened.
+
+         Rounding is the renderer's job, not the path's. A polygon with radius-r corners
+         is that polygon inset by r, filled and stroked at width 2r with round joins, so
+         the corners come out exact and each bar is four nodes rather than a dozen
+         hand-placed Bezier controls. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineJoin="round"
+        android:pathData="M7.7,5.6 L9.3,5.6 L9.3,18.4 L7.7,18.4 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineJoin="round"
+        android:pathData="M14.7,5.6 L16.3,5.6 L16.3,18.4 L14.7,18.4 Z" />
+</vector>

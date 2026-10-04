@@ -1,0 +1,1058 @@
+package tf.monochrome.desktop.ui.mixer
+
+import tf.monochrome.desktop.ui.navigation.popBackStackSafe
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.SettingsBackupRestore
+import androidx.compose.material.icons.filled.SpatialAudio
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.dsp.model.BusConfig
+import tf.monochrome.desktop.audio.dsp.model.BusLevels
+import tf.monochrome.desktop.audio.dsp.model.MixPreset
+import tf.monochrome.desktop.ui.components.bounceClick
+import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.player.AlbumColors
+import tf.monochrome.desktop.ui.player.DynamicAlbumGlow
+import tf.monochrome.desktop.ui.player.PlayerBlurredArtBackground
+import tf.monochrome.desktop.ui.player.PlayerDesignTokens
+import tf.monochrome.desktop.ui.player.PlayerViewModel
+import tf.monochrome.desktop.ui.player.dithered
+import tf.monochrome.desktop.ui.player.dynamicPlayerBackground
+import tf.monochrome.desktop.ui.player.rememberAlbumColors
+import tf.monochrome.desktop.ui.theme.ColorBlend
+import tf.monochrome.desktop.ui.theme.MonoDimens
+import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.R
+
+/** Curated per-bus channel colours (master keeps the album-derived primary).
+ *  Replaces the muted theme `secondary`, which rendered bus strips as washed
+ *  grey ghosts against the dynamic background. */
+private val BusAccentPalette = listOf(
+    Color(0xFF6EA8FF), // blue
+    Color(0xFF49E0B0), // teal
+    Color(0xFFB98CFF), // violet
+    Color(0xFFFF8A6B), // coral
+    Color(0xFFFFC857), // amber
+)
+
+/**
+ * Dynamic per-bus accent derived from the current player/theme color [base]:
+ * each channel is the base hue rotated by a fixed step, so the strips track
+ * the album-dynamic color while staying distinguishable. Falls back to the
+ * curated palette when [base] is essentially greyscale (e.g. the Monochrome
+ * theme with album colors off), where there is no hue to vary.
+ */
+private fun dynamicBusColor(base: Color, index: Int): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(base.toArgb(), hsv)
+    if (hsv[1] < 0.12f) return BusAccentPalette[index % BusAccentPalette.size]
+    hsv[0] = (hsv[0] + 24f + index * 34f) % 360f
+    hsv[1] = hsv[1].coerceIn(0.50f, 0.95f)
+    hsv[2] = hsv[2].coerceIn(0.62f, 0.92f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+private fun busAccent(dynamic: Boolean, base: Color, index: Int): Color =
+    if (dynamic) dynamicBusColor(base, index)
+    else BusAccentPalette[index % BusAccentPalette.size]
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MixerScreen(
+    navController: NavController,
+    viewModel: MixerViewModel,
+    /**
+     * Only for what is playing — the cover the backdrop blurs, the palette it
+     * darkens with, and the two settings that govern both. The console itself
+     * is driven entirely by [viewModel].
+     */
+    playerViewModel: PlayerViewModel
+) {
+    // Frame-synced meter/tap polling: one native read per display frame, so
+    // the VU meters and FX visuals update at the panel's native refresh rate
+    // (120 Hz where the device permits) and stop while the mixer is off
+    // screen. Replaces the old fixed 16 ms ViewModel loop that capped
+    // everything at 60 Hz.
+    LaunchedEffect(Unit) {
+        while (true) {
+            withFrameNanos { }
+            viewModel.pollTick()
+        }
+    }
+
+    val enabled by viewModel.enabled.collectAsStateWithLifecycle()
+    val buses by viewModel.buses.collectAsStateWithLifecycle()
+    val selectedBusIndex by viewModel.selectedBusIndex.collectAsStateWithLifecycle()
+    val spreadChannels by viewModel.spreadChannels.collectAsStateWithLifecycle()
+    val showPluginPicker by viewModel.showPluginPicker.collectAsStateWithLifecycle()
+    val editingPlugin by viewModel.editingPlugin.collectAsStateWithLifecycle()
+    val presets by viewModel.presets.collectAsStateWithLifecycle()
+    val currentPresetName by viewModel.currentPresetName.collectAsStateWithLifecycle()
+    val channelDynamicColor by viewModel.channelDynamicColor.collectAsStateWithLifecycle()
+
+    val selectedBus = buses.getOrNull(selectedBusIndex)
+    val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val colorScheme = MaterialTheme.colorScheme
+    val accent = colorScheme.primary
+    val headerShape = RoundedCornerShape(
+        bottomStart = PlayerDesignTokens.GlassCornerLarge,
+        bottomEnd = PlayerDesignTokens.GlassCornerLarge
+    )
+
+    var showInsertRack by remember { mutableStateOf(false) }
+    var showSpatialMap by remember { mutableStateOf(false) }
+    val spatialPlacement by viewModel.spatialPlacement.collectAsStateWithLifecycle()
+    // The detector measures only while the map is up.
+    LaunchedEffect(showSpatialMap) {
+        if (showSpatialMap) viewModel.openSpatialMap() else viewModel.closeSpatialMap()
+    }
+    androidx.activity.compose.BackHandler(enabled = showSpatialMap) { showSpatialMap = false }
+    var showResetConfirm by remember { mutableStateOf(false) }
+
+    // ── The backdrop the console's glass stands on ──────────────────────
+    // The same blurred, stretched album art the player shows, behind the same
+    // Appearance switch: a mixer full of glass with nothing but a flat wash
+    // behind it has nothing to be glass *of*.
+    val currentTrack by playerViewModel.currentTrack.collectAsStateWithLifecycle()
+    val blurredBackground by playerViewModel.playerBlurredBackground.collectAsStateWithLifecycle()
+    val dynamicColors by playerViewModel.dynamicColors.collectAsStateWithLifecycle()
+    val playerDynamicColor by playerViewModel.playerDynamicColor.collectAsStateWithLifecycle()
+    // The player's own rule for whether artwork is allowed to colour anything:
+    // both the master switch and the player-specific one. With either off the
+    // scrim over the art takes the theme accent, like the rest of this screen.
+    val artColors = if (dynamicColors && playerDynamicColor) {
+        rememberAlbumColors(currentTrack?.coverUrl)
+    } else {
+        AlbumColors(dominant = accent, vibrant = accent)
+    }
+    // The cover dissolves between tracks over the Color transition length, so
+    // the mixer's backdrop changes track at the speed the player's does.
+    val colorTransitionMs by playerViewModel.colorTransitionMs.collectAsStateWithLifecycle()
+    val colorBlendMs = tf.monochrome.desktop.ui.theme.motionMillis(
+        ColorBlend.millisFor(colorTransitionMs)
+    )
+    val blurBgAlpha by animateFloatAsState(
+        targetValue = if (blurredBackground) 1f else 0f,
+        animationSpec = tween(durationMillis = 400),
+        label = "mixerBlurredBg"
+    )
+    // What the console's glass blurs. The backdrop below is marked as the
+    // source and everything else on this screen is a SIBLING above it — a haze
+    // effect cannot sample a layer it is drawn inside, and one that tries
+    // paints the source's flat colour instead of a blur.
+    val mixerHaze = rememberHazeState()
+
+    // ── Mixer ⇆ DSP-canvas drag-to-reveal transition ────────────────────
+    // progress 0 = mixer fully shown, 1 = canvas fully shown. The two pages
+    // are stacked as a filmstrip and translated by `progress`; a header-only
+    // vertical drag writes `progress` synchronously (zero-lag tracking) and on
+    // release it settles to 0/1 by fling velocity (else position). `progress`
+    // is read ONLY inside graphicsLayer{} (draw phase) and derivedStateOf, so
+    // sliding never recomposes the page content.
+    val scope = rememberCoroutineScope()
+    var progress by remember { mutableFloatStateOf(0f) }
+    var heightPx by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+    val settleSpec = remember {
+        spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+    }
+    val animateProgressTo: (Float, Float) -> Unit = { target, initialVel ->
+        settleJob?.cancel()
+        settleJob = scope.launch {
+            // Coerce the animated value: a fast fling into the critically-damped
+            // spring can overshoot the endpoint, which would briefly expose a
+            // background gap at the top/bottom edge.
+            animate(progress, target, initialVel, settleSpec) { value, _ -> progress = value.coerceIn(0f, 1f) }
+        }
+    }
+    val dragState = rememberDraggableState { delta ->
+        if (heightPx > 0f) progress = (progress + delta / heightPx).coerceIn(0f, 1f)
+    }
+    val onDragStarted: suspend CoroutineScope.(Offset) -> Unit = {
+        settleJob?.cancel()
+        dragging = true
+    }
+    val onDragStopped: suspend CoroutineScope.(Float) -> Unit = { velocity ->
+        val vNorm = if (heightPx > 0f) velocity / heightPx else 0f
+        val target = when {
+            vNorm > 0.8f -> 1f           // flick down → canvas
+            vNorm < -0.8f -> 0f          // flick up → mixer
+            progress > 0.5f -> 1f        // dragged past halfway → canvas
+            else -> 0f
+        }
+        // Only carry velocity that agrees with the target, so a gentle
+        // sub-threshold flick the "wrong" way doesn't lurch before settling.
+        val settleVel = if ((target == 1f) == (vNorm > 0f)) vNorm else 0f
+        dragging = false
+        animateProgressTo(target, settleVel)
+    }
+    // Coarse, boundary-only flags (derivedStateOf recomposes only when the bool
+    // flips). `|| dragging` keeps BOTH pages composed for the whole gesture, so
+    // the page that owns the active drag handle is never disposed mid-drag
+    // (which would cancel its scope and skip the settle).
+    val composeCanvas by remember { derivedStateOf { progress > 0.0001f || dragging } }
+    val composeMixer by remember { derivedStateOf { progress < 0.9999f || dragging } }
+
+    // ── Preset import / export (SAF document pickers) ───────────────────
+    val context = LocalContext.current
+    var pendingExport by remember { mutableStateOf<MixPreset?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val preset = pendingExport
+        pendingExport = null
+        if (uri != null && preset != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(viewModel.exportPayload(preset).toByteArray())
+                }
+                Toast.makeText(context, context.getString(R.string.mixer_exported, preset.name), Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(context, context.getString(R.string.mixer_export_failed, it.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                val text = context.contentResolver.openInputStream(uri)
+                    ?.bufferedReader()?.use { it.readText() }
+                if (text.isNullOrBlank()) error("Empty file")
+                viewModel.importPreset(text) { ok ->
+                    Toast.makeText(
+                        context,
+                        context.getString(if (ok) R.string.mixer_preset_imported else R.string.mixer_import_invalid),
+                        if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.onFailure {
+                Toast.makeText(context, context.getString(R.string.mixer_import_failed, it.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { heightPx = it.height.toFloat() }
+    ) {
+        // The whole backdrop — wash, artwork and glow — as one haze source, so a
+        // strip blurs all three together instead of one of them.
+        Box(Modifier.matchParentSize().hazeSource(mixerHaze)) {
+            // Background on its own node so the dither layer wraps just the
+            // gradient, not the whole screen's content.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .dithered()
+                    .background(dynamicPlayerBackground(accent)),
+            )
+            if (blurBgAlpha > 0.001f) {
+                PlayerBlurredArtBackground(
+                    coverUrl = currentTrack?.coverUrl,
+                    albumColors = artColors,
+                    blendMillis = colorBlendMs,
+                    alpha = { blurBgAlpha },
+                )
+            }
+            DynamicAlbumGlow(accent)
+        }
+        if (composeCanvas) {
+            // ── DSP Canvas View (slides down from the top) ───────────────
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationY = (progress - 1f) * heightPx }
+            ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(elevation = 18.dp, shape = headerShape, clip = false)
+                        .background(colorScheme.surface.copy(alpha = 0.90f), headerShape)
+                        .liquidGlass(
+                            shape = headerShape,
+                            tintAlpha = PlayerDesignTokens.GlassTintMedium,
+                            borderAlpha = PlayerDesignTokens.GlassTintSoft
+                        )
+                        .padding(top = statusBarPadding)
+                        // Swipe up here to slide the mixer back over the canvas.
+                        .draggable(
+                            state = dragState,
+                            orientation = Orientation.Vertical,
+                            onDragStarted = onDragStarted,
+                            onDragStopped = onDragStopped
+                        )
+                        .padding(horizontal = MonoDimens.spacingMd, vertical = MonoDimens.spacingSm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { animateProgressTo(0f, 0f) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.settings_back), tint = colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                        }
+                        Text(stringResource(R.string.mixer_fx_chain), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = colorScheme.onSurface)
+                    }
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    val fxTap by viewModel.fxTap.collectAsStateWithLifecycle()
+                    tf.monochrome.desktop.ui.mixer.fxchain.FxChainPage(
+                        buses = buses,
+                        selectedBusIndex = selectedBusIndex,
+                        enabled = enabled,
+                        fxTap = fxTap,
+                        busAccent = { idx ->
+                            if (buses.getOrNull(idx)?.isMaster == true) accent
+                            else busAccent(channelDynamicColor, accent, idx)
+                        },
+                        onSelectBus = { viewModel.selectBus(it) },
+                        onAddEffect = { viewModel.showAddPlugin() },
+                        onBypass = { b, s -> viewModel.togglePluginBypass(b, s) },
+                        onRemove = { b, s -> viewModel.removePlugin(b, s) },
+                        onDryWet = { b, s, dw -> viewModel.setPluginDryWet(b, s, dw) },
+                        onParam = { b, s, p, v -> viewModel.setParameter(b, s, p, v) },
+                        onOversample = { b, s, f -> viewModel.setPluginOversampling(b, s, f) },
+                        onPreset = { b, s, p -> viewModel.applyFxPreset(b, s, p) },
+                        onMove = { b, from, to -> viewModel.movePlugin(b, from, to) },
+                    )
+                }
+            }
+            }
+        }
+        if (composeMixer) {
+            // ── FL Studio Console View ──────────────────────────────────
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationY = progress * heightPx }
+            ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+
+                // ── Header (swipe down anywhere to reveal the DSP canvas) ───
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(elevation = 22.dp, shape = headerShape, clip = false)
+                        .background(colorScheme.surface.copy(alpha = 0.90f), headerShape)
+                        .liquidGlass(
+                            shape = headerShape,
+                            tintAlpha = PlayerDesignTokens.GlassTintMedium,
+                            borderAlpha = PlayerDesignTokens.GlassTintSoft
+                        )
+                        // Inset first so the drag area excludes the status-bar
+                        // strip and doesn't fight the system notification shade.
+                        .padding(top = statusBarPadding)
+                        // Drag down here to slide the DSP canvas in from the top.
+                        .draggable(
+                            state = dragState,
+                            orientation = Orientation.Vertical,
+                            onDragStarted = onDragStarted,
+                            onDragStopped = onDragStopped
+                        )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingXs),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        NavIconButton(
+                            icon = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.settings_back),
+                            onClick = { navController.popBackStackSafe() }
+                        )
+
+                        Text(
+                            text = stringResource(R.string.mixer_title),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 2.dp)
+                        )
+
+                        Box(modifier = Modifier.weight(1f))
+
+                        // The spatial map: lit while it is open or placing.
+                        NavIconButton(
+                            icon = Icons.Default.SpatialAudio,
+                            contentDescription = stringResource(R.string.mixer_spatial_map),
+                            active = showSpatialMap || spatialPlacement.enabled,
+                            accent = accent,
+                            onClick = { showSpatialMap = !showSpatialMap }
+                        )
+                        NavIconButton(
+                            icon = Icons.Default.Tune,
+                            contentDescription = stringResource(R.string.mixer_insert_rack),
+                            active = showInsertRack,
+                            accent = accent,
+                            onClick = { showInsertRack = !showInsertRack }
+                        )
+                        NavIconButton(
+                            icon = Icons.Default.Palette,
+                            contentDescription = if (channelDynamicColor) stringResource(R.string.mixer_channel_color_dynamic) else stringResource(R.string.mixer_channel_color_palette),
+                            active = channelDynamicColor,
+                            accent = accent,
+                            onClick = { viewModel.setChannelDynamicColor(!channelDynamicColor) }
+                        )
+                        NavIconButton(
+                            icon = Icons.Default.AccountTree,
+                            contentDescription = stringResource(R.string.mixer_fx_chain),
+                            onClick = { animateProgressTo(1f, 0f) }
+                        )
+                        NavIconButton(
+                            icon = Icons.Default.SettingsBackupRestore,
+                            contentDescription = stringResource(R.string.mixer_reset_to_defaults),
+                            onClick = { showResetConfirm = true }
+                        )
+
+                        DspPowerToggle(
+                            enabled = enabled,
+                            accent = accent,
+                            onToggle = { viewModel.setEnabled(!enabled) }
+                        )
+                    }
+
+                    // Preset bar
+                    tf.monochrome.desktop.devedit.DevEditable("preset_bar", Modifier.fillMaxWidth()) {
+                        PresetBar(
+                            currentPresetName = currentPresetName,
+                            presets = presets,
+                            onSave = { viewModel.savePreset(it) },
+                            onLoad = { viewModel.loadPreset(it) },
+                            onDelete = { viewModel.deletePreset(it) },
+                            onExport = { preset ->
+                                pendingExport = preset
+                                val safeName = preset.name
+                                    .replace(Regex("[^A-Za-z0-9 _-]"), "_")
+                                    .ifBlank { "preset" }
+                                exportLauncher.launch("$safeName.json")
+                            },
+                            onImport = { importLauncher.launch("application/json") }
+                        )
+                    }
+
+                    // Pull-down handle — tap or swipe down to open the DSP canvas
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { animateProgressTo(1f, 0f) }
+                            .padding(top = 2.dp, bottom = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .background(colorScheme.onSurfaceVariant.copy(alpha = 0.40f))
+                        )
+                    }
+                }
+
+                // ── Channel strips + insert rack ────────────────────────
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxSize()) {
+
+                    // Horizontal-scrolling channel strips. Hoisted into its own
+                    // composable that collects the 60Hz busLevels flow LOCALLY,
+                    // so meter frames recompose only the strips — never the
+                    // header, the DSP-canvas page, or the transition gating.
+                    ChannelStripRow(
+                        viewModel = viewModel,
+                        buses = buses,
+                        selectedBusIndex = selectedBusIndex,
+                        accent = accent,
+                        channelDynamicColor = channelDynamicColor,
+                        hazeState = mixerHaze,
+                        // First tap selects (so the route arrows and knobs act
+                        // for that bus); a tap on the bus already selected —
+                        // which a double tap is — opens its insert rack. Not a
+                        // double-tap detector: that holds every single tap back
+                        // ~300 ms to rule out a second, and selecting would lag.
+                        onSelectBus = { index ->
+                            if (index == selectedBusIndex) {
+                                showInsertRack = true
+                            } else {
+                                viewModel.selectBus(index)
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    // Insert rack — right panel
+                    AnimatedVisibility(
+                        visible = showInsertRack,
+                        enter = slideInHorizontally(initialOffsetX = { it }),
+                        exit = slideOutHorizontally(targetOffsetX = { it })
+                    ) {
+                        tf.monochrome.desktop.devedit.DevEditable("insert_rack", Modifier) {
+                            InsertRack(
+                                bus = selectedBus,
+                                busIndex = selectedBusIndex,
+                                editingPlugin = editingPlugin,
+                                allBuses = buses,
+                                onSlotTap = { slotIdx -> viewModel.editPlugin(selectedBusIndex, slotIdx) },
+                                onAddPlugin = { viewModel.showAddPlugin() },
+                                onPluginReplace = { busIdx, slotIdx -> viewModel.showReplacePlugin(busIdx, slotIdx) },
+                                onPluginBypass = { busIdx, slotIdx -> viewModel.togglePluginBypass(busIdx, slotIdx) },
+                                onPluginRemove = { busIdx, slotIdx -> viewModel.removePlugin(busIdx, slotIdx) },
+                                onParameterChange = { busIdx, slotIdx, paramIdx, value ->
+                                    viewModel.setParameter(busIdx, slotIdx, paramIdx, value)
+                                },
+                                onApplyPreset = { busIdx, slotIdx, preset ->
+                                    viewModel.applyFxPreset(busIdx, slotIdx, preset)
+                                },
+                                onPluginDryWet = { busIdx, slotIdx, dw ->
+                                    viewModel.setPluginDryWet(busIdx, slotIdx, dw)
+                                },
+                                onBusInputToggle = { busIdx, enabled ->
+                                    viewModel.setBusInputEnabled(busIdx, enabled)
+                                },
+                                onSendLevel = { src, dst, level -> viewModel.setSendLevel(src, dst, level) },
+                                spreadChannels = spreadChannels,
+                                onSpreadChannelsChange = { viewModel.setSpreadChannels(it) },
+                                onDismissEditor = { viewModel.dismissPluginEditor() },
+                                onClose = { showInsertRack = false }
+                            )
+                        }
+                    }
+                }
+
+                // ── Spatial map, over the strips ────────────────────────
+                // In this window, not a dialog: glass cannot sample across
+                // windows (docs/ui-invariants.md). Qualified: the enclosing
+                // Column's scoped overload would otherwise be picked.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showSpatialMap,
+                    enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.96f),
+                    exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(targetScale = 0.96f),
+                ) {
+                    val channelState by viewModel.channelState.collectAsStateWithLifecycle()
+                    val stereoFold by viewModel.stereoFoldEnabled.collectAsStateWithLifecycle()
+                    val atmosObjects by viewModel.atmosRenderingObjects.collectAsStateWithLifecycle()
+                    tf.monochrome.desktop.ui.mixer.spatial.SpatialMapPanel(
+                        placement = spatialPlacement,
+                        channelState = channelState,
+                        stereoFoldEnabled = stereoFold,
+                        atmosRenderingObjects = atmosObjects,
+                        accent = accent,
+                        onEnabledChange = { viewModel.setSpatialEnabled(it) },
+                        onBinauralChange = { viewModel.setSpatialBinaural(it) },
+                        onMove = { count, index, p -> viewModel.moveChannel(count, index, p) },
+                        onResetLayout = { viewModel.resetSpatialLayout(it) },
+                        headphoneTargets = viewModel.headphoneTargets,
+                        onTargetChange = { viewModel.setSpatialTarget(it) },
+                        onClose = { showSpatialMap = false },
+                        modifier = Modifier.fillMaxSize().padding(MonoDimens.spacingSm),
+                        hazeState = mixerHaze,
+                    )
+                }
+                }
+
+                // ── The player's timeline, under the strips ─────────────
+                MixerTimeline(playerViewModel = playerViewModel, accent = accent)
+            }
+            }
+        }
+    }
+
+    // ── Plugin picker dialog ────────────────────────────────────────────
+    if (showPluginPicker) {
+        PluginPickerDialog(
+            onDismiss = { viewModel.dismissPluginPicker() },
+            onSelect = { viewModel.addPlugin(it) }
+        )
+    }
+
+    // Confirmed rather than immediate: this throws away every plugin on every
+    // bus, and a chain someone spent an evening building is not something to
+    // lose to a mis-tap next to the FX Chain button.
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text(stringResource(R.string.mixer_reset_title)) },
+            text = {
+                Text(
+                    stringResource(R.string.mixer_reset_body)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.resetToDefaults()
+                    showResetConfirm = false
+                }) { Text(stringResource(R.string.action_reset)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text(stringResource(R.string.action_cancel)) }
+            }
+        )
+    }
+
+}
+
+/** Consistent circular glass action button for the mixer header. */
+@Composable
+private fun NavIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    accent: Color = MaterialTheme.colorScheme.primary
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        modifier = modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(
+                if (active) accent.copy(alpha = 0.20f)
+                else colors.surfaceContainerHighest.copy(alpha = 0.40f)
+            )
+            .border(
+                width = 1.dp,
+                color = if (active) accent.copy(alpha = 0.55f) else colors.outline.copy(alpha = 0.14f),
+                shape = CircleShape
+            )
+            .bounceClick(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (active) accent else colors.onSurfaceVariant,
+            modifier = Modifier.size(19.dp)
+        )
+    }
+}
+
+/** Polished pill replacing the stock DSP on/off switch. */
+@Composable
+private fun DspPowerToggle(
+    enabled: Boolean,
+    accent: Color,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = MaterialTheme.colorScheme
+    val onAccent = if (accent.luminance() > 0.55f) Color.Black else Color.White
+    val contentColor = if (enabled) onAccent else colors.onSurfaceVariant
+    Row(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(if (enabled) accent else colors.surfaceContainerHighest.copy(alpha = 0.50f))
+            .border(
+                width = 1.dp,
+                color = if (enabled) Color.White.copy(alpha = 0.25f) else colors.outline.copy(alpha = 0.18f),
+                shape = CircleShape
+            )
+            .bounceClick(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.PowerSettingsNew,
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.size(15.dp)
+        )
+        Text(
+            text = if (enabled) "ON" else "OFF",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = contentColor
+        )
+    }
+}
+
+/**
+ * The row of channel strips: buses 1 to 16 in number order, the master last,
+ * then a + tile that adds a bus while there is room for one. The 60 Hz
+ * `busLevels` meter flow is collected HERE rather than in [MixerScreen] so a
+ * new meter frame recomposes only the strips — the header, the DSP-canvas
+ * page, and the drag-transition gating all stay out of the per-frame path
+ * (mirrors the local `audioAmplitude` pattern).
+ *
+ * Every callback is by bus index, not by position in the row: the master sits
+ * at index 4 but is drawn last, so the two differ for every bus past 4.
+ * Long-press on bus 5 or later asks to remove it.
+ */
+@Composable
+private fun ChannelStripRow(
+    viewModel: MixerViewModel,
+    buses: List<BusConfig>,
+    selectedBusIndex: Int,
+    accent: Color,
+    channelDynamicColor: Boolean,
+    /** The screen's backdrop, for the strips to frost. */
+    hazeState: HazeState,
+    onSelectBus: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val busLevels by viewModel.busLevels.collectAsStateWithLifecycle()
+    val ordered = remember(buses) { BusConfig.displayOrder(buses) }
+    val canAdd = BusConfig.mixBusCount(buses) < BusConfig.MAX_MIX_BUSES
+    var pendingRemoval by remember { mutableStateOf<BusConfig?>(null) }
+    // The + tile takes the strips' measured height, so it lines up with them.
+    val density = LocalDensity.current
+    var stripHeight by remember { mutableStateOf(0.dp) }
+    val listState = rememberLazyListState()
+    val context = LocalContext.current
+    // The bus the route arrows act for: the selected one, unless that's the master.
+    val source = buses.firstOrNull { it.index == selectedBusIndex }?.takeIf { !it.isMaster }
+    // Buses the source may NOT route to (they already feed it), worked out
+    // once per routing change rather than per meter frame.
+    val loopTargets = remember(buses, selectedBusIndex) {
+        if (source == null) emptySet()
+        else buses.map { it.index }.filter { it != selectedBusIndex && viewModel.routeWouldLoop(it) }.toSet()
+    }
+    val accentFor = { b: BusConfig -> if (b.isMaster) accent else busAccent(channelDynamicColor, accent, b.index) }
+    Box(modifier = modifier.fillMaxHeight()) {
+    LazyRow(
+        state = listState,
+        modifier = Modifier.fillMaxHeight(),
+        contentPadding = PaddingValues(horizontal = MonoDimens.spacingMd, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(MonoDimens.spacingSm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items(ordered, key = { it.index }) { bus ->
+            val index = bus.index
+            val route = if (source == null || index == source.index) null else {
+                val level = source.sends[index] ?: 0f
+                StripRoute(routed = level > 0f, level = level, allowed = level > 0f || index !in loopTargets)
+            }
+            tf.monochrome.desktop.devedit.DevEditable("channel_strip_$index", Modifier) {
+                FLChannelStrip(
+                    modifier = Modifier.onSizeChanged {
+                        if (!bus.isMaster) stripHeight = with(density) { it.height.toDp() }
+                    },
+                    bus = bus,
+                    isSelected = index == selectedBusIndex,
+                    levels = busLevels.getOrNull(index) ?: BusLevels(),
+                    accentColor = if (bus.isMaster) accent else busAccent(channelDynamicColor, accent, index),
+                    hazeState = hazeState,
+                    onSelect = { onSelectBus(index) },
+                    onLongPress = if (bus.isRemovable) ({ pendingRemoval = bus }) else null,
+                    onGainChange = { viewModel.setBusGain(index, it) },
+                    onPanChange = { viewModel.setBusPan(index, it) },
+                    onToggleMute = { viewModel.toggleMute(index) },
+                    onToggleSolo = { viewModel.toggleSolo(index) },
+                    route = route,
+                    isRouteSource = source != null && index == source.index,
+                    onSendLevel = { level -> source?.let { viewModel.setSendLevel(it.index, index, level) } },
+                    onRouteTap = {
+                        if (!viewModel.toggleRouteTo(index)) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.mixer_route_would_loop, bus.name, source?.name.orEmpty()),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                )
+            }
+        }
+        if (canAdd) {
+            item(key = "add_bus") {
+                AddBusTile(
+                    height = if (stripHeight > 0.dp) stripHeight else 320.dp,
+                    accent = accent,
+                    onClick = {
+                        viewModel.addBus()
+                    }
+                )
+            }
+        }
+    }
+
+    // ── Routing cables, FL-style ────────────────────────────────────────
+    // One cable per bus-to-bus route, hanging from the foot of whatever sits
+    // in the sender's route slot to the foot of the receiver's, and sagging
+    // below the strips: out of the selected bus's ↓, into each send knob.
+    // Every bus's route into the master is the default and would be a fan of
+    // cables saying nothing, so only the selected bus's is drawn. Cables
+    // touching the selected bus are bright, the rest dimmed, and a cable is as
+    // strong as its send level. It shades from the sender's colour to the
+    // receiver's. Where an end has no ↓ or knob to plug into (a dimmed cable
+    // between two other buses lands on their ▲ pills) it gets an open jack at
+    // the sender and a filled plug at the receiver, so the direction reads.
+    //
+    // Anchored to each slot's BOTTOM edge, not its centre, or a plug would sit
+    // on the control. The slot is a 48dp touch box above the strip's 8dp
+    // bottom padding, so a control of height h has its foot at
+    // 8 + 24 - h / 2 above the strip's bottom: 22dp for the ▲ pill, 18dp for
+    // the knob, 20dp for the ↓'s tip.
+    //
+    // Clipped to the row, and the sag limited to the room under the strips:
+    // the insert rack opens beside this row, and an unclipped cable to an
+    // off-screen bus was drawn straight across it.
+    //
+    // All of it is read in the draw phase, list scroll included, so scrolling
+    // redraws the cables without recomposing a strip. The path and strokes
+    // are reused across frames rather than allocated per cable per frame.
+    fun footPx(controlHeight: Dp) = with(density) { (8.dp + 24.dp - controlHeight / 2).toPx() }
+    val pillFootPx = footPx(RouteArrowHeight)
+    val knobFootPx = footPx(SendKnobSize)
+    val sourceFootPx = footPx(RouteSourceArrowSize)
+    val stroke = with(density) { 2.5.dp.toPx() }
+    val maxSagPx = with(density) { 70.dp.toPx() }
+    val minSagPx = with(density) { 14.dp.toPx() }
+    val spacingPx = with(density) { MonoDimens.spacingSm.toPx() }
+    val stripHeightPx = with(density) { stripHeight.toPx() }
+    val displayPos = remember(ordered) { ordered.withIndex().associate { (pos, b) -> b.index to pos } }
+    val cablePath = remember { Path() }
+    val shadowStroke = remember(stroke) { Stroke(width = stroke * 2.2f, cap = StrokeCap.Round) }
+    val cableStroke = remember(stroke) { Stroke(width = stroke, cap = StrokeCap.Round) }
+    val sheenStroke = remember(stroke) { Stroke(width = stroke * 0.35f, cap = StrokeCap.Round) }
+    val jackStroke = remember(stroke) { Stroke(width = stroke * 0.8f) }
+    Spacer(
+        modifier = Modifier
+            .matchParentSize()
+            .clipToBounds()
+            .drawBehind {
+                val info = listState.layoutInfo
+                val visible = info.visibleItemsInfo.filter { it.key is Int }
+                if (visible.isEmpty() || stripHeightPx <= 0f) return@drawBehind
+                // Strip centres by bus, off-screen ones extrapolated from the
+                // visible stride so their cables leave the edge the right way.
+                val first = visible.first()
+                val firstPos = displayPos[first.key as Int] ?: return@drawBehind
+                val stride = if (visible.size > 1) {
+                    val last = visible.last()
+                    val lastPos = displayPos[last.key as Int] ?: firstPos
+                    if (lastPos != firstPos) (last.offset - first.offset).toFloat() / (lastPos - firstPos)
+                    else first.size + spacingPx
+                } else first.size + spacingPx
+                val originX = -info.viewportStartOffset.toFloat()
+                fun centerX(busIndex: Int): Float? {
+                    val item = visible.firstOrNull { it.key == busIndex }
+                    if (item != null) return originX + item.offset + item.size / 2f
+                    val pos = displayPos[busIndex] ?: return null
+                    return originX + first.offset + (pos - firstPos) * stride + first.size / 2f
+                }
+                val stripBottom = (size.height + stripHeightPx) / 2f
+                // What the bus's route slot shows: the ↓, a knob, or a pill.
+                val sourceIndex = source?.index
+                fun isKnob(busIndex: Int) = (source?.sends?.get(busIndex) ?: 0f) > 0f
+                fun footY(busIndex: Int) = stripBottom - when {
+                    busIndex == sourceIndex -> sourceFootPx
+                    isKnob(busIndex) -> knobFootPx
+                    else -> pillFootPx
+                }
+                val plugRadius = stroke * 1.6f
+                for (bus in buses) {
+                    if (bus.isMaster) continue
+                    for ((dst, sendLevel) in bus.sends) {
+                        if (sendLevel <= 0f) continue
+                        if (dst == BusConfig.MASTER_INDEX && bus.index != selectedBusIndex) continue
+                        val x0 = centerX(bus.index) ?: continue
+                        val x1 = centerX(dst) ?: continue
+                        if ((x0 < 0f && x1 < 0f) || (x0 > size.width && x1 > size.width)) continue
+                        val level = sendLevel.coerceIn(0f, 1f)
+                        val y0 = footY(bus.index)
+                        val y1 = footY(dst)
+                        val low = maxOf(y0, y1)
+                        // Lowest the cable may hang and still show its under-stroke.
+                        val room = (size.height - low - stroke * 2f).coerceAtLeast(0f)
+                        // A cubic with both handles at +h dips to 0.75h, so the
+                        // handles go a third further than the dip we want.
+                        val dip = (kotlin.math.abs(x1 - x0) * 0.3f + minSagPx)
+                            .coerceAtMost(maxSagPx)
+                            .coerceAtMost(room)
+                        val handle = dip / 0.75f
+                        cablePath.reset()
+                        cablePath.moveTo(x0, y0)
+                        cablePath.cubicTo(x0, low + handle, x1, low + handle, x1, y1)
+                        val touchesSelected = bus.index == selectedBusIndex || dst == selectedBusIndex
+                        val alpha = (if (touchesSelected) 0.95f else 0.35f) * (0.45f + 0.55f * level)
+                        val from = accentFor(bus)
+                        val to = buses.firstOrNull { it.index == dst }?.let(accentFor) ?: from
+                        val brush = Brush.linearGradient(
+                            colors = listOf(from.copy(alpha = alpha), to.copy(alpha = alpha)),
+                            start = Offset(x0, y0),
+                            end = Offset(x1, y1),
+                        )
+                        // A dark under-stroke so a cable reads over glass and art,
+                        // the cable itself, then a thin sheen along its top so
+                        // it reads as a lead rather than a line.
+                        drawPath(cablePath, Color.Black.copy(alpha = alpha * 0.45f), style = shadowStroke)
+                        drawPath(cablePath, brush, style = cableStroke)
+                        translate(top = -stroke * 0.3f) {
+                            drawPath(cablePath, Color.White.copy(alpha = alpha * 0.35f), style = sheenStroke)
+                        }
+                        // Jack at a sender pill (open ring), plug at a receiver
+                        // pill. The ↓ and the knobs are their own ends.
+                        if (bus.index != sourceIndex) {
+                            drawCircle(Color.Black.copy(alpha = alpha * 0.45f), radius = plugRadius + stroke * 0.6f, center = Offset(x0, y0))
+                            drawCircle(from.copy(alpha = alpha), radius = plugRadius, center = Offset(x0, y0), style = jackStroke)
+                        }
+                        if (dst != sourceIndex && !isKnob(dst)) {
+                            drawCircle(Color.Black.copy(alpha = alpha * 0.45f), radius = plugRadius + stroke * 0.6f, center = Offset(x1, y1))
+                            drawCircle(to.copy(alpha = alpha), radius = plugRadius, center = Offset(x1, y1))
+                        }
+                    }
+                }
+            }
+    )
+    }
+
+    pendingRemoval?.let { bus ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = { Text(stringResource(R.string.mixer_remove_bus_title, bus.name)) },
+            text = {
+                Text(
+                    stringResource(R.string.mixer_remove_bus_body)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.removeBus(bus.index)
+                    pendingRemoval = null
+                }) { Text(stringResource(R.string.api_remove)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoval = null }) { Text(stringResource(R.string.action_cancel)) }
+            }
+        )
+    }
+}
+
+/** The empty slot after the last strip: tap to add a bus. */
+@Composable
+private fun AddBusTile(
+    height: Dp,
+    accent: Color,
+    onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(PlayerDesignTokens.GlassCornerSmall)
+    val addBusLabel = stringResource(R.string.mixer_add_bus)
+    Box(
+        modifier = Modifier
+            .width(60.dp)
+            .height(height)
+            .clip(shape)
+            .border(1.dp, colors.outline.copy(alpha = 0.30f), shape)
+            .bounceClick(onClick = onClick)
+            .semantics { contentDescription = addBusLabel },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(28.dp)
+            )
+            Text(
+                text = addBusLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
+            )
+        }
+    }
+}

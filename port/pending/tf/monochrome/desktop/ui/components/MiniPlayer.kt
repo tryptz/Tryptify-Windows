@@ -1,0 +1,483 @@
+package tf.monochrome.desktop.ui.components
+
+import android.os.Build
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.luminance
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import tf.monochrome.desktop.performance.LocalPerformanceProfile
+import tf.monochrome.desktop.R
+import tf.monochrome.desktop.domain.model.Track
+import tf.monochrome.desktop.ui.player.LocalPlayerGlass
+import tf.monochrome.desktop.ui.player.MANUAL_MORPH_MS
+import tf.monochrome.desktop.ui.player.MorphingCoverArt
+import tf.monochrome.desktop.ui.player.playerGlass
+import tf.monochrome.desktop.ui.player.LIVE_LENS_CHROME_BLUR_SHARE
+import tf.monochrome.desktop.ui.player.GlassBarShadow
+import tf.monochrome.desktop.ui.player.LIVE_LENS_GLASS
+import tf.monochrome.desktop.ui.player.liveGlassLens
+import tf.monochrome.desktop.ui.player.liveLensCompiles
+import tf.monochrome.desktop.ui.theme.glassTint
+import tf.monochrome.desktop.ui.theme.PressSpring
+import tf.monochrome.desktop.ui.theme.MonoDimens
+import kotlin.math.abs
+import tf.monochrome.desktop.ui.player.playerFrostTint
+import tf.monochrome.desktop.ui.player.BackdropArtFit
+import tf.monochrome.desktop.ui.player.LocalPlayerBackdrop
+import tf.monochrome.desktop.ui.player.PlayerBackdrop
+import tf.monochrome.desktop.ui.player.rememberBackdropArt
+import androidx.compose.ui.res.stringResource
+
+// Geometry shared between the punched holes and the tap-target overlay so they
+// stay aligned across DPI. The two controls are the rightmost fixed-size cells
+// of the content row; the slab punches its holes at the matching centres.
+private val MiniCorner = 16.dp
+private val MiniControlCell = 48.dp
+private val MiniGlassIcon = 26.dp
+private val MiniProgressHeight = 2.dp
+
+@Composable
+fun MiniPlayer(
+    track: Track?,
+    isPlaying: Boolean,
+    progressProvider: () -> Float,
+    onPlayPauseClick: () -> Unit,
+    onSkipNextClick: () -> Unit,
+    onSkipPreviousClick: () -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    hazeState: HazeState? = null,
+    // The bar's tint already crosses over at the blend length (it reads the
+    // album palette); the cover has to move with it or the two disagree for
+    // the length of every transition. See MorphingCoverArt.
+    blendMillis: Int = MANUAL_MORPH_MS,
+    userTrackChanges: Int = 0,
+    /**
+     * The glass tint, when the caller wants it to come from outside this bar's
+     * album colours. The nav host passes the tab bar's tint, computed outside
+     * DynamicColorScope, so the two bars are the same colour; the bar's text,
+     * progress and cover still follow the album.
+     */
+    glassTintColor: Color? = null,
+    /**
+     * The page colour under the live lens, from outside the album scope for the
+     * same reason as [glassTintColor]: inside it, `background` is the album's.
+     */
+    glassGround: Color? = null,
+) {
+    if (track == null) return
+
+    // The tunable player glass (AGSL) only exists where the shader really runs.
+    // Elsewhere, keep the old haze bar + Material icons — a punched slab with no
+    // shader would be an opaque block. That means asking
+    // rememberLiquidGlassAvailable(), not just the API level and the glass
+    // switch: "Remove liquid glass" turns the shader off too, and used to leave
+    // this bar a solid block of the accent, its text never contrast-checked
+    // against it and its accent progress line drawn invisibly on top.
+    val glass = LocalPlayerGlass.current
+    // The progress line is also the bar's top border. With it off the bar
+    // must close up, so the height it reserves goes to zero everywhere it is
+    // used — including the control-hole centring maths below, which would
+    // otherwise punch the play/skip holes 2dp above the icons they reveal.
+    val progressHeight = if (glass.miniProgressBar) MiniProgressHeight else 0.dp
+    val useGlass = tf.monochrome.desktop.ui.player.rememberLiquidGlassAvailable()
+
+    val swipeGestures = Modifier.pointerInput(Unit) {
+        var totalHorizontalDrag = 0f
+        var totalVerticalDrag = 0f
+        detectDragGestures(
+            onDragStart = {
+                totalHorizontalDrag = 0f
+                totalVerticalDrag = 0f
+            },
+            onDragEnd = {
+                if (abs(totalVerticalDrag) > abs(totalHorizontalDrag) && totalVerticalDrag < -50f) {
+                    // Swipe Up
+                    onClick()
+                } else if (abs(totalVerticalDrag) > abs(totalHorizontalDrag) && totalVerticalDrag > 50f) {
+                    // Swipe Down (Collapse logic, if any, could go here)
+                } else if (totalHorizontalDrag > 50f) {
+                    onSkipPreviousClick()
+                } else if (totalHorizontalDrag < -50f) {
+                    onSkipNextClick()
+                }
+            },
+            onDrag = { change, dragAmount ->
+                change.consume()
+                totalHorizontalDrag += dragAmount.x
+                totalVerticalDrag += dragAmount.y
+            }
+        )
+    }
+
+    if (!useGlass) {
+        // ── Legacy fallback (API < 33 or glass off): haze glass + Material icons ──
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .liquidGlass(
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(MiniCorner)
+                )
+                .clickable(interactionSource = null, indication = null, onClick = onClick)
+                .then(swipeGestures)
+        ) {
+            MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar) {
+                IconButton(onClick = onPlayPauseClick) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) stringResource(R.string.action_pause) else stringResource(R.string.action_play),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(onClick = onSkipNextClick) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = stringResource(R.string.action_skip_next),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    // ── Glass path (API 33+): one tunable player-glass slab with the play/skip
+    // icons punched out as see-through holes, and a smooth press-bulge under the
+    // pressed control — the same shader treatment as the player action dock. ──
+    val tint = glassTintColor ?: glassTint(glass.tintColor)
+    // The bar lenses the cover, the way the player's transport does. It has to
+    // do it differently, though: away from the player the artwork is not behind
+    // the bar — the app's own content is — and a 64dp strip of a cover stretched
+    // over the window would be about five pixels of thumbnail, which refraction
+    // could not move enough to see. BackdropArtFit.PANE fits the cover to the
+    // bar instead, so its colours sweep along the length of it.
+    //
+    // Not gated on the blurred-album-background setting the player's is. That
+    // setting says the artwork really is behind the glass, which is what makes
+    // the player's mapping truthful; here it is the bar's own material either
+    // way, and the cover in it is the cover it is already showing.
+    val backdropArt = rememberBackdropArt(track.coverUrl, enabled = true)
+    val barBackdrop = remember(backdropArt, tint) {
+        PlayerBackdrop(
+            dominant = tint,
+            secondary = tint,
+            art = backdropArt,
+            fit = BackdropArtFit.PANE,
+        )
+    }
+    val playPainter = painterResource(if (isPlaying) R.drawable.ic_glass_pause else R.drawable.ic_glass_play)
+    val skipPainter = painterResource(R.drawable.ic_glass_skip_next)
+
+    // Press-bulge, mirroring PlayerActionDock: swell the glass under whichever
+    // control is held; the bulge centre follows it. The dock's own spring, both
+    // ways, so the two slabs answer a press identically — see PressSpring.
+    val playSource = remember { MutableInteractionSource() }
+    val skipSource = remember { MutableInteractionSource() }
+    val playPressed by playSource.collectIsPressedAsState()
+    val skipPressed by skipSource.collectIsPressedAsState()
+    val anyPressed = playPressed || skipPressed
+    var lastControl by remember { mutableIntStateOf(1) }   // 0 = play, 1 = skip
+    LaunchedEffect(playPressed) { if (playPressed) lastControl = 0 }
+    LaunchedEffect(skipPressed) { if (skipPressed) lastControl = 1 }
+    val bulgeAmt by animateFloatAsState(
+        targetValue = if (anyPressed) 1f else 0f,
+        animationSpec = PressSpring,
+        label = "miniBulge",
+    )
+
+    // The bar itself is a button too — tapping anywhere but the two controls
+    // opens the player — and it was the one press on this surface that did
+    // nothing. It shares the slab with the controls, so it shares their dome:
+    // one bulge uniform, whichever of the three was pressed last.
+    val barPress = rememberGlassPress()
+
+    val density = LocalDensity.current
+    var barSize by remember { mutableStateOf(IntSize.Zero) }
+    val controlCenter = remember(barSize, lastControl, progressHeight) {
+        if (barSize.width == 0 || barSize.height == 0) {
+            Offset(0.85f, 0.5f)
+        } else with(density) {
+            val cell = MiniControlCell.toPx()
+            val pad = MonoDimens.spacingMd.toPx()
+            val cyPx = progressHeight.toPx() + MonoDimens.spacingSm.toPx() + cell / 2f
+            val cx = barSize.width - pad - (if (lastControl == 1) 0.5f else 1.5f) * cell
+            Offset((cx / barSize.width).coerceIn(0f, 1f), (cyPx / barSize.height).coerceIn(0f, 1f))
+        }
+    }
+
+    // One dome for the whole slab. A control press keeps its tight, cell-sized
+    // swell centred on the icon; a press anywhere else on the bar raises a
+    // broader one under the finger. Whichever is live wins — they cannot both
+    // be, since the controls sit above the bar's own tap target.
+    val bulgeCenter = if (anyPressed) controlCenter else barPress.center
+    val bulge = if (anyPressed) bulgeAmt else barPress.amount
+    val bulgeSpread = if (anyPressed) 0f else GlassPressDefaults.BULGE
+
+    // Whether the bar draws an opaque backdrop pane — the live lens or the
+    // haze blur — decided out here because the shadow needs it too: it only
+    // draws over such a pane, which covers its footprint.
+    val profile = LocalPerformanceProfile.current
+    // The same live lens as the tab bar right under it, with the same blur
+    // share, frost and tint: the two are one material and must match.
+    val liveLens = LIVE_LENS_GLASS && liveLensCompiles &&
+        hazeState != null && profile.allowHazeBlur
+    val backdropPane = liveLens ||
+        (hazeState != null && profile.allowHazeBlur && glass.hazeBlurDp > 0f)
+
+    // Unclipped, so the shadow can spill past the bar's rounded edge; the bar
+    // itself is clipped inside.
+    Box(modifier = modifier.fillMaxWidth()) {
+    if (backdropPane) {
+        GlassBarShadow(glass = glass, tint = tint, shape = RoundedCornerShape(MiniCorner))
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { barSize = it }
+            .clip(RoundedCornerShape(MiniCorner))
+            .glassSqueeze(press = barPress, onClick = onClick)
+            .then(swipeGestures)
+    ) {
+        // Frosted backdrop UNDER the glass slab. The slab body can be nearly
+        // transparent (bodyOpacity goes down to 0.2), and without this layer
+        // whatever scrolls behind the bar — list rows, titles — reads through
+        // sharply and fights the mini player's own text. Haze gaussian-blurs
+        // the backdrop first; the AGSL glass then relights on top, and the
+        // punched play/skip holes reveal the frosted backdrop instead of raw
+        // rows. Same LOW-tier gate as the legacy path: budget SoCs skip it.
+        //
+        // Style note: backgroundColor and at least one tint must be REAL
+        // colours — a Transparent background with an empty tint list resolves
+        // to a no-op and the effect silently draws nothing. The neutral
+        // black/white tint (picked by theme luminance) lightens the frost on
+        // light themes and deepens it on dark ones. Haze's default noise
+        // (0.15) is disabled: over a dark backdrop it reads as visible grain
+        // rather than frost.
+        if (liveLens && hazeState != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val isDark = MaterialTheme.colorScheme.background.luminance() <= 0.5f
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .liveGlassLens(
+                        hazeState = hazeState,
+                        corner = MiniCorner,
+                        frost = playerFrostTint(glass, isDark),
+                        glass = glass,
+                        blurShare = LIVE_LENS_CHROME_BLUR_SHARE,
+                        ground = glassGround ?: MaterialTheme.colorScheme.background,
+                    ),
+            )
+        } else if (hazeState != null && profile.allowHazeBlur && glass.hazeBlurDp > 0f) {
+            val frostBg = MaterialTheme.colorScheme.background
+            val isDark = frostBg.luminance() <= 0.5f
+            val frostTint = playerFrostTint(glass, isDark)
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .hazeEffect(
+                        state = hazeState,
+                        style = HazeStyle(
+                            backgroundColor = frostBg,
+                            blurRadius = glass.hazeBlurDp.dp,
+                            tints = listOf(HazeTint(frostTint)),
+                            noiseFactor = 0f,
+                        ),
+                    )
+            )
+        }
+
+        // The glass slab with the two controls carved out of it. One offscreen
+        // layer so the DstOut punch clears only the glyph shapes (revealing the
+        // app behind the bar), not the whole rectangle.
+        CompositionLocalProvider(LocalPlayerBackdrop provides barBackdrop) {
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .playerGlass(
+                    tint = tint,
+                    bulgeCenter = bulgeCenter,
+                    bulgeAmount = { bulge },
+                    bulgeRadiusFraction = bulgeSpread,
+                    lensCorner = MiniCorner,
+                    liveUnder = liveLens,
+                )
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
+        ) {
+            val cornerPx = MiniCorner.toPx()
+            drawRoundRect(color = tint, cornerRadius = CornerRadius(cornerPx, cornerPx))
+
+            val cellPx = MiniControlCell.toPx()
+            val iconPx = MiniGlassIcon.toPx()
+            val padPx = MonoDimens.spacingMd.toPx()
+            // Row content centre = progress line + row top padding + half the
+            // (48dp) control cell — the tallest child, so the row's content box.
+            val cy = progressHeight.toPx() + MonoDimens.spacingSm.toPx() + cellPx / 2f
+            // Rightmost cell is skip-next, the one before it is play/pause; both
+            // inset from the right edge by the row's horizontal padding.
+            val skipCx = size.width - padPx - cellPx * 0.5f
+            val playCx = size.width - padPx - cellPx * 1.5f
+
+            // AA punch + whole-pixel glyph placement — same hygiene as the
+            // action dock: default Paint() punches with hard stair-stepped
+            // edges, and fractional offsets resample the small glyphs soft.
+            val punch = Paint().apply {
+                blendMode = BlendMode.DstOut
+                isAntiAlias = true
+            }
+            val canvas = drawContext.canvas
+            canvas.saveLayer(Rect(0f, 0f, size.width, size.height), punch)
+            listOf(playCx to playPainter, skipCx to skipPainter).forEach { (cx, painter) ->
+                translate(
+                    kotlin.math.round(cx - iconPx / 2f),
+                    kotlin.math.round(cy - iconPx / 2f),
+                ) {
+                    with(painter) { draw(Size(iconPx, iconPx)) }
+                }
+            }
+            canvas.restore()
+        }
+        }
+
+        // Transparent content overlay: progress, cover, text, and the two tap
+        // targets sitting exactly over the punched holes (same trailing cells).
+        // No ripple indication — the glass press-bulge is the feedback.
+        MiniPlayerContent(track, progressProvider, blendMillis, userTrackChanges, glass.miniProgressBar) {
+            Box(
+                modifier = Modifier
+                    .size(MiniControlCell)
+                    .clickable(
+                        interactionSource = playSource,
+                        indication = null,
+                        onClickLabel = if (isPlaying) stringResource(R.string.action_pause) else stringResource(R.string.action_play),
+                        onClick = onPlayPauseClick,
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .size(MiniControlCell)
+                    .clickable(
+                        interactionSource = skipSource,
+                        indication = null,
+                        onClickLabel = stringResource(R.string.action_skip_next),
+                        onClick = onSkipNextClick,
+                    )
+            )
+        }
+    }
+    }
+}
+
+/**
+ * The shared bar content: the thin progress line, cover, and title/artist, with
+ * the two trailing control slots supplied by [controls] (glass holes' tap targets
+ * on the glass path, Material icon buttons on the legacy path).
+ */
+@Composable
+private fun MiniPlayerContent(
+    track: Track,
+    progressProvider: () -> Float,
+    blendMillis: Int,
+    userTrackChanges: Int,
+    showProgress: Boolean,
+    controls: @Composable () -> Unit,
+) {
+    Column {
+        if (showProgress) {
+            LinearProgressIndicator(
+                progress = { progressProvider().coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(MiniProgressHeight),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.outline
+            )
+        }
+        Row(
+            modifier = Modifier.padding(horizontal = MonoDimens.spacingMd, vertical = MonoDimens.spacingSm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MorphingCoverArt(
+                trackKey = track.id,
+                coverUrl = track.coverUrl,
+                contentDescription = track.title,
+                blendMillis = blendMillis,
+                userTrackChanges = userTrackChanges,
+                modifier = Modifier.size(MonoDimens.coverMini),
+                shape = RoundedCornerShape(MonoDimens.radiusSm),
+            )
+            Spacer(modifier = Modifier.width(MonoDimens.spacingMd))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = track.displayArtist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            controls()
+        }
+    }
+}

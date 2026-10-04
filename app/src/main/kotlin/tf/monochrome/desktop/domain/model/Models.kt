@@ -1,0 +1,750 @@
+package tf.monochrome.desktop.domain.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * Human-readable channel-layout tag for a source channel count: "5.1" for 6,
+ * "7.1" for 8, "Nch" otherwise. Null for mono/stereo/unknown — the UI renders
+ * a pill only for genuinely multichannel tracks.
+ */
+fun channelBadgeFor(channelCount: Int?): String? =
+    channelCount?.takeIf { it > 2 }?.let {
+        when (it) {
+            6 -> "5.1"
+            8 -> "7.1"
+            else -> "${it}ch"
+        }
+    }
+
+private val THX_SPATIAL_AUDIO_REGEX = Regex("""thx\s*spatial\s*audio""", RegexOption.IGNORE_CASE)
+
+/**
+ * Detects the Qobuz THX Spatial Audio designation. Qobuz exposes no boolean
+ * flag — the only marker is the phrase "THX Spatial Audio" in a release's
+ * `version` (occasionally `title`) field. Checks the track's own text first,
+ * then falls back to the parent album's, since a THX single marks every track.
+ */
+fun isThxSpatialAudio(
+    title: String? = null,
+    version: String? = null,
+    albumTitle: String? = null,
+    albumVersion: String? = null,
+): Boolean =
+    listOfNotNull(version, title, albumVersion, albumTitle)
+        .any { THX_SPATIAL_AUDIO_REGEX.containsMatchIn(it) }
+
+@Serializable
+data class Track(
+    val id: Long,
+    val title: String,
+    val duration: Int = 0,
+    val artist: Artist? = null,
+    val artists: List<Artist> = emptyList(),
+    val album: Album? = null,
+    val audioQuality: String? = null,
+    val explicit: Boolean = false,
+    val trackNumber: Int? = null,
+    val volumeNumber: Int? = null,
+    val popularity: Int? = null,
+    val type: String = "track",
+    val isUnavailable: Boolean? = null,
+    val streamStartDate: String? = null,
+    // Source channel count (e.g. Qobuz maximum_channel_count). Null/≤2 = stereo.
+    val channelCount: Int? = null,
+    // Raw Qobuz release version string (e.g. "THX Spatial Audio version"), kept
+    // structured so it can be written to embedded tags on download. Null for most.
+    val version: String? = null,
+    // THX Spatial Audio release — Qobuz marks it only via version/title text.
+    val isThxSpatialAudio: Boolean = false,
+    // Apple Music identity, kept SEPARATE from [id]. Non-null means this track
+    // came from the Apple catalog and this is its true adamId. Apple and Qobuz
+    // ids share no namespace — inferring the source from [id] alone (the old
+    // QobuzIdRegistry lookup) breaks whenever [id] is a synthetic fallback
+    // (e.g. UnifiedTrack.toLegacyTrack hashing "apple_<id>") and can collide
+    // outright. Routing (download + playback) trusts this field first.
+    val appleId: Long? = null,
+    // Deezer identity, kept separate for the same reason as [appleId]: Deezer
+    // ids are plain numbers in the same range as Qobuz and TIDAL ids, so a
+    // Deezer id handed to either of them resolves to a *different* recording.
+    // Non-null means this track came from the Deezer catalog.
+    val deezerId: Long? = null,
+) {
+    val displayArtist: String
+        get() = artist?.name ?: artists.joinToString(", ") { it.name }
+
+    /** "5.1" / "7.1" / "Nch" pill for multichannel sources, null for stereo. */
+    val channelBadge: String?
+        get() = channelBadgeFor(channelCount)
+
+    val formattedDuration: String
+        get() {
+            val minutes = duration / 60
+            val seconds = duration % 60
+            return "%d:%02d".format(minutes, seconds)
+        }
+
+    val coverUrl: String?
+        get() = album?.coverUrl
+}
+
+@Serializable
+data class Album(
+    val id: Long,
+    val title: String,
+    val artist: Artist? = null,
+    val artists: List<Artist> = emptyList(),
+    val numberOfTracks: Int? = null,
+    val releaseDate: String? = null,
+    val cover: String? = null,
+    val explicit: Boolean = false,
+    val type: String? = null, // ALBUM, EP, SINGLE
+    val duration: Int? = null,
+    // Raw Qobuz release version string; kept for tag/UI parity with Track.
+    val version: String? = null,
+    // THX Spatial Audio release — marks every track on it.
+    val isThxSpatialAudio: Boolean = false,
+    // Qobuz returns this on every album and the app used to drop it on the
+    // floor. `genreSlug` is the catalogue's own taxonomy key, which is a more
+    // stable join than the display name.
+    val genre: String? = null,
+    val genreSlug: String? = null,
+) {
+    val coverUrl: String?
+        get() = cover?.let { buildCoverUrl(it, 640) }
+
+    val releaseYear: String?
+        get() = releaseDate?.take(4)
+
+    val displayArtist: String
+        get() = artist?.name ?: artists.joinToString(", ") { it.name }
+}
+
+@Serializable
+data class Artist(
+    val id: Long,
+    val name: String,
+    val picture: String? = null,
+    val artistTypes: List<String>? = null
+) {
+    val pictureUrl: String?
+        get() = picture?.let { buildCoverUrl(it, 480) }
+}
+
+@Serializable
+data class Playlist(
+    val uuid: String,
+    val title: String,
+    val description: String? = null,
+    val numberOfTracks: Int? = null,
+    val duration: Int? = null,
+    val cover: String? = null,
+    val creator: PlaylistCreator? = null,
+    val tracks: List<Track> = emptyList()
+) {
+    val coverUrl: String?
+        get() = cover?.let { buildCoverUrl(it, 640) }
+}
+
+@Serializable
+data class PlaylistCreator(
+    val id: Long? = null,
+    val name: String? = null
+)
+
+data class AlbumDetail(
+    val album: Album,
+    val tracks: List<Track>
+)
+
+data class ArtistDetail(
+    val artist: Artist,
+    val topTracks: List<Track> = emptyList(),
+    val albums: List<Album> = emptyList(),
+    val eps: List<Album> = emptyList(),
+    val singles: List<Album> = emptyList(),
+    val unreleasedTracks: List<Track> = emptyList(),
+    val similarArtists: List<Artist> = emptyList()
+)
+
+data class SearchResult(
+    val tracks: List<Track> = emptyList(),
+    val albums: List<Album> = emptyList(),
+    val artists: List<Artist> = emptyList(),
+    val playlists: List<Playlist> = emptyList()
+)
+
+data class TrackStream(
+    val track: Track,
+    val streamUrl: String,
+    val isDash: Boolean = false,
+    val replayGain: ReplayGainValues? = null
+)
+
+data class ReplayGainValues(
+    val trackReplayGain: Double? = null,
+    val trackPeakAmplitude: Double? = null,
+    val albumReplayGain: Double? = null,
+    val albumPeakAmplitude: Double? = null
+)
+
+data class LyricLine(
+    val timeMs: Long,
+    val text: String,
+    val words: List<LyricWord> = emptyList()
+)
+
+data class LyricWord(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String
+)
+
+data class Lyrics(
+    val lines: List<LyricLine> = emptyList(),
+    val isSynced: Boolean = false
+)
+
+@Serializable
+data class VisualizerTag(
+    val id: String,
+    val label: String = id
+)
+
+@Serializable
+data class VisualizerPreset(
+    val id: String,
+    val displayName: String,
+    val filePath: String,
+    val tags: List<VisualizerTag> = emptyList(),
+    val intensity: Int = 50
+)
+
+enum class VisualizerEnginePhase {
+    FALLBACK,
+    INSTALLING,
+    READY,
+    ACTIVE,
+    ERROR
+}
+
+data class VisualizerEngineStatus(
+    val phase: VisualizerEnginePhase = VisualizerEnginePhase.FALLBACK,
+    val nativeLibraryLoaded: Boolean = false,
+    val assetVersion: String = "v1",
+    val message: String = "Fallback visualizer active.",
+    val assetRoot: String? = null
+) {
+    val isNativeReady: Boolean
+        get() = nativeLibraryLoaded && (
+            phase == VisualizerEnginePhase.READY || phase == VisualizerEnginePhase.ACTIVE
+        )
+
+    val badge: String
+        get() = when (phase) {
+            VisualizerEnginePhase.FALLBACK -> "fallback"
+            VisualizerEnginePhase.INSTALLING -> "installing"
+            VisualizerEnginePhase.READY -> "projectM ready"
+            VisualizerEnginePhase.ACTIVE -> "projectM live"
+            VisualizerEnginePhase.ERROR -> "projectM error"
+        }
+}
+
+@Serializable
+enum class AudioQuality(val apiValue: String, val displayName: String) {
+    LOW("LOW", "Low (96 kbps)"),
+    HIGH("HIGH", "High (320 kbps)"),
+    LOSSLESS("LOSSLESS", "Lossless (FLAC)"),
+    HI_RES("HI_RES_LOSSLESS", "Hi-Res (24-bit FLAC)")
+}
+
+enum class RepeatMode {
+    OFF, ONE, ALL
+}
+
+enum class NowPlayingViewMode(val displayName: String) {
+    COVER_ART("Cover Art"),
+    LYRICS("Lyrics"),
+    QUEUE("Queue"),
+    VISUALIZER("Visualizer")
+}
+
+fun buildCoverUrl(coverId: String, size: Int): String {
+    if (coverId.contains("://")) return coverId
+    // Local artwork path. File.toURI() emits `file:/path` (single slash) which
+    // Coil 3 interprets as a malformed URI; library lists pass the raw path
+    // and Coil's PathMapper resolves it correctly. Match that here.
+    if (coverId.startsWith("/")) return coverId
+    val formatted = coverId.replace("-", "/")
+    return "https://resources.tidal.com/images/$formatted/${size}x${size}.jpg"
+}
+
+// ========== Unified Three-Source Models ==========
+
+/**
+ * How much the app actually knows about a track's genre.
+ *
+ * Kept alongside the genre itself because the three sources are not equally
+ * trustworthy and the UI has to be able to tell them apart. Ranking may use
+ * all three; only [TAGGED] may be stated as fact.
+ */
+@Serializable
+enum class GenreConfidence {
+    /** The catalogue or the file's own tags said so. */
+    TAGGED,
+
+    /** Inherited from the release or artist this track belongs to. */
+    DERIVED,
+
+    /** Guessed from the query that surfaced it. Display hedged, never bare. */
+    INFERRED,
+}
+
+@Serializable
+// LIVE_RADIO rather than RADIO: `tf.monochrome.desktop.radio` is already the
+// algorithmic queue-maker that seeds a station from a track, and the two would
+// be read as the same thing by anyone grepping for it.
+enum class SourceType { API, COLLECTION, LOCAL, QOBUZ, APPLE, DEEZER, LIVE_RADIO }
+
+@Serializable
+enum class AudioCodec(val displayName: String) {
+    FLAC("FLAC"),
+    MP3("MP3"),
+    AAC("AAC"),
+    ALAC("ALAC"),
+    OGG_VORBIS("OGG"),
+    OPUS("Opus"),
+    WAV("WAV"),
+    AIFF("AIFF"),
+    APE("APE"),
+    WMA("WMA"),
+    AC3("AC-3"),
+    // Dolby Digital Plus — the carrier for Dolby Atmos (E-AC-3 + JOC).
+    EAC3("E-AC-3"),
+    UNKNOWN("Unknown")
+}
+
+@Serializable
+sealed class PlaybackSource {
+
+    /** Stream from Hi-Fi API - requires network */
+    @Serializable
+    @SerialName("HiFiApi")
+    data class HiFiApi(
+        val tidalId: Long,
+        val preferredQuality: AudioQuality = AudioQuality.LOSSLESS
+    ) : PlaybackSource()
+
+    /** Encrypted direct link from collection manifest */
+    @Serializable
+    @SerialName("CollectionDirect")
+    data class CollectionDirect(
+        val collectionId: String,
+        val directLinks: List<CollectionDirectLink>,
+        val encryptionKey: String,
+        val fileHash: String,
+        val preferredQuality: AudioQuality = AudioQuality.LOSSLESS
+    ) : PlaybackSource()
+
+    /** Local file on device - zero network, fastest path */
+    @Serializable
+    @SerialName("LocalFile")
+    data class LocalFile(
+        val filePath: String,
+        val codec: AudioCodec,
+        val sampleRate: Int,
+        val bitDepth: Int? = null
+    ) : PlaybackSource()
+
+    /**
+     * Qobuz (trypt-hifi) source — fetches the audio file via /api/download-music
+     * on first play, parks it in the cache directory, and plays subsequent
+     * times from local disk. The HMAC-signed file URL the backend returns
+     * isn't suitable for long-running streams (signature is time-bounded), so
+     * pre-fetching the whole file is more reliable than progressive streaming.
+     */
+    @Serializable
+    @SerialName("QobuzCached")
+    data class QobuzCached(
+        val qobuzId: Long,
+        val preferredQuality: AudioQuality = AudioQuality.LOSSLESS,
+    ) : PlaybackSource()
+
+    /**
+     * Apple Music source — resolves /api/apple/download-music on the instance,
+     * which returns a wrapper-resolved manifest whose `delivery.streamUrl` points
+     * at the cloud-cached decrypted file (ALAC/Atmos). That URL is Range-capable,
+     * so it streams directly (no full pre-fetch needed).
+     */
+    @Serializable
+    @SerialName("AppleCached")
+    data class AppleCached(
+        val appleId: Long,
+        val preferredQuality: AudioQuality = AudioQuality.LOSSLESS,
+    ) : PlaybackSource()
+
+    /**
+     * Deezer catalog pick, from the instance's /api/deezer routes.
+     *
+     * Played like [QobuzCached]: StreamResolver fetches the full file from
+     * /api/deezer/download into the Deezer cache, and only when the instance
+     * can't serve it falls back to the 30-second preview from
+     * /api/deezer/preview. The name predates full playback and stays, because
+     * it is the serialized type tag of saved queues.
+     */
+    @Serializable
+    @SerialName("DeezerPreview")
+    data class DeezerPreview(
+        val deezerId: Long,
+        val isrc: String? = null,
+        val preferredQuality: AudioQuality = AudioQuality.LOSSLESS,
+    ) : PlaybackSource()
+
+    /**
+     * A live internet radio station, played straight from its stream URL.
+     *
+     * Unlike every other source here this is not a recording: it has no
+     * duration, no position worth seeking to, and no end. Two consequences the
+     * rest of the player has to respect — [StreamResolver] must not substitute a
+     * same-named local file for it (a station called "Radio Paradise" is not the
+     * song), and the player chrome must say LIVE rather than draw a scrubber
+     * against a duration that will never arrive.
+     *
+     * [url] is radio-browser's `url_resolved`, so redirects are already followed
+     * and the scheme is known to be http or https. [isHls] carries the
+     * directory's own flag rather than guessing from the path, because plenty of
+     * HLS stations don't end in `.m3u8`.
+     */
+    @Serializable
+    @SerialName("RadioStream")
+    data class RadioStream(
+        val stationUuid: String,
+        val url: String,
+        val isHls: Boolean = false,
+        val codecName: String? = null,
+        val bitrateKbps: Int? = null,
+    ) : PlaybackSource()
+}
+
+@Serializable
+data class CollectionDirectLink(
+    val url: String,
+    val quality: String
+)
+
+@Serializable
+data class TrackLyrics(
+    val basic: String? = null,
+    val lrc: String? = null,
+    val ttml: String? = null
+)
+
+/**
+ * A single credited artist on a [UnifiedTrack]. [id] is the catalog
+ * (Qobuz/TIDAL) artist id used for artist-page navigation, or null when the
+ * source only exposes a name (e.g. a Qobuz free-text credit) — in which case
+ * the UI shows the name but doesn't make it a link.
+ */
+@Serializable
+data class UnifiedArtistRef(
+    val id: Long? = null,
+    val name: String,
+)
+
+@Serializable
+data class UnifiedTrack(
+    val id: String,
+    val title: String,
+    val durationSeconds: Int,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val explicit: Boolean = false,
+
+    // Artist info
+    val artistName: String,
+    val artistNames: List<String> = emptyList(),
+    val albumArtistName: String? = null,
+    // Catalog artist id (Qobuz/TIDAL namespace) for artist-page navigation.
+    // Null for sources without a catalog artist id (local/collection).
+    val artistId: Long? = null,
+    // Per-artist credits (primary + featured), each carrying an optional catalog
+    // id, so a track with multiple artists can wire each name to its own profile.
+    // `artistId`/`artistName` above remain the single-primary convenience view.
+    val artists: List<UnifiedArtistRef> = emptyList(),
+
+    // Album info
+    val albumTitle: String? = null,
+    val albumId: String? = null,
+    /**
+     * Release year, inherited from the album.
+     *
+     * Carried on the track because Discover's "Newest" sort has to compare
+     * tracks against each other, and by the time a shelf is built the album
+     * they came from is long gone.
+     */
+    val releaseYear: Int? = null,
+
+    // Artwork
+    val artworkUri: String? = null,
+
+    // Audio quality
+    val codec: AudioCodec? = null,
+    val sampleRate: Int? = null,
+    val bitDepth: Int? = null,
+    val bitRate: Int? = null,
+    val qualityTags: List<String>? = null,
+    // Source channel count (e.g. Qobuz maximum_channel_count). Null/≤2 = stereo.
+    val channelCount: Int? = null,
+    // Raw Qobuz release version string (kept for embedded-tag write on download).
+    val version: String? = null,
+    // THX Spatial Audio release — Qobuz marks it only via version/title text.
+    val isThxSpatialAudio: Boolean = false,
+
+    // Replay gain
+    val replayGainTrack: Float? = null,
+    val replayGainAlbum: Float? = null,
+    val r128TrackGain: Int? = null,
+    val r128AlbumGain: Int? = null,
+
+    // Lyrics
+    val lyrics: TrackLyrics? = null,
+
+    // Identifiers for cross-source matching
+    val isrc: String? = null,
+    val musicBrainzTrackId: String? = null,
+
+    // Source
+    val source: PlaybackSource,
+    val sourceType: SourceType,
+
+    // File date (epoch millis) for local tracks — used for "sort by date".
+    // Null for streaming sources.
+    val dateModified: Long? = null,
+
+    // Genre, and how much we trust it. Before this existed every streaming
+    // result in the app was genre-less, so search could not score on genre and
+    // shelves could not explain themselves in genre terms.
+    val genre: String? = null,
+    /** Curated graph id, when the genre resolved to one. */
+    val genreId: String? = null,
+    val genreConfidence: GenreConfidence? = null,
+) {
+    val displayArtist: String
+        get() = artistName
+
+    val formattedDuration: String
+        get() {
+            val minutes = durationSeconds / 60
+            val seconds = durationSeconds % 60
+            return "%d:%02d".format(minutes, seconds)
+        }
+
+    val qualityBadge: String?
+        get() = when {
+            codec == AudioCodec.FLAC && (bitDepth ?: 16) >= 24 ->
+                "FLAC ${bitDepth}/${(sampleRate ?: 44100) / 1000}"
+            codec == AudioCodec.FLAC -> "FLAC"
+            codec == AudioCodec.ALAC && (bitDepth ?: 16) >= 24 ->
+                "ALAC ${bitDepth}/${(sampleRate ?: 44100) / 1000}"
+            codec == AudioCodec.ALAC -> "ALAC"
+            // Uncompressed containers: their format is bit depth and rate,
+            // like FLAC's. They had no case at all, so a WAV row showed no
+            // badge beside an MP3's "MP3 320".
+            codec == AudioCodec.WAV -> "WAV ${bitDepth ?: 16}/${(sampleRate ?: 44100) / 1000}"
+            codec == AudioCodec.AIFF -> "AIFF ${bitDepth ?: 16}/${(sampleRate ?: 44100) / 1000}"
+            codec == AudioCodec.MP3 -> "MP3 ${bitRate ?: 320}"
+            codec == AudioCodec.AAC -> "AAC ${bitRate ?: 256}"
+            codec == AudioCodec.OPUS -> "Opus ${bitRate ?: 128}"
+            codec == AudioCodec.OGG_VORBIS -> "OGG ${bitRate ?: 320}"
+            qualityTags?.contains("HI_RES_LOSSLESS") == true -> "Hi-Res"
+            qualityTags?.contains("LOSSLESS") == true -> "Lossless"
+            qualityTags?.contains("HIGH") == true -> "High"
+            else -> null
+        }
+
+    /** "5.1" / "7.1" / "Nch" pill for multichannel sources, null for stereo. */
+    val channelBadge: String?
+        get() = channelBadgeFor(channelCount)
+
+    /**
+     * The id this track gets once it reaches the player.
+     *
+     * The queue holds [Track]s, so `currentTrack` is a legacy track and its id
+     * is this. A row showing a UnifiedTrack compares against this to know
+     * whether it is the one playing, without building a whole Track to ask.
+     */
+    val legacyId: Long
+        get() = when (val s = source) {
+            is PlaybackSource.HiFiApi -> s.tidalId
+            is PlaybackSource.QobuzCached -> s.qobuzId
+            // Apple tracks keep their true adamId. Before this branch existed
+            // they fell into the hashCode fallback below, which turned
+            // "apple_1688640181" into a garbage (often negative) id — the
+            // download worker then routed them to the Qobuz instance, which
+            // correctly 400'd, and the row sat on "Queued" through four
+            // retries before dying.
+            is PlaybackSource.AppleCached -> s.appleId
+            // Same reasoning as Apple: the downloader and the legacy resolver
+            // key on this id, and must see the real Deezer id to route it.
+            is PlaybackSource.DeezerPreview -> s.deezerId
+            else -> id.hashCode().toLong()
+        }
+
+    /** Convert to legacy Track model for backward compatibility */
+    fun toLegacyTrack(): Track {
+        val tidalId = legacyId
+        // Fall back to the audio file path for local sources when the scan
+        // didn't manage to cache an artwork JPG. AudioFileCoverFetcher
+        // (Coil) extracts the embedded picture on demand from the file
+        // itself, so the player shows the cover even on cache misses.
+        val coverFallback = artworkUri ?: when (val s = source) {
+            is PlaybackSource.LocalFile -> s.filePath
+            else -> null
+        }
+        return Track(
+            id = tidalId,
+            title = title,
+            duration = durationSeconds,
+            artist = Artist(id = artistName.hashCode().toLong(), name = artistName),
+            // Build an Album whenever we have a title OR a cover/fallback.
+            // Sideloaded downloads have null albumTitle but a content:// cover
+            // URI; without this guard the player drops the artwork entirely.
+            album = if (albumTitle != null || coverFallback != null) {
+                Album(
+                    id = albumId?.hashCode()?.toLong() ?: tidalId,
+                    title = albumTitle.orEmpty(),
+                    cover = coverFallback
+                )
+            } else null,
+            audioQuality = codec?.displayName,
+            explicit = explicit,
+            trackNumber = trackNumber,
+            volumeNumber = discNumber,
+            channelCount = channelCount,
+            version = version,
+            isThxSpatialAudio = isThxSpatialAudio,
+            appleId = (source as? PlaybackSource.AppleCached)?.appleId,
+            deezerId = (source as? PlaybackSource.DeezerPreview)?.deezerId,
+        )
+    }
+}
+
+data class UnifiedAlbum(
+    val id: String,
+    val title: String,
+    val artistName: String,
+    val year: Int? = null,
+    val trackCount: Int = 0,
+    val totalDuration: Int = 0,
+    val artworkUri: String? = null,
+    val genres: List<String> = emptyList(),
+    val sourceType: SourceType,
+    val qualitySummary: String? = null,
+    // THX Spatial Audio release — surfaced as a highlighted badge on album cards.
+    val isThxSpatialAudio: Boolean = false
+)
+
+data class UnifiedArtist(
+    val id: String,
+    val name: String,
+    val artworkUri: String? = null,
+    val albumCount: Int = 0,
+    val trackCount: Int = 0,
+    val bio: String? = null,
+    val genres: List<String> = emptyList(),
+    val sourceType: SourceType
+)
+
+// ========== EQ / AutoEQ Models ==========
+
+enum class FilterType {
+    PEAKING, LOWSHELF, HIGHSHELF
+}
+
+@Serializable
+data class FrequencyPoint(
+    val freq: Float,
+    val gain: Float
+)
+
+@Serializable
+data class EqBand(
+    val id: Int,
+    val type: FilterType = FilterType.PEAKING,
+    val freq: Float,
+    val gain: Float,
+    val q: Float = 1.0f,
+    val enabled: Boolean = true
+)
+
+@Serializable
+data class EqPreset(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val bands: List<EqBand> = emptyList(),
+    // Right-ear bands when the preset was saved in 2-channel mode; null = mono
+    // (bands drives both ears).
+    val bandsR: List<EqBand>? = null,
+    val preamp: Float = 0f,
+    val targetId: String = "",
+    val targetName: String = "",
+    val isCustom: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    // Set by EqRepository.toDomain when the stored bandsJson fails to decode.
+    // Loading a corrupted preset would silently flatten the EQ; callers should
+    // refuse to load it and surface the state instead.
+    val isCorrupted: Boolean = false
+)
+
+@Serializable
+data class EqTarget(
+    val id: String,
+    val label: String,
+    val data: List<FrequencyPoint> = emptyList(),
+    val filename: String = ""
+)
+
+@Serializable
+data class Headphone(
+    val id: String,
+    val name: String,
+    val type: String = "over-ear", // "over-ear", "in-ear", "earbud"
+    val data: List<FrequencyPoint> = emptyList(),
+    val measurements: List<AutoEqMeasurement> = emptyList()
+)
+
+@Serializable
+data class AutoEqMeasurement(
+    val source: String,
+    val target: String,
+    val path: String,
+    val fileName: String,
+    val rig: MeasurementRig = MeasurementRig.UNKNOWN,
+    // Origin host for squig.link sources (e.g. "https://precog.squig.link");
+    // empty for AutoEq sources where path is the GitHub repo subpath.
+    val host: String = ""
+)
+
+/**
+ * Acoustic measurement rig used to capture a headphone's frequency response.
+ * Bucket label is what the UI shows in its filter chip; ordinal controls sort
+ * order so industry-grade rigs (B&K 5128, GRAS) rise above community clones.
+ */
+@Serializable
+enum class MeasurementRig(val label: String) {
+    // Pinned first by ordinal so the rig filter chip row leads with the
+    // user's own measurements before any remote source.
+    UPLOADED("Uploaded"),
+    BK_5128("B&K 5128"),
+    BK_4620("B&K 4620"),
+    HMS_II_3("HMS II.3"),
+    GRAS_43AG_7("GRAS 43AG-7"),
+    GRAS_43AC_10("GRAS 43AC-10"),
+    GRAS_45CA_10("GRAS 45CA-10"),
+    GRAS_RA0045("GRAS RA0045"),
+    IEC_711_CLONE("IEC 711 clone"),
+    MINIDSP_EARS("MiniDSP EARS"),
+    UNKNOWN("Unknown")
+}

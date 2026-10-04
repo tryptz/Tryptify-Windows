@@ -1,0 +1,1929 @@
+package tf.monochrome.desktop.data.api
+
+import android.util.Base64
+import android.util.LruCache
+import io.ktor.client.HttpClient
+import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import tf.monochrome.desktop.data.api.model.AlbumResponse
+import tf.monochrome.desktop.data.api.model.AlbumTrackItem
+import tf.monochrome.desktop.data.api.model.ArtistContentResponse
+import tf.monochrome.desktop.data.api.model.ArtistResponse
+import tf.monochrome.desktop.data.api.model.LyricsResponse
+import tf.monochrome.desktop.data.api.model.ManifestJson
+import tf.monochrome.desktop.data.api.model.PlaylistResponse
+import tf.monochrome.desktop.data.api.model.QobuzAlbumDetailEnvelope
+import tf.monochrome.desktop.data.api.model.QobuzAlbumItem
+import tf.monochrome.desktop.data.api.model.QobuzArtistDetail
+import tf.monochrome.desktop.data.api.model.QobuzArtistDetailEnvelope
+import tf.monochrome.desktop.data.api.model.QobuzArtistImages
+import tf.monochrome.desktop.data.api.model.QobuzArtistItem
+import tf.monochrome.desktop.data.api.model.QobuzArtistRef
+import tf.monochrome.desktop.data.api.model.QobuzArtistTopTrack
+import tf.monochrome.desktop.data.api.model.QobuzDownloadEnvelope
+import tf.monochrome.desktop.data.api.model.QobuzNamedRef
+import tf.monochrome.desktop.data.api.model.QobuzPerson
+import tf.monochrome.desktop.data.api.model.QobuzRelease
+import tf.monochrome.desktop.data.api.model.QobuzSearchEnvelope
+import tf.monochrome.desktop.data.api.model.QobuzSimilarArtist
+import tf.monochrome.desktop.data.api.model.QobuzTrackItem
+import tf.monochrome.desktop.data.api.model.RecommendationsResponse
+import tf.monochrome.desktop.data.api.model.SearchResponse
+import tf.monochrome.desktop.data.api.model.TrackInfoResponse
+import tf.monochrome.desktop.data.api.model.TrackStreamResponse
+import tf.monochrome.desktop.domain.model.Album
+import tf.monochrome.desktop.domain.model.AlbumDetail
+import tf.monochrome.desktop.domain.model.Artist
+import tf.monochrome.desktop.domain.model.TrackStream
+import tf.monochrome.desktop.domain.model.ArtistDetail
+import tf.monochrome.desktop.domain.model.AudioQuality
+import tf.monochrome.desktop.domain.model.Lyrics
+import tf.monochrome.desktop.domain.model.LyricLine
+import tf.monochrome.desktop.domain.model.Playlist
+import tf.monochrome.desktop.domain.model.PlaylistCreator
+import tf.monochrome.desktop.domain.model.ReplayGainValues
+import tf.monochrome.desktop.domain.model.SearchResult
+import tf.monochrome.desktop.domain.model.Track
+import tf.monochrome.desktop.domain.model.LyricWord
+import tf.monochrome.desktop.util.RomajiConverter
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlin.random.Random
+
+/** Minimal Qobuz match used by the TIDAL→Qobuz playback fallback. */
+data class QobuzTrackMatch(
+    val trackId: Long,
+    val albumSlug: String?,
+    val artistId: Long?,
+)
+
+/**
+ * No endpoint is configured for the pool a request needs. This is a setup
+ * problem, not a transient one — retrying cannot fix it, so callers that would
+ * otherwise back off (notably TrackDownloader) should fail immediately instead.
+ */
+class NoInstancesConfiguredException : Exception("No API instances available")
+
+@Singleton
+class HiFiApiClient @Inject constructor(
+    private val instanceManager: InstanceManager,
+    private val httpClient: HttpClient,
+    private val json: Json,
+    private val preferences: tf.monochrome.desktop.data.preferences.PreferencesManager,
+    private val qobuzIdRegistry: QobuzIdRegistry,
+) {
+    private val cache = LruCache<String, CacheEntry>(200)
+
+    companion object {
+        // Hard ceiling per Qobuz sub-request so a slow or unreachable Qobuz
+        // instance can't stall the search UI behind coroutineScope's
+        // wait-for-all-children semantics.
+        private const val QOBUZ_REQUEST_TIMEOUT_MS = 6_000L
+
+        // Minimum confidence to accept an Apple cross-catalog match. Sits above
+        // a title-only agreement (60) so the artist or the duration must also
+        // line up before a track is bridged to a different catalog's id.
+        private const val APPLE_MATCH_MIN_SCORE = 70
+
+        // TrypT HiFi checks the Atmos manifest (one HiFi API round trip plus
+        // the manifest fetch) before answering; give it longer than a search.
+        private const val TIDAL_ATMOS_TIMEOUT_MS = 10_000L
+    }
+
+    private data class CacheEntry(
+        val data: Any,
+        val timestamp: Long = System.currentTimeMillis()
+    ) {
+        fun isValid(ttlMs: Long = 30 * 60 * 1000L): Boolean {
+            return System.currentTimeMillis() - timestamp < ttlMs
+        }
+    }
+
+    private suspend fun fetchWithRetry(
+        path: String,
+        instanceType: InstanceType = InstanceType.API,
+        minVersion: String? = null
+    ): String {
+        val instances = instanceManager.getInstances(instanceType)
+            .let { list ->
+                if (minVersion != null) {
+                    list.filter { instance ->
+                        instance.version == null ||
+                            (instance.version.toDoubleOrNull() ?: 0.0) >= (minVersion.toDoubleOrNull() ?: 0.0)
+                    }.ifEmpty { list }
+                } else list
+            }
+
+        if (instances.isEmpty()) throw NoInstancesConfiguredException()
+
+        var lastError: Throwable? = null
+        val maxAttempts = instances.size * 2
+        var instanceIndex = Random.nextInt(instances.size)
+
+        repeat(maxAttempts) {
+            val instance = instances[instanceIndex % instances.size]
+            val url = instance.url.trimEnd('/') + path
+
+            try {
+                val response = httpClient.get(url)
+                when {
+                    response.status.value == 429 -> {
+                        instanceIndex++
+                        delay(500)
+                    }
+                    response.status.value in 500..599 -> {
+                        instanceIndex++
+                    }
+                    response.status.value == 401 -> {
+                        instanceIndex++
+                    }
+                    response.status.isSuccess() -> {
+                        val body = response.bodyAsText()
+                        // Reject HTML payloads — most often the user has Dev
+                        // Mode pointed at a SPA (e.g. trypt-hifi root) that
+                        // serves index.html for any unknown path. Surfacing
+                        // the raw HTML to a JSON parser produces a confusing
+                        // 'Unexpected JSON token at offset 0' error in the
+                        // detail screens; treat it as an instance failure
+                        // and fall through to the next one. Sniff only the
+                        // first non-whitespace char so we don't allocate a
+                        // copy of large bodies just to check.
+                        val sniff = body.asSequence().take(64)
+                            .dropWhile { it.isWhitespace() }
+                            .firstOrNull()
+                        if (sniff == '<') {
+                            lastError = Exception(
+                                "Instance returned HTML instead of JSON " +
+                                    "(check the API address under Settings → Connections)"
+                            )
+                            instanceIndex++
+                        } else {
+                            return body
+                        }
+                    }
+                    else -> {
+                        lastError = Exception("HTTP ${response.status.value}")
+                        instanceIndex++
+                    }
+                }
+            } catch (e: Exception) {
+                lastError = e
+                instanceIndex++
+                delay(200)
+            }
+        }
+
+        throw lastError ?: Exception("All instances failed for $path")
+    }
+
+    // --- Search ---
+
+    // Page size used for initial search + each loadMore call. Backends that
+    // don't honour &offset=&limit= will respond with the same first-page
+    // payload; the ViewModel detects "end" when fewer than `limit` items come
+    // back, so an unsupported page just stops paging early.
+    private fun pagedQuery(key: String, query: String, offset: Int, limit: Int): String =
+        "/search/?$key=${query.encodeUrl()}&offset=$offset&limit=$limit"
+
+    suspend fun searchTracks(query: String, offset: Int = 0, limit: Int = 50): List<Track> {
+        val cacheKey = "search_tracks_${query}_${offset}_${limit}"
+        cache.get(cacheKey)?.let { entry ->
+            if (entry.isValid()) {
+                @Suppress("UNCHECKED_CAST")
+                return entry.data as List<Track>
+            }
+        }
+
+        val body = fetchWithRetry(pagedQuery("s", query, offset, limit))
+        val response = parseSearchResponse(body)
+        val tracks = response.items.map { it.toTrack() }
+        cache.put(cacheKey, CacheEntry(tracks))
+        return tracks
+    }
+
+    suspend fun searchAlbums(query: String, offset: Int = 0, limit: Int = 50): List<Album> {
+        val cacheKey = "search_albums_${query}_${offset}_${limit}"
+        cache.get(cacheKey)?.let { entry ->
+            if (entry.isValid()) {
+                @Suppress("UNCHECKED_CAST")
+                return entry.data as List<Album>
+            }
+        }
+
+        val body = fetchWithRetry(pagedQuery("al", query, offset, limit))
+        val response = parseSearchResponse(body)
+        val albums = response.items.map { it.toAlbum() }
+        cache.put(cacheKey, CacheEntry(albums))
+        return albums
+    }
+
+    suspend fun searchArtists(query: String, offset: Int = 0, limit: Int = 50): List<Artist> {
+        val cacheKey = "search_artists_${query}_${offset}_${limit}"
+        cache.get(cacheKey)?.let { entry ->
+            if (entry.isValid()) {
+                @Suppress("UNCHECKED_CAST")
+                return entry.data as List<Artist>
+            }
+        }
+
+        val body = fetchWithRetry(pagedQuery("a", query, offset, limit))
+        val response = parseSearchResponse(body)
+        val artists = response.items.map { it.toArtist() }
+        cache.put(cacheKey, CacheEntry(artists))
+        return artists
+    }
+
+    suspend fun searchPlaylists(query: String, offset: Int = 0, limit: Int = 50): List<Playlist> {
+        val body = fetchWithRetry(pagedQuery("p", query, offset, limit))
+        val response = parseSearchResponse(body)
+        return response.items.map { it.toPlaylist() }
+    }
+
+    suspend fun search(query: String, offset: Int = 0, limit: Int = 50): SearchResult {
+        return SearchResult(
+            tracks = runCatching { searchTracks(query, offset, limit) }.getOrDefault(emptyList()),
+            albums = runCatching { searchAlbums(query, offset, limit) }.getOrDefault(emptyList()),
+            artists = runCatching { searchArtists(query, offset, limit) }.getOrDefault(emptyList()),
+            playlists = runCatching { searchPlaylists(query, offset, limit) }.getOrDefault(emptyList())
+        )
+    }
+
+    // Qobuz catalog search — hits the user-configured trypt-hifi instance at
+    // GET /api/get-music?q=<query>&offset=<n>. Response envelope shape is
+    // { success, data: { albums?: { items: [...] }, tracks?: ..., artists?:
+    // ... } }. Whichever section the user's tab targeted is populated; the
+    // others are absent. We accept all three so a single parser works.
+    //
+    // Returns an empty SearchResult when the instance isn't set, the request
+    // times out, or the response can't be parsed, so the TIDAL search flow
+    // is never blocked by Qobuz state.
+    suspend fun searchQobuz(query: String, offset: Int = 0): SearchResult {
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return SearchResult()
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/get-music?q=${query.encodeUrl()}&offset=$offset")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzSearchEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return SearchResult()
+
+        if (!envelope.success || envelope.data == null) return SearchResult()
+        val data = envelope.data
+
+        // Record (qobuz_id -> alphanumeric slug) so the detail VM can look the
+        // slug back up at navigation time. Numeric artist ids are also tagged
+        // as Qobuz so ArtistDetailViewModel can route appropriately. Tracks
+        // also carry an album object — register those slugs too so navigation
+        // from a track row resolves correctly.
+        data.albums?.items?.forEach { registerAlbumWithRegistry(it) }
+        data.tracks?.items?.forEach { item ->
+            item.id?.let { qobuzIdRegistry.registerTrack(it) }
+            item.album?.let { album -> registerAlbumWithRegistry(album) }
+        }
+        data.artists?.items?.forEach { item -> item.id?.let { qobuzIdRegistry.registerArtist(it) } }
+
+        return SearchResult(
+            tracks = data.tracks?.items?.map { it.toDomainTrack() } ?: emptyList(),
+            albums = data.albums?.items?.map { it.toDomainAlbum() } ?: emptyList(),
+            artists = data.artists?.items?.map { it.toDomainArtist() } ?: emptyList(),
+            playlists = emptyList(),
+        )
+    }
+
+    // Apple Music catalog search via the TrypT HiFi instance's /api/apple/* layer.
+    // The endpoint normalizes Apple responses into the same Qobuz-shaped envelope,
+    // so parsing + mapping are identical to searchQobuz. Fails soft (empty result)
+    // on any error so it never blocks the other catalogs.
+    suspend fun searchApple(query: String, offset: Int = 0): SearchResult {
+        val instance = instanceManager.appleInstanceOrNull() ?: return SearchResult()
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/apple/get-music?q=${query.encodeUrl()}&offset=$offset")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzSearchEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return SearchResult()
+
+        if (!envelope.success || envelope.data == null) return SearchResult()
+        val data = envelope.data
+
+        // Tag every id as Apple so download, playback AND the detail screens
+        // route to /api/apple/*. Album/artist ids are numeric here (qobuz_id is
+        // populated with the Apple id), and they must NOT be registered as
+        // Qobuz — the two catalogs share no id namespace, so a Qobuz lookup on
+        // an Apple id fails.
+        data.tracks?.items?.forEach { item -> item.id?.let { qobuzIdRegistry.registerAppleTrack(it) } }
+        data.albums?.items?.forEach { item ->
+            (item.qobuzId ?: item.id?.hashCode()?.toLong())
+                ?.let { qobuzIdRegistry.registerAppleAlbum(it) }
+        }
+        data.artists?.items?.forEach { item -> item.id?.let { qobuzIdRegistry.registerAppleArtist(it) } }
+
+        // Apple TRACK payloads carry no album or artist id — album.id is "",
+        // album.qobuz_id is "0", performer.id/artist.id are 0. Only the albums
+        // and artists sections of the same response have real ids. Without
+        // stitching them together, tapping an album or artist from a track row
+        // navigates with id 0 and falls through to TIDAL ("No API instances
+        // available"). Match on normalized name, which is reliable here because
+        // both sides came from the same query.
+        val albumIdByTitle = data.albums?.items.orEmpty()
+            .mapNotNull { item ->
+                val id = item.qobuzId ?: item.id?.toLongOrNull() ?: return@mapNotNull null
+                normalizeForMatch(item.title).takeIf { it.isNotBlank() }?.let { it to id }
+            }.toMap()
+        val artistIdByName = data.artists?.items.orEmpty()
+            .mapNotNull { item ->
+                val id = item.id ?: return@mapNotNull null
+                normalizeForMatch(item.name).takeIf { it.isNotBlank() }?.let { it to id }
+            }.toMap()
+
+        val tracks = data.tracks?.items.orEmpty().map { item ->
+            val t = item.toDomainTrack()
+            // appleId is the SEPARATE Apple identity: routing reads it directly
+            // off the track, so it survives every conversion (UnifiedTrack round
+            // trips, queue persistence) that the registry lookup could not.
+            val album = t.album?.let { a ->
+                if (a.id != 0L) a
+                else albumIdByTitle[normalizeForMatch(a.title)]
+                    ?.also { qobuzIdRegistry.registerAppleAlbum(it) }
+                    ?.let { a.copy(id = it) }
+                    ?: a
+            }
+            val artist = t.artist?.let { ar ->
+                if (ar.id != 0L) ar
+                else artistIdByName[normalizeForMatch(ar.name)]
+                    ?.also { qobuzIdRegistry.registerAppleArtist(it) }
+                    ?.let { ar.copy(id = it) }
+                    ?: ar
+            }
+            t.copy(appleId = t.id, album = album, artist = artist)
+        }
+
+        return SearchResult(
+            tracks = tracks,
+            albums = data.albums?.items?.map { it.toDomainAlbum() } ?: emptyList(),
+            artists = data.artists?.items?.map { it.toDomainArtist() } ?: emptyList(),
+            playlists = emptyList(),
+        )
+    }
+
+    /**
+     * Apple album detail — GET /api/apple/get-album?album_id=<numeric-id>.
+     *
+     * The instance normalizes Apple into the same envelope the Qobuz endpoint
+     * returns, so decoding and mapping are identical to [getQobuzAlbum]. The
+     * only real differences: the id is numeric (Apple has no alphanumeric slug)
+     * and every id in the response is registered as Apple, not Qobuz.
+     */
+    suspend fun getAppleAlbum(albumId: Long): AlbumDetail? {
+        val instance = instanceManager.appleInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/apple/get-album?album_id=$albumId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzAlbumDetailEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        if (!envelope.success || envelope.data == null) return null
+        val albumItem = envelope.data
+        qobuzIdRegistry.registerAppleAlbum(albumId)
+        val album = albumItem.toDomainAlbum()
+        val tracks = albumItem.tracks?.items?.map { item ->
+            item.id?.let { qobuzIdRegistry.registerAppleTrack(it) }
+            item.toDomainTrack(fallbackAlbum = album)
+                .let { t -> t.copy(appleId = t.id) }
+        } ?: emptyList()
+        return AlbumDetail(album = album, tracks = tracks)
+    }
+
+    /**
+     * Apple artist detail — GET /api/apple/get-artist?artist_id=<numeric-id>.
+     * Same envelope as [getQobuzArtist]; ids registered as Apple throughout so
+     * clicking a top track or a release stays inside the Apple flow.
+     */
+    suspend fun getAppleArtist(artistId: Long): ArtistDetail? {
+        val instance = instanceManager.appleInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/apple/get-artist?artist_id=$artistId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzArtistDetailEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        if (!envelope.success || envelope.data?.artist == null) return null
+        val raw = envelope.data.artist
+        qobuzIdRegistry.registerAppleArtist(artistId)
+
+        raw.topTracks.forEach { topTrack ->
+            topTrack.id?.let { qobuzIdRegistry.registerAppleTrack(it) }
+            (topTrack.album?.qobuzId ?: topTrack.album?.id?.hashCode()?.toLong())
+                ?.let { qobuzIdRegistry.registerAppleAlbum(it) }
+        }
+
+        val artist = Artist(
+            id = raw.id ?: artistId,
+            name = raw.name?.display ?: "",
+            picture = raw.images?.portraitUrl(),
+        )
+        val topTracks = raw.topTracks.mapNotNull { it.toDomainTrack() }
+            .map { t -> t.copy(appleId = t.id) }
+        val similar = raw.similarArtists?.items?.mapNotNull { it.toDomainArtist() } ?: emptyList()
+        similar.forEach { qobuzIdRegistry.registerAppleArtist(it.id) }
+
+        val albums = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        val eps = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        val singles = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        raw.releases.forEach { group ->
+            group.items.forEach { item ->
+                (item.qobuzId ?: item.id?.hashCode()?.toLong())
+                    ?.let { qobuzIdRegistry.registerAppleAlbum(it) }
+                val album = item.toDomainAlbum()
+                when (group.type) {
+                    "epSingle" -> if ((item.tracksCount ?: 0) <= 1) singles.add(album) else eps.add(album)
+                    "album", "live", "compilation" -> albums.add(album)
+                    else -> { /* download / awardedRelease / next — skip */ }
+                }
+            }
+        }
+
+        return ArtistDetail(
+            artist = artist,
+            topTracks = topTracks,
+            albums = albums,
+            eps = eps,
+            singles = singles,
+            unreleasedTracks = emptyList(),
+            similarArtists = similar,
+        )
+    }
+
+    // --- Deezer (trypt-hifi /api/deezer/*) ------------------------------------
+    //
+    // The instance normalizes the public Deezer API into the Qobuz envelopes, so
+    // decoding and mapping reuse the Qobuz types. What differs is identity:
+    // Deezer ids are plain numbers in the same range as Qobuz and TIDAL ids, so
+    // every id is registered as Deezer (never as Qobuz) and every track carries
+    // its id again as [Track.deezerId], which routing trusts first. Served by
+    // whichever added API answers /api/deezer/*; every call fails soft so it
+    // never blocks another catalog.
+
+    // ISRCs seen in Deezer payloads, so an ISRC lookup needs no extra request.
+    // Search results usually have none (Deezer's /search omits it); a pasted
+    // track URL and album tracks sometimes do.
+    private val deezerIsrcs = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    // Deezer ids whose catalogue item claimed hi-res. Only these are asked for
+    // the top quality codes; everything else tops out at CD FLAC.
+    private val deezerHiRes: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private suspend fun deezerBaseOrNull(): String? =
+        instanceManager.deezerInstanceOrNull()?.url?.trimEnd('/')
+
+    /**
+     * Map a Deezer track item: Deezer identity, and the quality its catalogue
+     * flags claim — /api/deezer/download serves the full file in that tier.
+     */
+    private fun QobuzTrackItem.toDeezerTrack(
+        fallbackAlbum: tf.monochrome.desktop.domain.model.Album? = null,
+    ): Track {
+        val trackId = id ?: 0L
+        registerDeezerTrackItem(this)
+        return toDomainTrack(fallbackAlbum).copy(
+            deezerId = trackId,
+            audioQuality = DeezerQuality.badgeFor(hires, maximumBitDepth),
+        )
+    }
+
+    private fun registerDeezerTrackItem(item: QobuzTrackItem) {
+        val trackId = item.id ?: return
+        qobuzIdRegistry.registerDeezerTrack(trackId)
+        item.isrc?.takeIf { it.isNotBlank() }?.let { deezerIsrcs[trackId] = it }
+        if (item.hires) deezerHiRes.add(trackId)
+        item.album?.qobuzId?.let { qobuzIdRegistry.registerDeezerAlbum(it) }
+        item.performer?.id?.let { qobuzIdRegistry.registerDeezerArtist(it) }
+        item.album?.artist?.id?.let { qobuzIdRegistry.registerDeezerArtist(it) }
+    }
+
+    private fun registerDeezerAlbumItem(item: QobuzAlbumItem) {
+        (item.qobuzId ?: item.id?.toLongOrNull())?.let { qobuzIdRegistry.registerDeezerAlbum(it) }
+        item.artist?.id?.let { qobuzIdRegistry.registerDeezerArtist(it) }
+        item.artists.forEach { ref -> ref.id?.let { qobuzIdRegistry.registerDeezerArtist(it) } }
+    }
+
+    /** Deezer catalog search — GET /api/deezer/get-music?q=<query>&offset=<n>. */
+    suspend fun searchDeezer(query: String, offset: Int = 0): SearchResult {
+        val base = deezerBaseOrNull() ?: return SearchResult()
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/deezer/get-music?q=${query.encodeUrl()}&offset=$offset")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzSearchEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return SearchResult()
+
+        if (!envelope.success || envelope.data == null) return SearchResult()
+        val data = envelope.data
+
+        data.albums?.items?.forEach { registerDeezerAlbumItem(it) }
+        data.artists?.items?.forEach { item -> item.id?.let { qobuzIdRegistry.registerDeezerArtist(it) } }
+
+        return SearchResult(
+            tracks = data.tracks?.items?.map { it.toDeezerTrack() } ?: emptyList(),
+            albums = data.albums?.items?.map { it.toDomainAlbum() } ?: emptyList(),
+            artists = data.artists?.items?.map { it.toDomainArtist() } ?: emptyList(),
+            playlists = emptyList(),
+        )
+    }
+
+    /** Deezer album detail — GET /api/deezer/get-album?album_id=<n>. */
+    suspend fun getDeezerAlbum(albumId: Long): AlbumDetail? {
+        val base = deezerBaseOrNull() ?: return null
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/deezer/get-album?album_id=$albumId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzAlbumDetailEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        if (!envelope.success || envelope.data == null) return null
+        val albumItem = envelope.data
+        qobuzIdRegistry.registerDeezerAlbum(albumId)
+        registerDeezerAlbumItem(albumItem)
+        val album = albumItem.toDomainAlbum()
+        val tracks = albumItem.tracks?.items?.map { it.toDeezerTrack(fallbackAlbum = album) } ?: emptyList()
+        return AlbumDetail(album = album, tracks = tracks)
+    }
+
+    /**
+     * Deezer artist detail — GET /api/deezer/get-artist?artist_id=<n>.
+     *
+     * The instance fetches the whole discography up front and buckets it by
+     * record type, so there is no paging to do here.
+     */
+    suspend fun getDeezerArtist(artistId: Long): ArtistDetail? {
+        val base = deezerBaseOrNull() ?: return null
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/deezer/get-artist?artist_id=$artistId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<tf.monochrome.desktop.data.api.model.DeezerArtistEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        val raw = envelope.data?.artist
+        if (!envelope.success || raw == null) return null
+        qobuzIdRegistry.registerDeezerArtist(artistId)
+
+        val releases = raw.releases.mapValues { (_, bucket) ->
+            bucket.items.onEach { registerDeezerAlbumItem(it) }
+        }
+        // No portrait in this payload; the release artist is the full artist
+        // record, pictures included, so borrow it from there.
+        val picture = releases.values.asSequence().flatten()
+            .firstNotNullOfOrNull { it.artist?.image?.let { img -> img.extralarge ?: img.large ?: img.medium } }
+
+        val singles = mutableListOf<Album>()
+        val eps = mutableListOf<Album>()
+        releases["epSingle"].orEmpty().forEach { item ->
+            if ((item.tracksCount ?: 0) <= 1) singles.add(item.toDomainAlbum()) else eps.add(item.toDomainAlbum())
+        }
+        val albums = listOf("album", "live", "compilation")
+            .flatMap { releases[it].orEmpty() }
+            .map { it.toDomainAlbum() }
+
+        return ArtistDetail(
+            artist = Artist(
+                id = raw.id?.toLongOrNull() ?: artistId,
+                name = raw.name?.display ?: "",
+                picture = picture,
+            ),
+            topTracks = raw.topTracks.map { it.toDeezerTrack() },
+            albums = albums,
+            eps = eps,
+            singles = singles,
+            unreleasedTracks = emptyList(),
+            similarArtists = emptyList(),
+        )
+    }
+
+    /**
+     * Full-length file URL for a Deezer track — GET
+     * /api/deezer/download?track_id=<id>&quality=<code>, the Deezer twin of
+     * Qobuz's /api/download-music. Same quality codes, same envelope
+     * (`{ success, data: { url } }`), so it is read
+     * with the same parsers. See [DeezerQuality] for what each code serves.
+     *
+     * The url is a signed link straight onto Deezer's CDN, and the file there
+     * is Blowfish-striped: whoever writes it to disk runs it through
+     * DeezerStripeDecryptor first.
+     *
+     * Null when no instance serves Deezer or the instance refuses the track —
+     * it answers 403 "not available for download with current ARL cookie"
+     * when its Deezer account can't serve it. A refused FLAC request is
+     * retried once as MP3 320, the way Hi-Res falls back on Qobuz.
+     */
+    suspend fun getDeezerDownloadUrl(deezerId: Long, quality: AudioQuality): String? {
+        val base = deezerBaseOrNull() ?: return null
+        val tier = DeezerQuality.tierFor(quality, hires = deezerId in deezerHiRes)
+        return resolveDeezerDownloadUrl(base, deezerId, tier)
+            ?: tier.takeIf { it.codec == "FLAC" }?.let {
+                resolveDeezerDownloadUrl(base, deezerId, DeezerQuality.Tier.MP3_320)
+            }
+    }
+
+    private suspend fun resolveDeezerDownloadUrl(base: String, deezerId: Long, tier: DeezerQuality.Tier): String? =
+        withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/deezer/download?track_id=$deezerId&quality=${tier.code}")
+                if (!res.status.isSuccess()) return@runCatching null
+                val body = res.bodyAsText()
+                extractQobuzFileUrlFromEnvelope(body, base) ?: extractQobuzFileUrl(body, base)
+            }.getOrNull()
+        }
+
+    /**
+     * Playable URL of a Deezer track's 30-second preview — a signed /api/file
+     * link on the instance. Fetched fresh every time: Deezer's preview URLs
+     * carry a short-lived token.
+     */
+    suspend fun getDeezerPreviewUrl(deezerId: Long): String? {
+        val base = deezerBaseOrNull() ?: return null
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/deezer/preview?track_id=$deezerId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<tf.monochrome.desktop.data.api.model.DeezerPreviewEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+        val raw = envelope.data?.url?.takeIf { envelope.success && it.isNotBlank() } ?: return null
+        return absoluteUrl(raw, base)
+    }
+
+    /**
+     * Find the Apple Music adamId for a recording the app knows by metadata,
+     * so a Qobuz/TIDAL/local track can be pulled from the Apple wrapper.
+     *
+     * Matching is by title + artist, not ISRC: the instance's Apple layer
+     * indexes text only (an ISRC query returns zero results), so the query is
+     * "<title> <artist>" and candidates are then scored. Duration is the
+     * tie-breaker that separates the original from covers and edits.
+     *
+     * The result (including "no match") is cached in [QobuzIdRegistry] so this
+     * costs one round trip per track, ever. Returns null when Apple isn't
+     * configured, nothing matches confidently, or the request fails.
+     */
+    suspend fun findAppleIdFor(
+        trackId: Long,
+        title: String,
+        artist: String,
+        durationSeconds: Int = 0,
+    ): Long? {
+        qobuzIdRegistry.appleIdFor(trackId)?.let { return it }
+        if (qobuzIdRegistry.hasAppleLookup(trackId)) return null
+        if (title.isBlank()) return null
+
+        val instance = instanceManager.appleInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+        // offset is required by /api/apple/get-music — omitting it is a 400.
+        val query = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get(
+                    "$base/api/apple/get-music?q=${query.encodeUrl()}&offset=0"
+                )
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzSearchEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        }
+
+        val items = envelope?.data?.tracks?.items.orEmpty()
+        val best = items
+            .mapNotNull { item ->
+                val id = item.id ?: return@mapNotNull null
+                val score = appleMatchScore(item, title, artist, durationSeconds)
+                if (score < APPLE_MATCH_MIN_SCORE) null else id to score
+            }
+            .maxByOrNull { it.second }
+            ?.first
+
+        if (best == null) {
+            qobuzIdRegistry.markNoAppleMatch(trackId)
+            return null
+        }
+        qobuzIdRegistry.registerAppleIdFor(trackId, best)
+        return best
+    }
+
+    /**
+     * Confidence that [item] is the same recording as the given metadata.
+     * Title carries the most weight, artist next, duration is a bonus — a
+     * title-only agreement is deliberately below [APPLE_MATCH_MIN_SCORE] so a
+     * generic name like "Intro" can't match the wrong song on its own.
+     */
+    private fun appleMatchScore(
+        item: QobuzTrackItem,
+        title: String,
+        artist: String,
+        durationSeconds: Int,
+    ): Int {
+        val wantTitle = normalizeForMatch(title)
+        val gotTitle = normalizeForMatch(item.title)
+        if (wantTitle.isBlank() || gotTitle.isBlank()) return 0
+
+        var score = when {
+            gotTitle == wantTitle -> 60
+            gotTitle.startsWith(wantTitle) || wantTitle.startsWith(gotTitle) -> 40
+            gotTitle.contains(wantTitle) || wantTitle.contains(gotTitle) -> 25
+            else -> return 0
+        }
+
+        val wantArtist = normalizeForMatch(artist)
+        val gotArtist = normalizeForMatch(item.performer?.name ?: item.album?.artist?.name ?: "")
+        if (wantArtist.isNotBlank() && gotArtist.isNotBlank()) {
+            score += when {
+                gotArtist == wantArtist -> 40
+                gotArtist.contains(wantArtist) || wantArtist.contains(gotArtist) -> 28
+                else -> 0
+            }
+        }
+
+        val gotDuration = item.duration ?: 0
+        if (durationSeconds > 0 && gotDuration > 0) {
+            val delta = kotlin.math.abs(gotDuration - durationSeconds)
+            score += when {
+                delta <= 2 -> 20
+                delta <= 5 -> 10
+                delta > 30 -> -30
+                else -> 0
+            }
+        }
+        return score
+    }
+
+    /** Lowercase, strip bracketed suffixes and punctuation, collapse whitespace. */
+    private fun normalizeForMatch(raw: String): String =
+        raw.lowercase()
+            .replace(Regex("\\((?:feat|ft|with)\\.?[^)]*\\)"), " ")
+            .replace(Regex("\\[[^]]*]"), " ")
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+
+    /**
+     * Qobuz album detail — GET /api/get-album?album_id=<alphanumeric-slug>.
+     * The response is the standard {success, data: …} envelope; data has all
+     * the QobuzAlbumItem fields plus a `tracks: { items: [...] }` block with
+     * the album's full track list. Returns null when the Qobuz instance
+     * isn't configured, the request fails, or the body can't be parsed.
+     */
+    suspend fun getQobuzAlbum(albumSlug: String): AlbumDetail? {
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return null
+        if (albumSlug.isBlank()) return null
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get(
+                    "$base/api/get-album?album_id=${albumSlug.encodeUrl()}"
+                )
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzAlbumDetailEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        if (!envelope.success || envelope.data == null) return null
+        val albumItem = envelope.data
+        registerAlbumWithRegistry(albumItem)
+        val album = albumItem.toDomainAlbum()
+        val tracks = albumItem.tracks?.items?.map { item ->
+            // Tag every track id as Qobuz so PlayerViewModel.resolveAndPlay
+            // routes it through the QobuzCached path rather than the TIDAL
+            // streaming fallback.
+            item.id?.let { qobuzIdRegistry.registerTrack(it) }
+            // Detail responses don't repeat the album object inside each track
+            // — provide it explicitly so playback / display has full context.
+            item.toDomainTrack(fallbackAlbum = album)
+        } ?: emptyList()
+        return AlbumDetail(album = album, tracks = tracks)
+    }
+
+    /**
+     * Qobuz artist detail — GET /api/get-artist?artist_id=<numeric-id>.
+     *
+     * Response shape is materially different from search/album:
+     *   {success, data: {artist: {id, name:{display}, biography, images:
+     *     {portrait:{hash, format}}, top_tracks:[…], similar_artists:
+     *     {has_more, items:[…]}}}}
+     *
+     * Album lists per artist aren't part of this payload — the SPA likely
+     * loads them via a separate call. Until that contract is known, the
+     * mapped ArtistDetail leaves albums/eps/singles empty and populates
+     * topTracks + similarArtists.
+     */
+    suspend fun getQobuzArtist(artistId: Long): ArtistDetail? {
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/get-artist?artist_id=$artistId")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzArtistDetailEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+
+        if (!envelope.success || envelope.data?.artist == null) return null
+        val raw = envelope.data.artist
+
+        // Register top_track album slugs so clicking through to an album
+        // from the artist screen still resolves via QobuzIdRegistry.
+        // Also tag each top_track id as Qobuz so playback routes through
+        // QobuzCached instead of falling through to TIDAL streaming.
+        raw.topTracks.forEach { topTrack ->
+            topTrack.id?.let { qobuzIdRegistry.registerTrack(it) }
+            topTrack.album?.let { album -> registerAlbumWithRegistry(album) }
+        }
+
+        val artist = Artist(
+            id = raw.id ?: artistId,
+            name = raw.name?.display ?: "",
+            picture = raw.images?.portraitUrl(),
+        )
+        val topTracks = raw.topTracks.mapNotNull { it.toDomainTrack() }
+        val similar = raw.similarArtists?.items?.mapNotNull { it.toDomainArtist() } ?: emptyList()
+
+        // Map the artist's full discography (the `releases` groups) into
+        // Albums / EPs / Singles so every release — and therefore every track —
+        // is reachable from the artist screen. Each release item is a
+        // QobuzAlbumItem; register its slug so AlbumDetail can resolve it.
+        val albums = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        val eps = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        val singles = mutableListOf<tf.monochrome.desktop.domain.model.Album>()
+        raw.releases.forEach { group ->
+            group.items.forEach { item ->
+                registerReleaseWithRegistry(item)
+                val album = item.toDomainAlbum()
+                when (group.type) {
+                    "epSingle" -> if ((item.tracksCount ?: 0) <= 1) singles.add(album) else eps.add(album)
+                    "album", "live", "compilation" -> albums.add(album)
+                    else -> { /* download / awardedRelease / next — skip */ }
+                }
+            }
+        }
+
+        return ArtistDetail(
+            artist = artist,
+            topTracks = topTracks,
+            albums = albums,
+            eps = eps,
+            singles = singles,
+            unreleasedTracks = emptyList(),
+            similarArtists = similar,
+        )
+    }
+
+    /**
+     * Fetch a TIDAL track's ISRC from the metadata pool (InstanceType.API,
+     * separate from STREAMING) — so it's usually obtainable even when the
+     * track's *stream* can't be resolved, which is exactly when the Qobuz
+     * fallback needs it.
+     */
+    suspend fun getTidalIsrc(trackId: Long): String? = runCatching {
+        val infoBody = fetchWithRetry("/info/?id=$trackId")
+        json.decodeFromString<TrackInfoResponse>(unwrapResponse(infoBody)).isrc?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    /**
+     * Resolve the Qobuz match for an ISRC. Qobuz indexes tracks by ISRC, so
+     * /api/get-music?q=<isrc> returns the exact recording — far more reliable
+     * than a title/artist match. Also carries the Qobuz album slug and artist
+     * id so the playback fallback can bridge "Go to album/artist". Returns null
+     * when Qobuz isn't configured or doesn't carry that ISRC.
+     */
+    suspend fun findQobuzTrackByIsrc(isrc: String): QobuzTrackMatch? {
+        if (isrc.isBlank()) return null
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+        val envelope = withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/get-music?q=${isrc.encodeUrl()}")
+                if (!res.status.isSuccess()) return@runCatching null
+                json.decodeFromString<QobuzSearchEnvelope>(res.bodyAsText())
+            }.getOrNull()
+        } ?: return null
+        val items = envelope.data?.tracks?.items ?: return null
+        val match = items.firstOrNull { it.isrc?.equals(isrc, ignoreCase = true) == true } ?: return null
+        val id = match.id ?: return null
+        qobuzIdRegistry.registerTrack(id)
+        match.album?.let { registerAlbumWithRegistry(it) }
+        return QobuzTrackMatch(
+            trackId = id,
+            albumSlug = match.album?.id,
+            artistId = match.performer?.id,
+        )
+    }
+
+    // Side-channel registry update for any QobuzAlbumItem we decode. Album.id
+    // produced by toDomainAlbum is qobuz_id when available and slug.hashCode()
+    // otherwise — register that exact value so AlbumDetailViewModel's
+    // registry lookup always resolves regardless of which path produced the id.
+    private fun registerAlbumWithRegistry(item: QobuzAlbumItem) {
+        val albumId = item.qobuzId ?: item.id?.hashCode()?.toLong()
+        val slug = item.id
+        if (albumId != null && !slug.isNullOrBlank()) {
+            qobuzIdRegistry.registerAlbum(albumId, slug)
+        }
+    }
+
+    // Same registry side-channel for artist-page release items.
+    private fun registerReleaseWithRegistry(item: QobuzRelease) {
+        val albumId = item.qobuzId ?: item.id?.hashCode()?.toLong()
+        val slug = item.id
+        if (albumId != null && !slug.isNullOrBlank()) {
+            qobuzIdRegistry.registerAlbum(albumId, slug)
+        }
+    }
+
+    // --- Album ---
+
+    suspend fun getAlbum(albumId: Long): AlbumDetail {
+        val cacheKey = "album_$albumId"
+        cache.get(cacheKey)?.let { entry ->
+            if (entry.isValid()) return entry.data as AlbumDetail
+        }
+
+        val body = fetchWithRetry("/album/?id=$albumId")
+        val response = json.decodeFromString<AlbumResponse>(unwrapResponse(body))
+
+        val album = Album(
+            id = response.id,
+            title = response.title,
+            artist = response.artist?.toDomain(),
+            artists = response.artists.map { it.toDomain() },
+            numberOfTracks = response.numberOfTracks,
+            releaseDate = response.releaseDate,
+            cover = response.cover,
+            explicit = response.explicit,
+            type = response.type,
+            duration = response.duration
+        )
+
+        val trackItems = response.tracks?.items ?: response.items ?: emptyList()
+        var tracks = trackItems.map { it.toTrack(album) }
+
+        // Handle pagination for large albums
+        val total = response.tracks?.totalNumberOfItems ?: response.numberOfTracks ?: tracks.size
+        if (tracks.size < total) {
+            val remaining = mutableListOf<Track>()
+            var offset = tracks.size
+            while (offset < total) {
+                val pageBody = fetchWithRetry("/album/?id=$albumId&offset=$offset&limit=100")
+                val pageResponse = json.decodeFromString<AlbumResponse>(unwrapResponse(pageBody))
+                val pageItems = pageResponse.tracks?.items ?: pageResponse.items ?: emptyList()
+                remaining.addAll(pageItems.map { it.toTrack(album) })
+                offset += pageItems.size
+                if (pageItems.isEmpty()) break
+            }
+            tracks = tracks + remaining
+        }
+
+        val detail = AlbumDetail(album = album, tracks = tracks)
+        cache.put(cacheKey, CacheEntry(detail))
+        return detail
+    }
+
+    // --- Artist ---
+
+    suspend fun getArtist(artistId: Long): ArtistDetail {
+        val cacheKey = "artist_$artistId"
+        cache.get(cacheKey)?.let { entry ->
+            if (entry.isValid()) return entry.data as ArtistDetail
+        }
+
+        // Fetch artist info
+        val infoBody = fetchWithRetry("/artist/?id=$artistId")
+        val artistResponse = json.decodeFromString<ArtistResponse>(unwrapResponse(infoBody))
+        val artist = Artist(
+            id = artistResponse.id,
+            name = artistResponse.name,
+            picture = artistResponse.picture,
+            artistTypes = artistResponse.artistTypes
+        )
+
+        // Fetch artist content (albums, tracks)
+        val contentBody = fetchWithRetry("/artist/?f=$artistId&skip_tracks=true")
+        val contentResponse = json.decodeFromString<ArtistContentResponse>(unwrapResponse(contentBody))
+
+        val allAlbums = (contentResponse.albums?.items ?: contentResponse.items?.map { item ->
+            tf.monochrome.desktop.data.api.model.ApiAlbum(
+                id = item.id,
+                title = item.title,
+                artist = item.artist,
+                artists = item.artists,
+                numberOfTracks = item.numberOfTracks,
+                releaseDate = item.releaseDate,
+                cover = item.cover,
+                explicit = item.explicit,
+                type = item.type
+            )
+        } ?: emptyList()).map { it.toDomain() }
+
+        val albums = allAlbums.filter { it.type?.equals("ALBUM", ignoreCase = true) != false }
+        val eps = allAlbums.filter { it.type?.equals("EP", ignoreCase = true) == true }
+        val singles = allAlbums.filter { it.type?.equals("SINGLE", ignoreCase = true) == true }
+
+        val topTracks = contentResponse.topTracks?.items?.map { it.toDomain() } ?: emptyList()
+
+        // Try fetching similar artists
+        val similarArtists = try {
+            val similarBody = fetchWithRetry("/artist/similar/?id=$artistId", minVersion = "2.3")
+            val items = json.decodeFromString<SearchResponse>(unwrapResponse(similarBody))
+            items.items.map { it.toArtist() }
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        // Fetch unreleased/community tracks (ArtistGrid)
+        val unreleasedTracks = try {
+            val unreleasedBody = fetchWithRetry("/artist/unreleased/?id=$artistId", minVersion = "2.5")
+            val items = json.decodeFromString<SearchResponse>(unwrapResponse(unreleasedBody))
+            items.items.map { it.toTrack() }
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        val detail = ArtistDetail(
+            artist = artist,
+            topTracks = topTracks,
+            albums = albums,
+            eps = eps,
+            singles = singles,
+            unreleasedTracks = unreleasedTracks,
+            similarArtists = similarArtists
+        )
+        cache.put(cacheKey, CacheEntry(detail))
+        return detail
+    }
+
+    // --- Playlist ---
+
+    suspend fun getPlaylist(playlistId: String): Playlist {
+        val body = fetchWithRetry("/playlist/?id=$playlistId")
+        val response = json.decodeFromString<PlaylistResponse>(unwrapResponse(body))
+
+        val trackItems = response.items ?: response.tracks ?: emptyList()
+        var tracks = trackItems.mapNotNull { it.toDomain() }
+
+        // Handle pagination
+        val total = response.numberOfTracks ?: tracks.size
+        if (tracks.size < total) {
+            var offset = tracks.size
+            while (offset < total) {
+                val pageBody = fetchWithRetry("/playlist/?id=$playlistId&offset=$offset")
+                val pageResponse = json.decodeFromString<PlaylistResponse>(unwrapResponse(pageBody))
+                val pageItems = pageResponse.items ?: pageResponse.tracks ?: emptyList()
+                tracks = tracks + pageItems.mapNotNull { it.toDomain() }
+                offset += pageItems.size
+                if (pageItems.isEmpty()) break
+            }
+        }
+
+        return Playlist(
+            uuid = response.uuid,
+            title = response.title,
+            description = response.description,
+            numberOfTracks = response.numberOfTracks,
+            duration = response.duration,
+            cover = response.cover ?: response.squareImage ?: response.image,
+            creator = response.creator?.let { PlaylistCreator(it.id, it.name) },
+            tracks = tracks
+        )
+    }
+
+    // --- Streaming ---
+
+    suspend fun getTrackStream(
+        trackId: Long,
+        quality: AudioQuality,
+        forDownload: Boolean = false
+    ): TrackStream {
+        // Downloads route through the project-private trypt-hifi (Qobuz) API
+        // when configured. The frontend's network trace shows the real call
+        // is GET /api/download-music?track_id=<id>&quality=<qobuz_code>, which
+        // returns a JSON envelope containing a short-lived HMAC-signed
+        // /api/file?... URL we then stream the bytes from.
+        // A Deezer id means nothing to Qobuz or TIDAL — both would answer with
+        // whatever recording happens to have that number. Deezer picks are
+        // served by /api/deezer/download (getDeezerDownloadUrl) and never get
+        // here; a bare Deezer id arriving at this point has no stream.
+        if (qobuzIdRegistry.isDeezerTrack(trackId) && !qobuzIdRegistry.isQobuzTrack(trackId)) {
+            throw IllegalStateException(
+                "Track $trackId is a Deezer track; refusing to resolve it against Qobuz or TIDAL"
+            )
+        }
+
+        if (forDownload) {
+            val qobuzUrl = runCatching { resolveQobuzDownloadUrl(trackId, quality) }.getOrNull()
+            if (qobuzUrl != null) {
+                return TrackStream(
+                    track = Track(id = trackId, title = "", duration = 0),
+                    streamUrl = qobuzUrl,
+                    isDash = false,
+                    replayGain = ReplayGainValues()
+                )
+            }
+            // Qobuz unset or upstream returned nothing. Falling through to
+            // TIDAL is only valid for a TIDAL id — see the check below.
+        }
+
+        // Qobuz ids are not TIDAL ids. Querying /track/ with one either 404s or
+        // returns a different recording entirely, which then gets written to
+        // disk under this track's tags. Fail loudly instead; callers already
+        // handle a failed stream lookup, and the Apple branch of TrackDownloader
+        // refuses cross-catalog substitution for exactly this reason.
+        if (qobuzIdRegistry.isQobuzTrack(trackId)) {
+            throw IllegalStateException(
+                "Track $trackId is a Qobuz track; refusing to resolve it against TIDAL"
+            )
+        }
+
+        // TIDAL Dolby Atmos: the HiFi API's /track/ only serves stereo, so
+        // when the user prefers Atmos ask the TrypT HiFi instance for the
+        // track's full E-AC-3 JOC mix (bed + objects, untouched). The Atmos
+        // renderer then renders it to binaural or the speaker layout. Falls
+        // through to the stereo stream when the track has no Atmos mix or the
+        // instance isn't set / can't serve it.
+        if (!forDownload && preferences.tidalAtmosPreferred.first()) {
+            tidalAtmosStreamUrl(trackId)?.let { url ->
+                return TrackStream(
+                    track = Track(id = trackId, title = "", duration = 0),
+                    streamUrl = url,
+                    isDash = false,
+                    replayGain = ReplayGainValues()
+                )
+            }
+        }
+
+        val body = fetchWithRetry(
+            "/track/?id=$trackId&quality=${quality.apiValue}",
+            instanceType = InstanceType.STREAMING
+        )
+        val streamResponse = json.decodeFromString<TrackStreamResponse>(unwrapResponse(body))
+
+        val streamUrl = extractStreamUrlFromManifest(streamResponse.manifest)
+        val isDash = streamUrl?.contains("<MPD") == true || streamUrl?.endsWith(".mpd") == true
+
+        if (streamUrl == null) {
+            // Fallback to lower quality
+            if (quality == AudioQuality.HI_RES) {
+                return getTrackStream(trackId, AudioQuality.LOSSLESS, forDownload)
+            }
+            throw Exception("Could not extract stream URL for track $trackId")
+        }
+
+        // Get track info for metadata
+        val trackInfo = try {
+            val infoBody = fetchWithRetry("/info/?id=$trackId")
+            json.decodeFromString<TrackInfoResponse>(unwrapResponse(infoBody))
+        } catch (_: Exception) {
+            null
+        }
+
+        val track = Track(
+            id = trackId,
+            title = trackInfo?.title ?: "",
+            duration = trackInfo?.duration ?: 0,
+            artist = trackInfo?.artist?.toDomain(),
+            artists = trackInfo?.artists?.map { it.toDomain() } ?: emptyList(),
+            album = trackInfo?.album?.toDomain(),
+            audioQuality = trackInfo?.audioQuality,
+            explicit = trackInfo?.explicit ?: false,
+            trackNumber = trackInfo?.trackNumber,
+            volumeNumber = trackInfo?.volumeNumber
+        )
+
+        return TrackStream(
+            track = track,
+            streamUrl = streamUrl,
+            isDash = isDash,
+            replayGain = ReplayGainValues(
+                trackReplayGain = streamResponse.trackReplayGain,
+                trackPeakAmplitude = streamResponse.trackPeakAmplitude,
+                albumReplayGain = streamResponse.albumReplayGain,
+                albumPeakAmplitude = streamResponse.albumPeakAmplitude
+            )
+        )
+    }
+
+    /**
+     * The TrypT HiFi instance's link to TIDAL track [trackId]'s Dolby Atmos
+     * file (GET /api/tidal/download-music?atmos=true), or null when the
+     * instance is unset, the track has no Atmos mix, or the call fails. The
+     * link is Range-capable once assembled and streams progressively before.
+     */
+    private suspend fun tidalAtmosStreamUrl(trackId: Long): String? {
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+        return withTimeoutOrNull(TIDAL_ATMOS_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/tidal/download-music?track_id=$trackId&atmos=true")
+                if (!res.status.isSuccess()) return@runCatching null
+                val data = json.parseToJsonElement(res.bodyAsText()) as? JsonObject ?: return@runCatching null
+                val payload = data["data"] as? JsonObject ?: return@runCatching null
+                // Only accept a stream the instance confirms carries JOC objects.
+                val stream = payload["stream"] as? JsonObject
+                val joc = (stream?.get("extensionType") as? JsonPrimitive)?.contentOrNull
+                if (joc != null && !joc.equals("JOC", ignoreCase = true)) return@runCatching null
+                (payload["url"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?.let { absoluteUrl(it, base) }
+            }.getOrNull()
+        }
+    }
+
+    // --- Recommendations ---
+
+    suspend fun getRecommendations(trackId: Long): List<Track> {
+        // TIDAL's /recommendations is keyed by TIDAL id; a Deezer id would seed
+        // the radio from some other song entirely.
+        if (qobuzIdRegistry.isDeezerTrack(trackId) && !qobuzIdRegistry.isQobuzTrack(trackId)) return emptyList()
+        val body = fetchWithRetry("/recommendations/?id=$trackId", minVersion = "2.4")
+        val response = json.decodeFromString<RecommendationsResponse>(unwrapResponse(body))
+        return response.items.map { apiTrack ->
+            // Recommendations may return incomplete metadata, so fetch full info
+            if (apiTrack.title.isBlank() && apiTrack.id != 0L) {
+                try {
+                    val infoBody = fetchWithRetry("/info/?id=${apiTrack.id}")
+                    val info = json.decodeFromString<TrackInfoResponse>(unwrapResponse(infoBody))
+                    Track(
+                        id = apiTrack.id,
+                        title = info.title,
+                        duration = info.duration,
+                        artist = info.artist?.toDomain(),
+                        artists = info.artists.map { it.toDomain() },
+                        album = info.album?.toDomain(),
+                        audioQuality = info.audioQuality,
+                        explicit = info.explicit,
+                        trackNumber = info.trackNumber,
+                        volumeNumber = info.volumeNumber
+                    )
+                } catch (_: Exception) {
+                    apiTrack.toDomain()
+                }
+            } else {
+                apiTrack.toDomain()
+            }
+        }
+    }
+
+    // --- Lyrics ---
+
+    suspend fun getLyrics(trackId: Long, convertToRomaji: Boolean = false): Lyrics? {
+        // The /lyrics endpoint is keyed by TIDAL track id. Qobuz ids live in a
+        // separate namespace, so querying TIDAL with one either 404s or — worse
+        // — returns a *different* track's synced lyrics: right-looking text that
+        // is never in sync. Skip TIDAL for known Qobuz ids; callers fall back to
+        // the metadata-based LRCLib lookup instead.
+        if (qobuzIdRegistry.isQobuzTrack(trackId) || qobuzIdRegistry.isDeezerTrack(trackId)) return null
+        return try {
+            val body = fetchWithRetry("/lyrics/?id=$trackId")
+            val response = json.decodeFromString<LyricsResponse>(unwrapResponse(body))
+            parseLyrics(response, convertToRomaji)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // --- Helper Methods ---
+
+    fun extractStreamUrlFromManifest(manifest: String?): String? {
+        if (manifest == null) return null
+
+        // Try base64 decode
+        val decoded = try {
+            String(Base64.decode(manifest, Base64.DEFAULT))
+        } catch (_: Exception) {
+            manifest
+        }
+
+        // Check if DASH XML
+        if (decoded.contains("<MPD")) {
+            return decoded // Return raw MPD for ExoPlayer DashMediaSource
+        }
+
+        // Try JSON parse
+        try {
+            val manifestJson = json.decodeFromString<ManifestJson>(decoded)
+            if (manifestJson.urls.isNotEmpty()) {
+                return manifestJson.urls.sortedByQuality().first()
+            }
+        } catch (_: Exception) {
+            // Not JSON
+        }
+
+        // Try as plain URL
+        val urlRegex = Regex("https?://[\\w\\-.~:/?#\\[\\]@!$&'()*+,;=%]+")
+        urlRegex.find(decoded)?.let { return it.value }
+
+        return null
+    }
+
+    private fun List<String>.sortedByQuality(): List<String> {
+        val keywords = listOf("flac", "lossless", "hi-res", "high")
+        return sortedBy { url ->
+            val lower = url.lowercase()
+            keywords.indexOfFirst { lower.contains(it) }.let { if (it >= 0) it else 999 }
+        }
+    }
+
+    private fun unwrapResponse(body: String): String {
+        // Some API responses wrap data in { data: ... }
+        return try {
+            val element = json.parseToJsonElement(body)
+            if (element is kotlinx.serialization.json.JsonObject && element.containsKey("data")) {
+                element["data"].toString()
+            } else {
+                body
+            }
+        } catch (_: Exception) {
+            body
+        }
+    }
+
+    private fun parseSearchResponse(body: String): SearchResponse {
+        val unwrapped = unwrapResponse(body)
+        return try {
+            json.decodeFromString<SearchResponse>(unwrapped)
+        } catch (_: Exception) {
+            // Try parsing as array
+            try {
+                val items = json.decodeFromString<List<tf.monochrome.desktop.data.api.model.SearchItem>>(unwrapped)
+                SearchResponse(items = items)
+            } catch (_: Exception) {
+                SearchResponse()
+            }
+        }
+    }
+
+    private fun parseLyrics(response: LyricsResponse, convertToRomaji: Boolean): Lyrics? {
+        val subtitles = response.subtitles ?: return response.lyrics?.let { raw ->
+            val text = if (convertToRomaji) RomajiConverter.convert(raw) else raw
+            Lyrics(lines = text.split("\n").map { line -> LyricLine(0, line) }, isSynced = false)
+        }
+
+        // Parse LRC-style subtitles (including enhanced word-level [mm:ss.ms]<mm:ss.ms>word)
+        val lines = mutableListOf<LyricLine>()
+        val lrcLineRegex = Regex("\\[(\\d+):(\\d+\\.\\d+)](.*)")
+        val lrcWordRegex = Regex("<(\\d+):(\\d+\\.\\d+)>([^<]*)")
+
+        subtitles.split("\n").forEach { rawLine ->
+            lrcLineRegex.find(rawLine)?.let { lineMatch ->
+                val minutes = lineMatch.groupValues[1].toLongOrNull() ?: 0
+                val seconds = lineMatch.groupValues[2].toDoubleOrNull() ?: 0.0
+                val lineTimeMs = (minutes * 60 * 1000) + (seconds * 1000).toLong()
+                val lineContent = lineMatch.groupValues[3]
+
+                // Extract word-level sync if present. In enhanced LRC each
+                // `<mm:ss.cs>` tag marks where ITS word starts, so word_i spans
+                // [t_i, t_{i+1}). The previous logic used the prior tag as the
+                // start, which shifted every word one slot early (and gave the
+                // first word a zero-width span) — i.e. karaoke was always out of
+                // sync. Pair each tag with the next tag's time as its end.
+                val rawWords = lrcWordRegex.findAll(lineContent).map { wordMatch ->
+                    val wMinutes = wordMatch.groupValues[1].toLongOrNull() ?: 0
+                    val wSeconds = wordMatch.groupValues[2].toDoubleOrNull() ?: 0.0
+                    val wordTimeMs = (wMinutes * 60 * 1000) + (wSeconds * 1000).toLong()
+                    var wordText = wordMatch.groupValues[3].trim()
+                    if (convertToRomaji) wordText = RomajiConverter.convert(wordText)
+                    wordTimeMs to wordText
+                }.filter { it.second.isNotBlank() }.toList()
+
+                val words = rawWords.mapIndexed { i, (startMs, wordText) ->
+                    val endMs = rawWords.getOrNull(i + 1)?.first ?: (startMs + 2000)
+                    LyricWord(startMs = startMs, endMs = endMs, text = wordText)
+                }
+
+                var finalText = if (words.isEmpty()) lineContent.trim() else words.joinToString(" ") { it.text }
+                if (convertToRomaji && words.isEmpty()) finalText = RomajiConverter.convert(finalText)
+
+                if (finalText.isNotBlank()) {
+                    lines.add(LyricLine(timeMs = lineTimeMs, text = finalText, words = words))
+                }
+            }
+        }
+
+        return if (lines.isNotEmpty()) {
+            Lyrics(lines = lines, isSynced = true)
+        } else {
+            val raw = subtitles.split("\n")
+            Lyrics(
+                lines = raw.map { LyricLine(0, if (convertToRomaji) RomajiConverter.convert(it) else it) },
+                isSynced = false
+            )
+        }
+    }
+
+    private fun String.encodeUrl(): String {
+        return java.net.URLEncoder.encode(this, "UTF-8")
+    }
+
+    // --- Qobuz (trypt-hifi) download resolution -----------------------------
+    //
+    // The trypt-hifi frontend at https://<host>/ ships a SPA, but the same
+    // origin also exposes a JSON API under /api/. The download flow seen in
+    // the frontend's network trace is:
+    //
+    //   1. GET /api/download-music?track_id=<id>&quality=<qobuz_code>
+    //        → small JSON envelope with a stream URL (per-request HMAC-signed)
+    //   2. GET that returned URL  → audio bytes (FLAC for quality 6/7/27,
+    //                                MP3 for 5)
+    //
+    // Step 2 is just a regular byte download, which TrackDownloader already
+    // handles. So all we need to do is resolve step 1 and return the URL.
+
+    // Public entry point for callers (TrackDownloader via getTrackStream, the
+    // streaming cache manager, etc.) that need to resolve a Qobuz file URL
+    // without the TIDAL fallthrough getTrackStream(forDownload=true) does.
+    suspend fun getQobuzDownloadUrl(trackId: Long, quality: AudioQuality): String? =
+        resolveQobuzDownloadUrl(trackId, quality)
+
+    private suspend fun resolveQobuzDownloadUrl(trackId: Long, quality: AudioQuality): String? {
+        val instance = instanceManager.qobuzInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+        val code = quality.qobuzCode()
+        val response = httpClient.get("$base/api/download-music?track_id=$trackId&quality=$code")
+        if (!response.status.isSuccess()) return null
+        val body = response.bodyAsText()
+        val resolved = extractQobuzFileUrlFromEnvelope(body, base)
+            ?: extractQobuzFileUrl(body, base)
+        return resolved
+            // Hi-Res isn't always available on Qobuz — fall back to lossless
+            // exactly like the TIDAL path does, instead of failing the
+            // download.
+            ?: if (quality == AudioQuality.HI_RES) {
+                resolveQobuzDownloadUrl(trackId, AudioQuality.LOSSLESS)
+            } else null
+    }
+
+    private fun extractQobuzFileUrlFromEnvelope(body: String, base: String): String? {
+        val parsed = runCatching { json.decodeFromString<QobuzDownloadEnvelope>(body) }.getOrNull()
+            ?: return null
+        if (!parsed.success && parsed.data == null && parsed.url == null
+            && parsed.fileUrl == null && parsed.streamUrl == null && parsed.downloadUrl == null) {
+            return null
+        }
+        val candidate = parsed.url
+            ?: parsed.fileUrl
+            ?: parsed.streamUrl
+            ?: parsed.downloadUrl
+            ?: parsed.data?.url
+            ?: parsed.data?.fileUrl
+            ?: parsed.data?.streamUrl
+            ?: parsed.data?.downloadUrl
+        return candidate?.let { absoluteUrl(it, base) }
+    }
+
+    // Qobuz exposes four quality codes; map our 4-tier AudioQuality onto them.
+    // Reference: 5 = MP3 320kbps, 6 = FLAC 16/44.1, 7 = FLAC 24/96, 27 = FLAC
+    // hi-res. Quality 27 was the one observed in the captured request.
+    private fun AudioQuality.qobuzCode(): Int = when (this) {
+        AudioQuality.LOW, AudioQuality.HIGH -> 5
+        AudioQuality.LOSSLESS -> 6
+        AudioQuality.HI_RES -> 27
+    }
+
+    // Defensive parser — the response body is short JSON but the field name
+    // hasn't been verified, so we try a handful of common shapes (top-level
+    // url, file_url, stream_url, download_url, nested data.url) and finally
+    // fall back to a regex scan for any /api/file? URL hosted on the same
+    // instance. Returns null if no candidate is found.
+    private fun extractQobuzFileUrl(body: String, base: String): String? {
+        val parsed = runCatching { json.parseToJsonElement(body) }.getOrNull()
+        val direct = (parsed as? JsonObject)?.let { obj ->
+            obj["url"]?.jsonPrimitive?.contentOrNull
+                ?: obj["file_url"]?.jsonPrimitive?.contentOrNull
+                ?: obj["stream_url"]?.jsonPrimitive?.contentOrNull
+                ?: obj["download_url"]?.jsonPrimitive?.contentOrNull
+                ?: (obj["data"] as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull
+        } ?: (parsed as? JsonPrimitive)?.contentOrNull
+        if (!direct.isNullOrBlank()) return absoluteUrl(direct, base)
+
+        // Regex fallback — match either the full URL or the relative path
+        // and resolve against the instance base. Trace showed the frontend's
+        // file URL begins with "file?uid=...&eid=...&hmac=...", so we accept
+        // both /api/file?... and bare file?... shapes.
+        val urlMatch = Regex("https?://[^\"\\s]*?/api/file\\?[^\"\\s]+").find(body)?.value
+        if (urlMatch != null) return urlMatch
+        val pathMatch = Regex("/?(?:api/)?file\\?[^\"\\s]+").find(body)?.value
+        return pathMatch?.let { absoluteUrl(it, base) }
+    }
+
+    private fun absoluteUrl(value: String, base: String): String {
+        return when {
+            value.startsWith("http://") || value.startsWith("https://") -> value
+            value.startsWith("/api/") -> base + value
+            value.startsWith("/") -> "$base/api${value}".replace("/api/api/", "/api/")
+            else -> "$base/api/$value"
+        }
+    }
+
+    // Resolve the playable URL for an Apple track: hit /api/apple/download-music,
+    // which returns the wrapper-resolved manifest, and read delivery.streamUrl —
+    // the cloud-cached decrypted file (Range-capable). Atmos-flagged tracks request
+    // the atmos variant. Returns null when Apple isn't configured / not yet cached.
+    suspend fun getAppleStreamUrl(appleId: Long, quality: AudioQuality, atmos: Boolean): String? {
+        // Apple picks its own format ladder (see PreferencesManager.appleQuality),
+        // independent of the Qobuz/TIDAL tier. Atmos is a separate master rather
+        // than a higher tier, so it is a toggle layered on top. `atmos` from the
+        // caller (a THX-flagged release) forces it on for that track.
+        //
+        // The atmos -> stereo fallback is the WRAPPER's job, not ours: it sees
+        // the downloader's exit code and can start the stereo job the moment the
+        // atmos one comes up empty. Doing it here would mean polling out a full
+        // 210s timeout before even discovering there is no Atmos master.
+        val stereoCode = preferences.appleQuality.first().code
+        val wantAtmos = atmos || preferences.appleAtmosPreferred.first()
+        val q = if (wantAtmos) "atmos" else stereoCode
+        val fallback = if (wantAtmos) stereoCode else null
+
+        // Tailnet-direct: when a home wrapper/agent URL is set, decrypt + stream
+        // straight from the PC over Tailscale — no cloud. Trigger the decrypt, then
+        // poll the agent's /files endpoint until it serves (short polls, so it's
+        // robust to HTTP client timeouts while the decrypt runs, up to ~3.5 min).
+        val agentUrl = preferences.appleWrapperUrl.first()?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }
+        if (agentUrl != null) {
+            val secret = preferences.appleWrapperSecret.first().orEmpty()
+            val fileUrl = "$agentUrl/files/$appleId.m4a"
+            val fallbackField = fallback?.let { ""","fallback":"$it"""" } ?: ""
+            val kicked = runCatching {
+                httpClient.post("$agentUrl/decrypt") {
+                    header("X-Agent-Secret", secret)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"adamId":"$appleId","quality":"$q"$fallbackField}""")
+                }.status.value
+            }
+            android.util.Log.i(
+                "HiFiApiClient",
+                "Apple $appleId (q=$q${fallback?.let { " fallback=$it" } ?: ""}): POST /decrypt -> " +
+                    "${kicked.getOrNull() ?: "unreachable: ${kicked.exceptionOrNull()?.message}"}",
+            )
+            val deadline = System.currentTimeMillis() + 210_000L
+            var polls = 0
+            while (System.currentTimeMillis() < deadline) {
+                val ready = runCatching {
+                    val code = httpClient.get(fileUrl) { header("Range", "bytes=0-0") }.status.value
+                    code == 200 || code == 206
+                }.getOrDefault(false)
+                if (ready) {
+                    android.util.Log.i("HiFiApiClient", "Apple $appleId: wrapper served after ${polls * 2.5}s")
+                    return fileUrl
+                }
+                polls++
+                delay(2500)
+            }
+            // Deliberately no fallback: an Apple track comes from the wrapper or
+            // not at all. Substituting Qobuz/TIDAL here would silently hand back
+            // a different master than the one that was picked.
+            android.util.Log.w("HiFiApiClient", "Apple $appleId: wrapper never served the file (gave up after 210s)")
+            return null
+        }
+
+        // No wrapper configured. An Apple track is only ever served by the
+        // wrapper — never by Qobuz or TIDAL — so the cloud endpoint is the sole
+        // alternative, and it is itself wrapper-backed (/api/apple/* proxies a
+        // wrapper deployment). If neither exists the track is simply not
+        // obtainable; callers must fail rather than substitute another catalog.
+        android.util.Log.i(
+            "HiFiApiClient",
+            "Apple $appleId: no agent/wrapper URL set - falling back to the cloud wrapper endpoint",
+        )
+        val instance = instanceManager.appleInstanceOrNull() ?: return null
+        val base = instance.url.trimEnd('/')
+        return withTimeoutOrNull(QOBUZ_REQUEST_TIMEOUT_MS) {
+            runCatching {
+                val res = httpClient.get("$base/api/apple/download-music?track_id=$appleId&quality=$q")
+                if (!res.status.isSuccess()) return@runCatching null
+                val env = json.decodeFromString<tf.monochrome.desktop.data.api.model.AppleDownloadEnvelope>(res.bodyAsText())
+                env.data?.manifest?.delivery?.streamUrl?.takeIf { it.isNotBlank() }?.let { absoluteUrl(it, base) }
+            }.getOrNull()
+        }
+    }
+
+}
+
+// --- Qobuz item → domain mappers (file-private extensions) -----------------
+
+private fun QobuzRelease.toDomainAlbum(): tf.monochrome.desktop.domain.model.Album {
+    val cover = image?.large ?: image?.small ?: image?.thumbnail
+    val typeLabel = if ((tracksCount ?: 0) <= 4) "EP" else "ALBUM"
+    return tf.monochrome.desktop.domain.model.Album(
+        id = qobuzId ?: id?.hashCode()?.toLong() ?: 0L,
+        title = listOfNotNull(title.takeIf { it.isNotBlank() }, version?.takeIf { it.isNotBlank() })
+            .joinToString(" — "),
+        numberOfTracks = tracksCount,
+        cover = cover,
+        explicit = parentalWarning,
+        type = typeLabel,
+        duration = duration,
+        version = version,
+        isThxSpatialAudio = tf.monochrome.desktop.domain.model.isThxSpatialAudio(title, version),
+    )
+}
+
+private fun QobuzAlbumItem.toDomainAlbum(): tf.monochrome.desktop.domain.model.Album {
+    val resolvedArtist = artist?.toDomainArtistRef()
+    val resolvedArtists = artists.map { it.toDomainArtistRef() }
+    val cover = image?.large ?: image?.small ?: image?.thumbnail
+    val explicit = parentalWarning
+    val typeLabel = if ((tracksCount ?: 0) <= 4) "EP" else "ALBUM"
+    return tf.monochrome.desktop.domain.model.Album(
+        id = qobuzId ?: id?.hashCode()?.toLong() ?: 0L,
+        title = listOfNotNull(title.takeIf { it.isNotBlank() }, version?.takeIf { it.isNotBlank() })
+            .joinToString(" — "),
+        artist = resolvedArtist,
+        artists = resolvedArtists,
+        numberOfTracks = tracksCount,
+        releaseDate = releaseDateOriginal,
+        cover = cover,
+        explicit = explicit,
+        type = typeLabel,
+        duration = duration,
+        version = version,
+        isThxSpatialAudio = tf.monochrome.desktop.domain.model.isThxSpatialAudio(title, version),
+        // Qobuz has always sent this; the mapper just never read it. The slug
+        // is the catalogue's own taxonomy key and the more stable of the two.
+        genre = genre?.name,
+        genreSlug = genre?.slug,
+    )
+}
+
+private fun QobuzTrackItem.toDomainTrack(
+    fallbackAlbum: tf.monochrome.desktop.domain.model.Album? = null,
+): tf.monochrome.desktop.domain.model.Track {
+    val resolvedAlbum = album?.toDomainAlbum() ?: fallbackAlbum
+    // performer is the track-level primary artist ({id, name}). Fall back to
+    // the album's main artist when missing (the response always populates one
+    // or the other).
+    val resolvedArtist = performer?.toDomainArtist()
+        ?: album?.artist?.toDomainArtistRef()
+        ?: fallbackAlbum?.artist
+    // Qobuz track payloads carry only a single `performer`; the structured
+    // multi-artist credits (main + featured, each with an id) live on the album.
+    // Merge the primary performer with the album's *performing* artists so a
+    // track credited to several artists can wire each name to its own profile.
+    // Composer/producer-only credits are dropped (not artist-page material).
+    val creditedArtists = (listOfNotNull(resolvedArtist) +
+        (album?.artists?.filter { it.isPerformingCredit() }?.map { it.toDomainArtistRef() } ?: emptyList()))
+        .filter { it.id != 0L }
+        .distinctBy { it.id }
+    return tf.monochrome.desktop.domain.model.Track(
+        id = id ?: 0L,
+        title = listOfNotNull(title.takeIf { it.isNotBlank() }, version?.takeIf { it.isNotBlank() })
+            .joinToString(" — "),
+        duration = duration ?: 0,
+        artist = resolvedArtist,
+        artists = creditedArtists.ifEmpty { listOfNotNull(resolvedArtist) },
+        album = resolvedAlbum,
+        audioQuality = if (hires) "HI_RES_LOSSLESS" else if ((maximumBitDepth ?: 0) >= 16) "LOSSLESS" else null,
+        explicit = parentalWarning,
+        trackNumber = trackNumber,
+        volumeNumber = mediaNumber,
+        channelCount = maximumChannelCount,
+        version = version,
+        isThxSpatialAudio = tf.monochrome.desktop.domain.model.isThxSpatialAudio(
+            title = title, version = version,
+            albumTitle = album?.title, albumVersion = album?.version,
+        ) || (fallbackAlbum?.isThxSpatialAudio == true),
+    )
+}
+
+private fun QobuzPerson.toDomainArtist(): tf.monochrome.desktop.domain.model.Artist =
+    tf.monochrome.desktop.domain.model.Artist(
+        id = id ?: 0L,
+        name = name,
+        picture = null,
+    )
+
+private fun QobuzArtistItem.toDomainArtist(): tf.monochrome.desktop.domain.model.Artist =
+    tf.monochrome.desktop.domain.model.Artist(
+        id = id ?: 0L,
+        name = name,
+        picture = image?.large ?: image?.small ?: picture,
+    )
+
+private fun QobuzArtistRef.toDomainArtistRef(): tf.monochrome.desktop.domain.model.Artist =
+    tf.monochrome.desktop.domain.model.Artist(
+        id = id ?: 0L,
+        name = name,
+        picture = image?.large ?: image?.small ?: picture,
+    )
+
+/**
+ * Whether this album credit is a performing artist (main or featured) — the kind
+ * worth a clickable artist link — versus a composer/producer/writer-only credit.
+ * Credits with no declared role are treated as performers (the common case for
+ * the album's primary artists). Role strings are matched leniently because Qobuz
+ * uses varying separators/casing (e.g. "main-artist", "MainArtist", "Featured Artist").
+ */
+private fun QobuzArtistRef.isPerformingCredit(): Boolean {
+    if (roles.isEmpty()) return true
+    return roles.any { role ->
+        val key = role.lowercase().filter { it.isLetter() }
+        key.contains("mainartist") || key.contains("featuredartist") ||
+            key.contains("performer") || key == "artist"
+    }
+}
+
+// Qobuz hashes artist images in the response; the actual URL is a templated
+// CDN path. "large" is a reasonable default for the artist detail screen.
+private fun QobuzArtistImages.portraitUrl(size: String = "large"): String? {
+    val p = portrait ?: return null
+    val hash = p.hash ?: return null
+    val format = p.format ?: "jpg"
+    return "https://static.qobuz.com/images/artists/covers/$size/$hash.$format"
+}
+
+private fun QobuzSimilarArtist.toDomainArtist(): tf.monochrome.desktop.domain.model.Artist? {
+    val artistId = id ?: return null
+    return tf.monochrome.desktop.domain.model.Artist(
+        id = artistId,
+        name = name?.display ?: "",
+        picture = images?.portraitUrl(size = "medium"),
+    )
+}
+
+private fun QobuzNamedRef.toDomainArtist(): tf.monochrome.desktop.domain.model.Artist =
+    tf.monochrome.desktop.domain.model.Artist(
+        id = id ?: 0L,
+        name = name?.display ?: "",
+    )
+
+// Top-tracks on the artist endpoint use a different shape than QobuzTrackItem
+// (rights/physical_support/audio_info wrappers, nested name objects). Map
+// directly so the artist screen surfaces playable rows.
+private fun QobuzArtistTopTrack.toDomainTrack(): tf.monochrome.desktop.domain.model.Track? {
+    val trackId = id ?: return null
+    val resolvedAlbum = album?.toDomainAlbum()
+    val resolvedArtist = artist?.toDomainArtist() ?: album?.artist?.toDomainArtistRef()
+    val audioQuality = when {
+        rights?.hiresStreamable == true -> "HI_RES_LOSSLESS"
+        (audioInfo?.maximumBitDepth ?: 0) >= 16 -> "LOSSLESS"
+        else -> null
+    }
+    return tf.monochrome.desktop.domain.model.Track(
+        id = trackId,
+        title = listOfNotNull(title.takeIf { it.isNotBlank() }, version?.takeIf { it.isNotBlank() })
+            .joinToString(" — "),
+        duration = duration ?: 0,
+        artist = resolvedArtist,
+        artists = listOfNotNull(resolvedArtist),
+        album = resolvedAlbum,
+        audioQuality = audioQuality,
+        explicit = parentalWarning,
+        trackNumber = physicalSupport?.trackNumber,
+        volumeNumber = physicalSupport?.mediaNumber,
+        channelCount = audioInfo?.maximumChannelCount,
+        version = version,
+        isThxSpatialAudio = tf.monochrome.desktop.domain.model.isThxSpatialAudio(
+            title = title, version = version,
+            albumTitle = album?.title, albumVersion = album?.version,
+        ),
+    )
+}
+
+// --- Extension functions for API model → Domain model conversion ---
+
+private fun tf.monochrome.desktop.data.api.model.ApiArtist.toDomain() = Artist(
+    id = id,
+    name = name,
+    picture = picture,
+    artistTypes = artistTypes
+)
+
+private fun tf.monochrome.desktop.data.api.model.ApiAlbum.toDomain() = Album(
+    id = id,
+    title = title,
+    artist = artist?.toDomain(),
+    artists = artists.map { it.toDomain() },
+    numberOfTracks = numberOfTracks,
+    releaseDate = releaseDate,
+    cover = cover,
+    explicit = explicit,
+    type = type,
+    duration = duration
+)
+
+private fun tf.monochrome.desktop.data.api.model.ApiTrack.toDomain() = Track(
+    id = id,
+    title = title,
+    duration = duration,
+    artist = artist?.toDomain(),
+    artists = artists.map { it.toDomain() },
+    album = album?.toDomain(),
+    audioQuality = audioQuality,
+    explicit = explicit,
+    trackNumber = trackNumber,
+    volumeNumber = volumeNumber,
+    popularity = popularity,
+    type = type ?: "track",
+    isUnavailable = unavailable,
+    streamStartDate = streamStartDate
+)
+
+private fun tf.monochrome.desktop.data.api.model.SearchItem.toTrack() = Track(
+    id = id,
+    title = title,
+    duration = duration,
+    artist = artist?.toDomain(),
+    artists = artists.map { it.toDomain() },
+    album = album?.toDomain(),
+    audioQuality = audioQuality,
+    explicit = explicit,
+    trackNumber = trackNumber,
+    volumeNumber = volumeNumber,
+    popularity = popularity,
+    type = type ?: "track",
+    streamStartDate = streamStartDate
+)
+
+private fun tf.monochrome.desktop.data.api.model.SearchItem.toAlbum() = Album(
+    id = id,
+    title = title.ifBlank { name ?: "" },
+    artist = artist?.toDomain(),
+    artists = artists.map { it.toDomain() },
+    numberOfTracks = numberOfTracks,
+    releaseDate = releaseDate,
+    cover = cover ?: picture,
+    explicit = explicit,
+    type = type
+)
+
+private fun tf.monochrome.desktop.data.api.model.SearchItem.toArtist() = Artist(
+    id = id,
+    name = name ?: title,
+    picture = picture,
+    artistTypes = artistTypes
+)
+
+private fun tf.monochrome.desktop.data.api.model.SearchItem.toPlaylist() = Playlist(
+    uuid = uuid ?: id.toString(),
+    title = title.ifBlank { name ?: "" },
+    description = description,
+    numberOfTracks = numberOfTracks,
+    cover = cover ?: squareImage ?: image,
+    creator = creator?.let { PlaylistCreator(it.id, it.name) }
+)
+
+private fun tf.monochrome.desktop.data.api.model.AlbumTrackItem.toTrack(album: Album) = Track(
+    id = item?.id ?: id,
+    title = item?.title ?: title,
+    duration = item?.duration ?: duration,
+    artist = (item?.artist ?: artist)?.toDomain(),
+    artists = (item?.artists ?: artists).map { it.toDomain() },
+    album = album,
+    audioQuality = item?.audioQuality ?: audioQuality,
+    explicit = item?.explicit ?: explicit,
+    trackNumber = item?.trackNumber ?: trackNumber,
+    volumeNumber = item?.volumeNumber ?: volumeNumber,
+    popularity = item?.popularity ?: popularity
+)
+
+private fun tf.monochrome.desktop.data.api.model.PlaylistTrackItem.toDomain(): Track? {
+    if (item != null) return item.toDomain()
+    val trackId = id ?: return null
+    return Track(
+        id = trackId,
+        title = title ?: "",
+        duration = duration ?: 0,
+        artist = artist?.toDomain(),
+        artists = artists?.map { it.toDomain() } ?: emptyList(),
+        album = album?.toDomain(),
+        trackNumber = trackNumber,
+        audioQuality = audioQuality,
+        explicit = explicit ?: false
+    )
+}

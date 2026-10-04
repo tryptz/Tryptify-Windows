@@ -1,0 +1,514 @@
+package tf.monochrome.desktop.ui.detail
+
+import tf.monochrome.desktop.ui.navigation.openTrackArtist
+import tf.monochrome.desktop.ui.navigation.trackAlbumAction
+import tf.monochrome.desktop.ui.navigation.popBackStackSafe
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import coil3.compose.AsyncImage
+import tf.monochrome.desktop.ui.components.AlbumItem
+import tf.monochrome.desktop.ui.components.AddToPlaylistSheet
+import tf.monochrome.desktop.ui.components.ArtistItem
+import tf.monochrome.desktop.ui.components.CoverImage
+import tf.monochrome.desktop.ui.components.CreatePlaylistDialog
+import tf.monochrome.desktop.ui.components.ErrorScreen
+import tf.monochrome.desktop.ui.components.LoadingScreen
+import tf.monochrome.desktop.ui.components.SectionHeader
+import tf.monochrome.desktop.ui.components.TrackContextMenu
+import tf.monochrome.desktop.ui.components.TrackItem
+import tf.monochrome.desktop.ui.components.TrackListToolbar
+import tf.monochrome.desktop.ui.components.TrackOrder
+import tf.monochrome.desktop.ui.components.TrackSort
+import tf.monochrome.desktop.ui.components.TrackSortSaver
+import tf.monochrome.desktop.ui.components.applySearchAndSort
+import tf.monochrome.desktop.ui.navigation.Screen
+import tf.monochrome.desktop.ui.navigation.openCatalogArtist
+import tf.monochrome.desktop.ui.player.PlayerViewModel
+import tf.monochrome.desktop.ui.navigation.navigateSafe
+import tf.monochrome.desktop.ui.navigation.LocalBottomChromeInset
+import tf.monochrome.desktop.ui.components.SearchOverlay
+import tf.monochrome.desktop.ui.components.SearchAction
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
+import tf.monochrome.desktop.R
+import androidx.compose.ui.platform.LocalContext
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ArtistDetailScreen(
+    navController: NavController,
+    playerViewModel: PlayerViewModel,
+    viewModel: ArtistDetailViewModel = hiltViewModel()
+) {
+    val artistDetail by viewModel.artistDetail.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val source by viewModel.source.collectAsStateWithLifecycle()
+
+    val dlMsgContext = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        viewModel.downloadMessage.collect { msg ->
+            android.widget.Toast.makeText(dlMsgContext, msg.resolve(dlMsgContext), android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
+    val downloadedTrackIds by playerViewModel.downloadedTrackIds.collectAsStateWithLifecycle()
+    val playlists by playerViewModel.playlists.collectAsStateWithLifecycle()
+
+    var showContextMenuForTrack by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<tf.monochrome.desktop.domain.model.Track?>(null) }
+    var showAddToPlaylistForTrack by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<tf.monochrome.desktop.domain.model.Track?>(null) }
+    var showCreatePlaylistDialog by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showAllTopTracks by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+
+    // Applies to the Top Tracks list. Top Tracks arrives in a popularity order
+    // someone else decided, so ORIGINAL stays the default.
+    var listQuery by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf("") }
+    var searchOpen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var listSort by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = TrackSortSaver) {
+        androidx.compose.runtime.mutableStateOf(TrackSort())
+    }
+    var showAddToPlaylistForSelection by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+
+    val selection = tf.monochrome.desktop.ui.components.rememberTrackSelectionState<Long>()
+    androidx.activity.compose.BackHandler(enabled = selection.active) { selection.clear() }
+    var showDownloadConfirm by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+
+    if (showDownloadConfirm) {
+        val detail = artistDetail
+        val releaseCount = detail?.let { it.albums.size + it.eps.size + it.singles.size } ?: 0
+        AlertDialog(
+            onDismissRequest = { showDownloadConfirm = false },
+            icon = { Icon(Icons.Default.Download, contentDescription = null) },
+            title = { Text(stringResource(R.string.download_all_releases_title)) },
+            text = {
+                val releases = pluralStringResource(R.plurals.releases_count, releaseCount, releaseCount)
+                val artistName = detail?.artist?.name
+                Text(
+                    if (artistName != null) {
+                        stringResource(R.string.download_all_releases_body, releases, artistName)
+                    } else {
+                        stringResource(R.string.download_all_releases_body_unknown, releases)
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDownloadConfirm = false
+                    viewModel.downloadAllReleases()
+                }) { Text(stringResource(R.string.action_download)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDownloadConfirm = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
+    }
+
+    showContextMenuForTrack?.let { track ->
+        TrackContextMenu(
+            track = track,
+            isLiked = favoriteTrackIds.contains(track.id),
+            onDismiss = { showContextMenuForTrack = null },
+            onPlayNext = { playerViewModel.playNext(track) },
+            onAddToQueue = { playerViewModel.addToQueue(listOf(track)) },
+            onToggleLike = { playerViewModel.toggleFavorite(track) },
+            onAddToPlaylist = { showAddToPlaylistForTrack = track },
+            onDownloadTrack = { playerViewModel.downloadTrack(track) },
+            onShareFile = { playerViewModel.shareTrack(track) },
+            onGoToAlbum = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
+            onGoToArtist = null // Already here
+        )
+    }
+
+    if (showCreatePlaylistDialog) {
+        CreatePlaylistDialog(
+            onDismiss = { showCreatePlaylistDialog = false },
+            onSubmit = { name, description ->
+                playerViewModel.createPlaylist(name, description)
+                showCreatePlaylistDialog = false
+            }
+        )
+    }
+
+    showAddToPlaylistForTrack?.let { track ->
+        AddToPlaylistSheet(
+            playlists = playlists,
+            onDismiss = { showAddToPlaylistForTrack = null },
+            onPlaylistSelected = { playlist ->
+                playerViewModel.addTrackToPlaylist(playlist.id, track)
+                showAddToPlaylistForTrack = null
+            },
+            onCreateNew = {
+                showAddToPlaylistForTrack = null
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    if (showAddToPlaylistForSelection) {
+        AddToPlaylistSheet(
+            title = pluralStringResource(R.plurals.add_n_tracks_to_playlist, selection.count, selection.count),
+            playlists = playlists,
+            onDismiss = { showAddToPlaylistForSelection = false },
+            onPlaylistSelected = { playlist ->
+                playerViewModel.addTracksToPlaylist(
+                    playlist.id,
+                    // Resolve against the FULL top-tracks list so selections made
+                    // while expanded still resolve after the list collapses.
+                    artistDetail?.topTracks.orEmpty().filter { it.id in selection.selectedIds },
+                )
+                showAddToPlaylistForSelection = false
+                selection.clear()
+            },
+            onCreateNew = {
+                showAddToPlaylistForSelection = false
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        val isDownloadingAll by viewModel.isDownloadingAll.collectAsStateWithLifecycle()
+        TopAppBar(
+            title = {},
+            navigationIcon = {
+                IconButton(onClick = { navController.popBackStackSafe() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                }
+            },
+            actions = {
+                SearchAction(open = searchOpen, onToggle = {
+                    searchOpen = !searchOpen
+                    // Closing clears the filter. A hidden query in place is how
+                    // a list ends up looking like it has lost rows.
+                    if (!searchOpen) listQuery = ""
+                })
+
+                if (artistDetail != null) {
+                    IconButton(
+                        onClick = { showDownloadConfirm = true },
+                        enabled = !isDownloadingAll,
+                    ) {
+                        if (isDownloadingAll) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download_all_releases))
+                        }
+                    }
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = Color.Transparent
+            )
+        )
+
+        when {
+            isLoading -> LoadingScreen()
+            error != null -> ErrorScreen(
+                message = error?.resolve(LocalContext.current) ?: stringResource(R.string.unknown_error),
+                onRetry = { viewModel.retry() }
+            )
+            artistDetail != null -> {
+                val detail = artistDetail ?: return
+                androidx.compose.animation.AnimatedVisibility(visible = selection.active) {
+                    tf.monochrome.desktop.ui.components.TrackSelectionBar(
+                        selectedCount = selection.count,
+                        onClose = { selection.clear() },
+                        onAddToQueue = {
+                            playerViewModel.addToQueue(detail.topTracks.filter { it.id in selection.selectedIds })
+                            selection.clear()
+                        },
+                        onAddToPlaylist = { showAddToPlaylistForSelection = true }
+                    )
+                }
+                SearchOverlay(
+                    open = searchOpen,
+                    query = listQuery,
+                    onQueryChange = { listQuery = it },
+                    placeholder = stringResource(R.string.search_this_artist),
+                    onClose = { searchOpen = false; listQuery = "" },
+                ) { searchTopInset ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        top = searchTopInset,
+                        bottom = 80.dp + LocalBottomChromeInset.current,
+                    )
+                ) {
+                    item {
+                        tf.monochrome.desktop.devedit.DevEditable("artist_hero", Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (detail.artist.pictureUrl != null) {
+                                AsyncImage(
+                                    model = detail.artist.pictureUrl,
+                                    contentDescription = detail.artist.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.size(180.dp).clip(CircleShape)
+                                )
+                            } else {
+                                CoverImage(
+                                    url = null,
+                                    contentDescription = detail.artist.name,
+                                    size = 180.dp,
+                                    cornerRadius = 90.dp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = detail.artist.name,
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            // The catalog this artist page came from.
+                            source?.let {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                tf.monochrome.desktop.ui.components.SourcePill(it)
+                            }
+                        }
+                        }
+                    }
+
+                    if (detail.topTracks.isNotEmpty()) {
+                        item { tf.monochrome.desktop.devedit.DevEditable("artist_section_top_tracks", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.top_tracks)) } }
+                        stickyHeader {
+                            TrackListToolbar(
+                                sort = listSort,
+                                onSortChange = { listSort = it },
+                                // No "Artist": it's this artist on every row.
+                                orders = listOf(
+                                    TrackOrder.ORIGINAL,
+                                    TrackOrder.TITLE,
+                                    TrackOrder.ALBUM,
+                                    TrackOrder.DURATION,
+                                ),
+                            )
+                        }
+                        val orderedTopTracks = detail.topTracks.applySearchAndSort(listQuery, listSort)
+                        // Collapsed still shows five, but of the filtered list —
+                        // searching a collapsed section has to be able to surface
+                        // a track that wasn't in the first five.
+                        val visibleTracks =
+                            if (showAllTopTracks) orderedTopTracks else orderedTopTracks.take(5)
+                        items(visibleTracks, key = { it.id }) { track ->
+                            TrackItem(
+                                track = track,
+                                isLiked = favoriteTrackIds.contains(track.id),
+                                onLikeClick = { playerViewModel.toggleFavorite(track) },
+                                onClick = {
+                                    if (selection.active) selection.toggle(track.id)
+                                    else playerViewModel.playTrack(track, orderedTopTracks)
+                                },
+                                onLongClick = { selection.toggle(track.id) },
+                                onMoreClick = { showContextMenuForTrack = track },
+                                onArtistClick = { artistId -> navController.openTrackArtist(track, playerViewModel.unifiedFor(track), artistId) },
+                                onAlbumClick = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
+                                isDownloaded = track.id in downloadedTrackIds,
+                                selectionMode = selection.active,
+                                selected = track.id in selection.selectedIds
+                            )
+                        }
+                        if (orderedTopTracks.size > 5) {
+                            item {
+                                ShowAllTracksRow(
+                                    expanded = showAllTopTracks,
+                                    totalCount = orderedTopTracks.size,
+                                    onToggle = { showAllTopTracks = !showAllTopTracks },
+                                )
+                            }
+                        }
+                    }
+
+                    if (detail.albums.isNotEmpty()) {
+                        item { tf.monochrome.desktop.devedit.DevEditable("artist_section_albums", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.filter_albums)) } }
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(detail.albums, key = { it.id }) { album ->
+                                    AlbumItem(
+                                        album = album,
+                                        onClick = {
+                                            navController.navigateSafe(Screen.AlbumDetail.createRoute(album.id))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    val epSingles = detail.eps + detail.singles
+                    if (epSingles.isNotEmpty()) {
+                        item { tf.monochrome.desktop.devedit.DevEditable("artist_section_singles_eps", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.singles_and_eps)) } }
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(epSingles, key = { it.id }) { album ->
+                                    AlbumItem(
+                                        album = album,
+                                        onClick = {
+                                            navController.navigateSafe(Screen.AlbumDetail.createRoute(album.id))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (detail.unreleasedTracks.isNotEmpty()) {
+                        item { tf.monochrome.desktop.devedit.DevEditable("artist_section_unreleased", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.unreleased_artistgrid)) } }
+                        item {
+                            androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
+                                rows = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                                modifier = Modifier.height(220.dp).fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(detail.unreleasedTracks, key = { it.id }) { track ->
+                                    ArtistGridTrackItem(
+                                        track = track,
+                                        onClick = {
+                                            playerViewModel.playTrack(track, detail.unreleasedTracks)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (detail.similarArtists.isNotEmpty()) {
+                        item { tf.monochrome.desktop.devedit.DevEditable("artist_section_similar_artists", Modifier.fillMaxWidth()) { SectionHeader(title = stringResource(R.string.similar_artists)) } }
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(detail.similarArtists, key = { it.id }) { artist ->
+                                    ArtistItem(
+                                        artist = artist,
+                                        onClick = {
+                                            navController.navigateSafe(Screen.ArtistDetail.createRoute(artist.id))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * "Show all N tracks" / "Show less" toggle under the Top Tracks list. The
+ * Qobuz artist endpoint only returns top_tracks (no full discography), so this
+ * surfaces the complete list the catalogue provides rather than just the
+ * first five.
+ */
+@Composable
+private fun ShowAllTracksRow(
+    expanded: Boolean,
+    totalCount: Int,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = if (expanded) stringResource(R.string.action_show_less) else pluralStringResource(R.plurals.show_all_tracks, totalCount, totalCount),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+private fun ArtistGridTrackItem(
+    track: tf.monochrome.desktop.domain.model.Track,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CoverImage(
+            url = track.coverUrl,
+            contentDescription = track.title,
+            size = 80.dp,
+            cornerRadius = 8.dp
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
+}

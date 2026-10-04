@@ -1,0 +1,303 @@
+package tf.monochrome.desktop.ui.components
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import tf.monochrome.desktop.data.downloads.DownloadStatus
+import tf.monochrome.desktop.data.downloads.TrackDownloadState
+import androidx.compose.ui.res.stringResource
+import tf.monochrome.desktop.R
+
+@Composable
+fun DownloadIndicator(
+    state: TrackDownloadState,
+    modifier: Modifier = Modifier,
+    size: Float = 20f,
+    accentColor: Color = MaterialTheme.colorScheme.primary
+) {
+    when (state.status) {
+        DownloadStatus.IDLE -> return
+        DownloadStatus.FAILED -> FailedIndicator(modifier, size)
+        DownloadStatus.QUEUED -> QueuedIndicator(modifier, size, accentColor)
+        DownloadStatus.DOWNLOADING -> DownloadingIndicator(state.progress, modifier, size, accentColor)
+        DownloadStatus.COMPLETED -> CompletedIndicator(modifier, size, accentColor)
+    }
+}
+
+@Composable
+private fun FailedIndicator(
+    modifier: Modifier,
+    size: Float,
+) {
+    // A FAILED download used to render nothing — indistinguishable from a track
+    // that was never downloaded. Draw a red ring + cross so failure is visible.
+    val errorColor = MaterialTheme.colorScheme.error
+    Canvas(modifier = modifier.size(size.dp)) {
+        val strokeWidth = size * 0.1f
+        val padding = strokeWidth
+        drawArc(
+            color = errorColor,
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(padding, padding),
+            size = Size(this.size.width - padding * 2, this.size.height - padding * 2),
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+        val cx = this.size.width / 2f
+        val cy = this.size.height / 2f
+        val arm = this.size.width * 0.18f
+        val cross = size * 0.1f
+        drawLine(
+            errorColor, Offset(cx - arm, cy - arm), Offset(cx + arm, cy + arm),
+            strokeWidth = cross, cap = StrokeCap.Round
+        )
+        drawLine(
+            errorColor, Offset(cx + arm, cy - arm), Offset(cx - arm, cy + arm),
+            strokeWidth = cross, cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+private fun QueuedIndicator(
+    modifier: Modifier,
+    size: Float,
+    accentColor: Color
+) {
+    // Holds at the bright end when animations are off, so a queued download is
+    // still obviously there — just not breathing.
+    val alpha by tf.monochrome.desktop.ui.theme.rememberMotionFloat(
+        initialValue = 0.3f,
+        targetValue = 0.8f,
+        durationMillis = 800,
+        label = "queuedPulse",
+        still = 0.8f,
+    )
+
+    Canvas(modifier = modifier.size(size.dp)) {
+        val strokeWidth = size * 0.1f
+        val padding = strokeWidth
+        drawArc(
+            color = accentColor.copy(alpha = alpha),
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(padding, padding),
+            size = Size(this.size.width - padding * 2, this.size.height - padding * 2),
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+        drawDownArrow(accentColor.copy(alpha = alpha), this.size)
+    }
+}
+
+@Composable
+private fun DownloadingIndicator(
+    progress: Float,
+    modifier: Modifier,
+    size: Float,
+    accentColor: Color
+) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "downloadProgress"
+    )
+
+    // Subtle glow pulse while downloading — purely decorative, so it goes to
+    // nothing rather than freezing half-lit.
+    val glowAlpha by tf.monochrome.desktop.ui.theme.rememberMotionFloat(
+        initialValue = 0f,
+        targetValue = 0.15f,
+        durationMillis = 1200,
+        label = "downloadGlow",
+        still = 0f,
+    )
+
+    Canvas(modifier = modifier.size(size.dp)) {
+        val strokeWidth = size * 0.12f
+        val padding = strokeWidth
+        val arcSize = Size(this.size.width - padding * 2, this.size.height - padding * 2)
+        val arcOffset = Offset(padding, padding)
+
+        // Background glow circle
+        drawCircle(
+            color = accentColor.copy(alpha = glowAlpha),
+            radius = this.size.width / 2f
+        )
+
+        // Background track
+        drawArc(
+            color = accentColor.copy(alpha = 0.15f),
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+
+        // Progress arc
+        drawArc(
+            color = accentColor,
+            startAngle = -90f,
+            sweepAngle = animatedProgress * 360f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+
+        // Arrow icon in center
+        drawDownArrow(accentColor, this.size)
+    }
+}
+
+@Composable
+private fun CompletedIndicator(
+    modifier: Modifier,
+    size: Float,
+    accentColor: Color
+) {
+    // Pop-in scale animation. animateFloatAsState(targetValue = 1f) started
+    // already AT 1f (its initial value defaults to the target), so the pop
+    // never played. Drive it from 0 with an Animatable instead.
+    val scaleAnim = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        scaleAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        )
+    }
+    val scale = scaleAnim.value
+
+    Canvas(modifier = modifier.size(size.dp)) {
+        val scaledSize = this.size
+
+        // Filled circle
+        drawCircle(
+            color = accentColor.copy(alpha = 0.2f),
+            radius = (scaledSize.width / 2f) * scale
+        )
+
+        // Outer ring
+        val strokeWidth = scaledSize.width * 0.1f
+        val padding = strokeWidth
+        drawArc(
+            color = accentColor,
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(padding, padding),
+            size = Size(scaledSize.width - padding * 2, scaledSize.height - padding * 2),
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+
+        // Check mark
+        drawCheckMark(accentColor, scaledSize, scale)
+    }
+}
+
+/**
+ * "This song is on the device" badge — a ring with a down arrow in it.
+ *
+ * Distinct from [DownloadIndicator], which reflects *in-flight* WorkManager
+ * state and goes back to drawing nothing the moment a download finishes. This
+ * one is driven by the downloads table, so it survives the app restarting and
+ * keeps marking the row for as long as the file is there.
+ */
+@Composable
+fun DownloadedBadge(
+    modifier: Modifier = Modifier,
+    size: Float = 18f,
+    tint: Color = MaterialTheme.colorScheme.primary,
+) {
+    val downloadedLabel = stringResource(R.string.download_done)
+    Canvas(
+        modifier = modifier
+            .size(size.dp)
+            .semantics { contentDescription = downloadedLabel }
+    ) {
+        val strokeWidth = this.size.width * 0.1f
+        val padding = strokeWidth
+
+        // Soft fill so the badge reads at a glance against album art.
+        drawCircle(color = tint.copy(alpha = 0.15f), radius = this.size.width / 2f)
+
+        drawArc(
+            color = tint,
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(padding, padding),
+            size = Size(this.size.width - padding * 2, this.size.height - padding * 2),
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+
+        drawDownArrow(tint, this.size)
+    }
+}
+
+private fun DrawScope.drawDownArrow(color: Color, canvasSize: Size) {
+    val cx = canvasSize.width / 2f
+    val cy = canvasSize.height / 2f
+    val arrowSize = canvasSize.width * 0.22f
+    val strokeWidth = canvasSize.width * 0.09f
+
+    val path = Path().apply {
+        // Vertical line
+        moveTo(cx, cy - arrowSize)
+        lineTo(cx, cy + arrowSize * 0.5f)
+        // Left wing
+        moveTo(cx - arrowSize * 0.6f, cy)
+        lineTo(cx, cy + arrowSize * 0.5f)
+        // Right wing
+        lineTo(cx + arrowSize * 0.6f, cy)
+    }
+    drawPath(path, color, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
+}
+
+private fun DrawScope.drawCheckMark(color: Color, canvasSize: Size, scale: Float) {
+    val cx = canvasSize.width / 2f
+    val cy = canvasSize.height / 2f
+    val checkSize = canvasSize.width * 0.2f * scale
+    val strokeWidth = canvasSize.width * 0.1f
+
+    val path = Path().apply {
+        moveTo(cx - checkSize, cy)
+        lineTo(cx - checkSize * 0.2f, cy + checkSize * 0.7f)
+        lineTo(cx + checkSize, cy - checkSize * 0.5f)
+    }
+    drawPath(path, color, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
+}

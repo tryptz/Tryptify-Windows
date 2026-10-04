@@ -1,0 +1,831 @@
+package tf.monochrome.desktop.ui.search
+
+import tf.monochrome.desktop.ui.navigation.trackArtistAction
+import tf.monochrome.desktop.ui.navigation.trackAlbumAction
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import tf.monochrome.desktop.data.db.entity.UserPlaylistEntity
+import tf.monochrome.desktop.domain.model.Album
+import tf.monochrome.desktop.domain.model.Artist
+import tf.monochrome.desktop.domain.model.Playlist
+import tf.monochrome.desktop.domain.model.SourceType
+import tf.monochrome.desktop.domain.model.Track
+import tf.monochrome.desktop.domain.model.UnifiedArtistRef
+import tf.monochrome.desktop.domain.model.UnifiedTrack
+import tf.monochrome.desktop.ui.components.AddToPlaylistSheet
+import tf.monochrome.desktop.ui.components.AlbumItem
+import tf.monochrome.desktop.ui.components.ArtistItem
+import tf.monochrome.desktop.ui.components.CoverImage
+import tf.monochrome.desktop.ui.components.CreatePlaylistDialog
+import tf.monochrome.desktop.ui.components.LoadingScreen
+import tf.monochrome.desktop.ui.components.SourceBrandMark
+import tf.monochrome.desktop.ui.components.SourcePill
+import tf.monochrome.desktop.ui.components.brand
+import tf.monochrome.desktop.ui.components.color
+import tf.monochrome.desktop.ui.components.SectionHeader
+import tf.monochrome.desktop.ui.components.TrackArtistAlbumLine
+import tf.monochrome.desktop.ui.components.TrackContextMenu
+import tf.monochrome.desktop.ui.components.TrackSelectionBar
+import tf.monochrome.desktop.ui.components.bounceCombinedClick
+import tf.monochrome.desktop.ui.components.rememberTrackSelectionState
+import tf.monochrome.desktop.ui.components.liquidGlass
+import tf.monochrome.desktop.ui.navigation.Screen
+import tf.monochrome.desktop.ui.navigation.openAlbum
+import tf.monochrome.desktop.ui.navigation.openArtist
+import tf.monochrome.desktop.ui.player.PlayerViewModel
+import tf.monochrome.desktop.ui.theme.MonoDimens
+import tf.monochrome.desktop.ui.navigation.navigateSafe
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
+import tf.monochrome.desktop.R
+
+// SearchQueryField is gone. It was a one-line forward to GlassSearchBar that
+// existed to keep Home and the search screen agreeing on a placeholder, and both
+// of them go through SearchOverlay now — which owns the haze source the field
+// was being handed, so there was nothing left for the wrapper to carry.
+
+@Composable
+fun SearchHistoryContent(
+    history: List<String>,
+    onSelect: (String) -> Unit,
+    onClearHistory: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
+    ) {
+        item {
+            Text(
+                text = stringResource(R.string.search_empty_prompt),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+            )
+        }
+        if (history.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SectionHeader(title = stringResource(R.string.recent_searches))
+                    TextButton(onClick = onClearHistory) {
+                        Text(stringResource(R.string.action_clear))
+                    }
+                }
+            }
+            items(history, key = { it }) { item ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .liquidGlass(shape = MonoDimens.shapeMd),
+                    shape = MonoDimens.shapeMd,
+                    color = Color.Transparent,
+                    onClick = { onSelect(item) }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = item,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SearchResultsContent(
+    navController: NavController,
+    playerViewModel: PlayerViewModel,
+    query: String,
+    tracks: List<UnifiedTrack>,
+    albums: List<Album>,
+    artists: List<Artist>,
+    playlistResults: List<Playlist>,
+    isSearching: Boolean,
+    selectedType: SearchViewModel.SearchTypeFilter,
+    onTypeSelected: (SearchViewModel.SearchTypeFilter) -> Unit,
+    selectedSource: SearchViewModel.SearchSourceFilter,
+    onSourceSelected: (SearchViewModel.SearchSourceFilter) -> Unit,
+    showSourceFilter: Boolean,
+    favoriteTrackIds: Set<Long>,
+    libraryPlaylists: List<UserPlaylistEntity>,
+    modifier: Modifier = Modifier,
+    emptyContent: @Composable (() -> Unit)? = null,
+    onLoadMore: (SearchViewModel.SearchPageType) -> Unit = {},
+    isLoadingMore: Boolean = false,
+    endReached: Boolean = false,
+    searchError: Boolean = false,
+    onRetry: () -> Unit = {},
+    // Height of the floating SearchOverlay bar. Applied as the list's top
+    // contentPadding (see docs/ui-invariants.md, "Search bars"): the filter
+    // pills start below the glass at rest and scroll up behind it. Without it
+    // the bar sits on top of the type and source pills.
+    topInset: Dp = 0.dp,
+    // Catalog of each album / artist result, for the pill under its card.
+    albumSources: Map<Long, SourceType> = emptyMap(),
+    artistSources: Map<Long, SourceType> = emptyMap(),
+) {
+    val downloadedTrackIds by playerViewModel.downloadedTrackIds.collectAsStateWithLifecycle()
+    var showContextMenuForTrack by remember { mutableStateOf<Track?>(null) }
+    var showAddToPlaylistForTrack by remember { mutableStateOf<Track?>(null) }
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showAddToPlaylistForSelection by remember { mutableStateOf(false) }
+
+    // UnifiedTrack ids are Strings ("api_…", "qobuz_…", "local_…").
+    val selection = rememberTrackSelectionState<String>()
+    BackHandler(enabled = selection.active) { selection.clear() }
+
+    showContextMenuForTrack?.let { track ->
+        TrackContextMenu(
+            track = track,
+            isLiked = favoriteTrackIds.contains(track.id),
+            onDismiss = { showContextMenuForTrack = null },
+            onPlayNext = { playerViewModel.playNext(track) },
+            onAddToQueue = { playerViewModel.addToQueue(listOf(track)) },
+            onToggleLike = { playerViewModel.toggleFavorite(track) },
+            onAddToPlaylist = { showAddToPlaylistForTrack = track },
+            onDownloadTrack = if (playerViewModel.isLocalTrack(track)) null
+            else ({ playerViewModel.downloadTrack(track) }),
+            onShareFile = { playerViewModel.shareTrack(track) },
+            onGoToAlbum = navController.trackAlbumAction(track, playerViewModel.unifiedFor(track)),
+            onGoToArtist = navController.trackArtistAction(track, playerViewModel.unifiedFor(track))
+        )
+    }
+
+    if (showCreatePlaylistDialog) {
+        CreatePlaylistDialog(
+            onDismiss = { showCreatePlaylistDialog = false },
+            onSubmit = { name, description ->
+                playerViewModel.createPlaylist(name, description)
+                showCreatePlaylistDialog = false
+            }
+        )
+    }
+
+    showAddToPlaylistForTrack?.let { track ->
+        AddToPlaylistSheet(
+            playlists = libraryPlaylists,
+            onDismiss = { showAddToPlaylistForTrack = null },
+            onPlaylistSelected = { playlist ->
+                playerViewModel.addTrackToPlaylist(playlist.id, track)
+                showAddToPlaylistForTrack = null
+            },
+            onCreateNew = {
+                showAddToPlaylistForTrack = null
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    if (showAddToPlaylistForSelection) {
+        AddToPlaylistSheet(
+            title = pluralStringResource(R.plurals.add_n_tracks_to_playlist, selection.count, selection.count),
+            playlists = libraryPlaylists,
+            onDismiss = { showAddToPlaylistForSelection = false },
+            onPlaylistSelected = { playlist ->
+                playerViewModel.addTracksToPlaylist(
+                    playlist.id,
+                    tracks.filter { it.id in selection.selectedIds }.map { it.toLegacyTrack() },
+                )
+                showAddToPlaylistForSelection = false
+                selection.clear()
+            },
+            onCreateNew = {
+                showAddToPlaylistForSelection = false
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    when {
+        query.isBlank() && emptyContent != null ->
+            Box(modifier = modifier.fillMaxSize().padding(top = topInset)) { emptyContent() }
+        // The pills stay up while a query runs. Swapping the whole list for a
+        // spinner made them blink out on every keystroke, and hid the source
+        // row just when someone reached for it.
+        isSearching -> Column(modifier = modifier.fillMaxSize().padding(top = topInset)) {
+            SearchFilterRow(
+                selectedType = selectedType,
+                onTypeSelected = onTypeSelected,
+                selectedSource = selectedSource,
+                onSourceSelected = onSourceSelected,
+                showSourceFilter = showSourceFilter
+            )
+            LoadingScreen()
+        }
+        else -> {
+            // One LazyListState per scrollable axis. Each gets its own
+            // prefetch trigger so artists / albums / tracks page
+            // independently as the user scrolls past their respective
+            // last visible item.
+            val columnState = rememberLazyListState()
+            val artistsRowState = rememberLazyListState()
+            val albumsRowState = rememberLazyListState()
+
+            // These horizontal result rows live inside the Home/Library
+            // HorizontalPager. Left as-is, a horizontal swipe on a row (or any
+            // swipe once the row is at its edge / too short to scroll) leaks up
+            // and flips the pager to the other tab. Swallow the leftover
+            // horizontal scroll + fling here so the pager never sees it; the
+            // vertical component is left untouched so the outer list still
+            // scrolls.
+            val swallowHorizontal = remember {
+                object : NestedScrollConnection {
+                    override fun onPostScroll(
+                        consumed: Offset,
+                        available: Offset,
+                        source: NestedScrollSource,
+                    ): Offset = available.copy(y = 0f)
+
+                    override suspend fun onPostFling(
+                        consumed: Velocity,
+                        available: Velocity,
+                    ): Velocity = available.copy(y = 0f)
+                }
+            }
+
+            // derivedStateOf only emits when the boolean flips, so the
+            // LaunchedEffect re-runs once per page boundary, not once per
+            // scroll pixel. PREFETCH thresholds picked to keep the list
+            // looking continuous while not over-fetching.
+            //
+            // The vertical column carries tracks — except on the Playlists-only
+            // tab, where playlists ARE the vertical list. Paging TRACKS there
+            // loaded more (hidden) tracks and never advanced the playlists, so
+            // pick the page type that matches what the column is actually showing.
+            val columnPageType = if (selectedType == SearchViewModel.SearchTypeFilter.PLAYLISTS) {
+                SearchViewModel.SearchPageType.PLAYLISTS
+            } else {
+                SearchViewModel.SearchPageType.TRACKS
+            }
+            PrefetchTrigger(columnState, threshold = TRACK_COL_PREFETCH) {
+                onLoadMore(columnPageType)
+            }
+            PrefetchTrigger(artistsRowState, threshold = ROW_PREFETCH) {
+                onLoadMore(SearchViewModel.SearchPageType.ARTISTS)
+            }
+            PrefetchTrigger(albumsRowState, threshold = ROW_PREFETCH) {
+                onLoadMore(SearchViewModel.SearchPageType.ALBUMS)
+            }
+
+            Column(modifier = modifier.fillMaxSize()) {
+            AnimatedVisibility(visible = selection.active) {
+                TrackSelectionBar(
+                    selectedCount = selection.count,
+                    onClose = { selection.clear() },
+                    onAddToQueue = {
+                        playerViewModel.addUnifiedToQueue(tracks.filter { it.id in selection.selectedIds })
+                        selection.clear()
+                    },
+                    onAddToPlaylist = { showAddToPlaylistForSelection = true }
+                )
+            }
+            LazyColumn(
+                state = columnState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = topInset, bottom = tf.monochrome.desktop.ui.navigation.bottomChromePadding)
+            ) {
+                item(key = "filters", contentType = "filters") {
+                    SearchFilterRow(
+                        selectedType = selectedType,
+                        onTypeSelected = onTypeSelected,
+                        selectedSource = selectedSource,
+                        onSourceSelected = onSourceSelected,
+                        showSourceFilter = showSourceFilter
+                    )
+                }
+
+                if (artists.isNotEmpty()) {
+                    item(key = "header:artists", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_artists)) }
+                    item(key = "row:artists", contentType = "artistRow") {
+                        LazyRow(
+                            state = artistsRowState,
+                            modifier = Modifier.nestedScroll(swallowHorizontal),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(artists, key = { it.id }) { artist ->
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    ArtistItem(
+                                        artist = artist,
+                                        onClick = {
+                                            navController.navigateSafe(
+                                                Screen.ArtistDetail.createRoute(artist.id)
+                                            )
+                                        }
+                                    )
+                                    artistSources[artist.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (albums.isNotEmpty()) {
+                    item(key = "header:albums", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_albums)) }
+                    item(key = "row:albums", contentType = "albumRow") {
+                        LazyRow(
+                            state = albumsRowState,
+                            modifier = Modifier.nestedScroll(swallowHorizontal),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(albums, key = { it.id }) { album ->
+                                Column {
+                                    AlbumItem(
+                                        album = album,
+                                        onClick = {
+                                            navController.navigateSafe(
+                                                Screen.AlbumDetail.createRoute(album.id)
+                                            )
+                                        }
+                                    )
+                                    albumSources[album.id]?.let { SourcePill(it, Modifier.padding(top = 4.dp)) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (playlistResults.isNotEmpty()) {
+                    item(key = "header:playlists", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_playlists)) }
+                    items(
+                        playlistResults,
+                        key = { it.uuid },
+                        contentType = { "playlist" },
+                    ) { playlist ->
+                        PlaylistSearchItem(
+                            playlist = playlist,
+                            onClick = {
+                                navController.navigateSafe(
+                                    Screen.PlaylistDetail.createRoute(playlist.uuid)
+                                )
+                            }
+                        )
+                    }
+                }
+
+                if (tracks.isNotEmpty()) {
+                    item(key = "header:tracks", contentType = "header") { SectionHeader(title = stringResource(R.string.filter_tracks)) }
+                    // The one unbounded run in this list — it pages — so it is
+                    // the one whose composition reuse actually matters.
+                    items(
+                        tracks,
+                        key = { it.id },
+                        contentType = { "track" },
+                    ) { track ->
+                        UnifiedSearchTrackItem(
+                            track = track,
+                            isLiked = favoriteTrackIds.contains(track.toLegacyTrack().id),
+                            onLikeClick = { playerViewModel.toggleFavorite(track.toLegacyTrack()) },
+                            onClick = {
+                                if (selection.active) selection.toggle(track.id)
+                                else playerViewModel.playUnifiedTrack(track, tracks)
+                            },
+                            onLongClick = { selection.toggle(track.id) },
+                            onArtistClick = { ref -> ref.id?.let { navController.openArtist(track.sourceType, it) } },
+                            onAlbumClick = { navController.openAlbum(track.albumId) },
+                            onMoreClick = if (track.sourceType == SourceType.API ||
+                                track.sourceType == SourceType.QOBUZ ||
+                                track.sourceType == SourceType.DEEZER) {
+                                { showContextMenuForTrack = track.toLegacyTrack() }
+                            } else null,
+                            isDownloaded = track.toLegacyTrack().id in downloadedTrackIds,
+                            selectionMode = selection.active,
+                            selected = track.id in selection.selectedIds
+                        )
+                    }
+                }
+
+                // Footer spinner while another page is in-flight.
+                // Disappears once every type has hit endReached so the
+                // list terminates cleanly.
+                if (isLoadingMore && !endReached) {
+                    item(key = "loadingMore", contentType = "footer") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
+                }
+
+                if (tracks.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlistResults.isEmpty()) {
+                    item {
+                        if (searchError) {
+                            // Every backend failed (offline / all instances
+                            // down) — offer a retry instead of implying the
+                            // query genuinely has no matches.
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.search_unreachable),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                            }
+                        } else {
+                            Text(
+                                text = stringResource(R.string.no_results),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+}
+
+/** Compose-private threshold constants for the prefetch triggers. */
+private const val TRACK_COL_PREFETCH = 15
+private const val ROW_PREFETCH = 6
+
+/**
+ * Fires [onTrigger] when the given list state's last visible item index
+ * approaches [threshold] of the tail. Uses derivedStateOf so the
+ * LaunchedEffect only re-runs when the boolean transitions, not on every
+ * scroll pixel.
+ */
+@Composable
+private fun PrefetchTrigger(
+    state: LazyListState,
+    threshold: Int,
+    onTrigger: () -> Unit,
+) {
+    val shouldLoad by remember(state) {
+        derivedStateOf {
+            val info = state.layoutInfo
+            val total = info.totalItemsCount
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            total > 0 && last >= total - threshold
+        }
+    }
+    // Also key on the item count: when a page adds fewer items than the
+    // threshold, `shouldLoad` stays true and a plain LaunchedEffect(shouldLoad)
+    // would never re-run — paging stalled. Re-firing whenever the count grows
+    // keeps pulling pages until the tail moves out of range (loadMore itself
+    // no-ops once the type is exhausted or a page is already in flight).
+    val itemCount by remember(state) {
+        derivedStateOf { state.layoutInfo.totalItemsCount }
+    }
+    LaunchedEffect(shouldLoad, itemCount) {
+        if (shouldLoad) onTrigger()
+    }
+}
+
+@Composable
+private fun SearchFilterRow(
+    selectedType: SearchViewModel.SearchTypeFilter,
+    onTypeSelected: (SearchViewModel.SearchTypeFilter) -> Unit,
+    selectedSource: SearchViewModel.SearchSourceFilter,
+    onSourceSelected: (SearchViewModel.SearchSourceFilter) -> Unit,
+    showSourceFilter: Boolean
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(SearchViewModel.SearchTypeFilter.entries) { type ->
+                FilterChip(
+                    selected = selectedType == type,
+                    onClick = { onTypeSelected(type) },
+                    label = { Text(stringResource(type.label)) }
+                )
+            }
+        }
+        if (showSourceFilter) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(SearchViewModel.SearchSourceFilter.entries) { source ->
+                    val brand = source.sourceType?.brand()
+                    val brandColor = brand?.color()
+                    FilterChip(
+                        selected = selectedSource == source,
+                        onClick = { onSourceSelected(source) },
+                        label = { Text(source.labelRes?.let { stringResource(it) } ?: source.label) },
+                        leadingIcon = brand?.let { { SourceBrandMark(it, size = FilterChipDefaults.IconSize) } },
+                        colors = if (brandColor != null) {
+                            FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = brandColor.copy(alpha = 0.22f),
+                                selectedLabelColor = brandColor,
+                                selectedLeadingIconColor = brandColor,
+                            )
+                        } else FilterChipDefaults.filterChipColors(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnifiedSearchTrackItem(
+    track: UnifiedTrack,
+    isLiked: Boolean,
+    onLikeClick: () -> Unit,
+    onClick: () -> Unit,
+    onArtistClick: (UnifiedArtistRef) -> Unit,
+    onAlbumClick: () -> Unit,
+    onMoreClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)? = null,
+    isDownloaded: Boolean = false,
+    selectionMode: Boolean = false,
+    selected: Boolean = false
+) {
+    val legacyTrack = track.toLegacyTrack()
+    // Same treatment as TrackItem: hide per-row affordances while selecting.
+    val effectiveOnLikeClick = onLikeClick.takeUnless { selectionMode }
+    val effectiveOnMoreClick = onMoreClick.takeUnless { selectionMode }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            .bounceCombinedClick(onClick = onClick, onLongClick = onLongClick ?: onMoreClick)
+            .liquidGlass(shape = MonoDimens.shapeMd),
+        shape = MonoDimens.shapeMd,
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(MonoDimens.searchRowHeight)
+                .padding(horizontal = MonoDimens.listItemPaddingH),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selectionMode) {
+                Icon(
+                    imageVector = if (selected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                    contentDescription = if (selected) stringResource(R.string.state_selected) else stringResource(R.string.state_not_selected),
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(MonoDimens.spacingMd))
+            }
+            if (track.artworkUri != null) {
+                CoverImage(
+                    url = track.artworkUri,
+                    contentDescription = track.title,
+                    size = MonoDimens.coverList,
+                    cornerRadius = MonoDimens.radiusSm
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.size(MonoDimens.coverList),
+                    shape = RoundedCornerShape(MonoDimens.radiusSm),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(MonoDimens.spacingMd))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                TrackArtistAlbumLine(
+                    track = track,
+                    onArtistClick = if (selectionMode) ({}) else onArtistClick,
+                    onAlbumClick = if (selectionMode) ({}) else onAlbumClick,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Downloaded means it plays from the device, so it reads as Local.
+                    SourcePill(if (isDownloaded) SourceType.LOCAL else track.sourceType)
+                    if (track.isThxSpatialAudio) {
+                        tf.monochrome.desktop.ui.components.ThxBadgePill()
+                    }
+                    track.qualityBadge?.let { ResultBadge(text = it) }
+                }
+            }
+            if (effectiveOnLikeClick != null) {
+                IconButton(onClick = effectiveOnLikeClick) {
+                    Icon(
+                        imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = if (isLiked) stringResource(R.string.action_unlike) else stringResource(R.string.action_like),
+                        tint = if (isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (isDownloaded) {
+                tf.monochrome.desktop.ui.components.DownloadedBadge(size = 18f)
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+                text = legacyTrack.formattedDuration,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (effectiveOnMoreClick != null) {
+                IconButton(onClick = effectiveOnMoreClick) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = stringResource(R.string.action_more_options),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistSearchItem(
+    playlist: Playlist,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingXs)
+            .liquidGlass(shape = MonoDimens.shapeMd),
+        shape = MonoDimens.shapeMd,
+        color = Color.Transparent,
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MonoDimens.listItemPaddingH, vertical = MonoDimens.spacingSm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (playlist.coverUrl != null) {
+                CoverImage(
+                    url = playlist.coverUrl,
+                    contentDescription = playlist.title,
+                    size = MonoDimens.coverList,
+                    cornerRadius = MonoDimens.radiusSm
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.size(MonoDimens.coverList),
+                    shape = RoundedCornerShape(MonoDimens.radiusSm),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LibraryMusic,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(MonoDimens.spacingMd))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = playlist.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = buildString {
+                        append(playlist.creator?.name ?: stringResource(R.string.playlist))
+                        playlist.numberOfTracks?.let { append(" • $it tracks") }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            SourcePill(SourceType.API)
+        }
+    }
+}
+
+@Composable
+private fun ResultBadge(text: String) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = MonoDimens.badgePaddingV)
+        )
+    }
+}
+
