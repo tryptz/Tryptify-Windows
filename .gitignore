@@ -31,3 +31,6 @@ Thumbs.db
 # release workflow builds them, so they are not committed.
 app/resources/*/*.dll
 app/resources/*/*.so
+
+# Claude Code: personal overrides stay local; .claude/settings.json is shared
+.claude/settings.local.json
