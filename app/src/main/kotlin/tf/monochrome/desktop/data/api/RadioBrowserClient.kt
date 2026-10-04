@@ -11,6 +11,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import tf.monochrome.desktop.domain.model.RadioStation
+import java.net.URI
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -147,7 +148,7 @@ class RadioBrowserClient @Inject constructor(
  * have to chase itself.
  */
 @Serializable
-private data class RadioBrowserStation(
+internal data class RadioBrowserStation(
     @SerialName("stationuuid") val stationUuid: String = "",
     val name: String = "",
     val url: String = "",
@@ -184,7 +185,11 @@ private data class RadioBrowserStation(
             uuid = stationUuid,
             name = name.trim(),
             url = stream,
-            homepage = homepage.takeIf { it.startsWith("http") },
+            // Desktop: the link is opened through java.net.URI, which rejects
+            // what Android's Uri.parse let through (a space, a '|', an escape cut
+            // short by the directory's 200-character limit). A homepage that
+            // cannot open gets no button rather than one that does nothing.
+            homepage = homepage.trim().takeIf { it.startsWith("http") && runCatching { URI(it) }.isSuccess },
             // Https only, and never a favicon: Coil has no .ico decoder, and the
             // player's Discord presence refuses anything that isn't https, so an
             // unusable image is worse than none — it replaces a clean fallback

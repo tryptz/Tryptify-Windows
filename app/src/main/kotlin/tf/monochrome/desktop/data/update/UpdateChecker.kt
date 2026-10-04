@@ -104,7 +104,8 @@ class UpdateChecker @Inject constructor(
     private companion object {
         // Same shape as HeadphoneAutoEqApi: the repo appears once.
         const val REPO_OWNER = "tryptz"
-        const val REPO_NAME = "Tryptify"
+        // The Windows build's own releases; the Android app's are in "Tryptify".
+        const val REPO_NAME = "Tryptify-Windows"
         const val LATEST_RELEASE_URL =
             "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
         const val RELEASES_PAGE_URL =

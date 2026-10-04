@@ -417,6 +417,7 @@
 "delete_downloads": "İndirilenleri sil",
 "delete_playlist": "Çalma listesini sil",
 "delete_playlist_title": "Çalma listesi silinsin mi?",
+"desktop_clipboard_busy": "Kopyalanamadı: pano başka bir uygulama tarafından kullanılıyor",
 "desktop_copied_to_clipboard": "Panoya kopyalandı",
 "detecting": "Algılanıyor…",
 "discover": "Keşfet",

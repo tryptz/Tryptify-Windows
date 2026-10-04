@@ -367,6 +367,7 @@
 "delete_downloads": "删除下载内容",
 "delete_playlist": "删除歌单",
 "delete_playlist_title": "要删除歌单吗？",
+"desktop_clipboard_busy": "无法复制：剪贴板正被其他应用占用",
 "desktop_copied_to_clipboard": "已复制到剪贴板",
 "detecting": "正在检测…",
 "discover": "发现",

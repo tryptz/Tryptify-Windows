@@ -2,7 +2,7 @@
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
-    android:viewportHeight="24"
+    android:viewportHeight="24">
     <!--
       Ko-fi's cup, drawn rather than copied: a recognisable mark in the app's
       own icon language, not a reproduction of the trademark artwork.

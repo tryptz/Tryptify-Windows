@@ -23,6 +23,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.LayoutDirection
@@ -47,6 +48,7 @@ import tf.monochrome.desktop.di.LocalWindowViewModelStoreOwner
 import tf.monochrome.desktop.di.windowViewModel
 import tf.monochrome.desktop.locale.AppLanguage
 import tf.monochrome.desktop.platform.AppPaths
+import tf.monochrome.desktop.platform.DesktopUriHandler
 import tf.monochrome.desktop.platform.FilePickers
 import tf.monochrome.desktop.platform.ToastHost
 import tf.monochrome.desktop.platform.windows.WindowChrome
@@ -135,6 +137,7 @@ fun main() {
                     LocalViewModelStoreOwner provides windowOwner,
                     LocalWindowViewModelStoreOwner provides windowOwner,
                     LocalWindowTitleBar provides titleBar,
+                    LocalUriHandler provides DesktopUriHandler,
                 ) {
                     TrayNotifications(
                         icon = appIcon,

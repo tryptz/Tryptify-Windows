@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import tf.monochrome.desktop.R
 import tf.monochrome.desktop.debug.DebugLogEntry
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -141,8 +142,9 @@ fun DebugLogScreen(
             actions = {
                 IconButton(onClick = {
                     // Desktop: the system clipboard through AWT, not ClipboardManager.
-                    tf.monochrome.desktop.platform.DesktopActions.copyToClipboard(viewModel.exportText(), announce = false)
-                    Toast.makeText(context, "Log copied to clipboard", Toast.LENGTH_SHORT).show()
+                    val copied = tf.monochrome.desktop.platform.DesktopActions.copyToClipboard(viewModel.exportText(), announce = false)
+                    val message = if (copied) "Log copied to clipboard" else context.getString(R.string.desktop_clipboard_busy)
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                 }) {
                     Icon(Icons.Default.ContentCopy, contentDescription = "Copy all")
                 }

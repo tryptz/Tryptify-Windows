@@ -1615,6 +1615,7 @@ object R {
         val settings_mini_player_hide_with_tabs_desc = StringKey("settings_mini_player_hide_with_tabs_desc")
         val settings_nav_bar_slot_first = StringKey("settings_nav_bar_slot_first")
         val settings_nav_bar_slot_second = StringKey("settings_nav_bar_slot_second")
+        val desktop_clipboard_busy = StringKey("desktop_clipboard_busy")
         val desktop_copied_to_clipboard = StringKey("desktop_copied_to_clipboard")
         val settings_output_device = StringKey("settings_output_device")
         val settings_output_device_default = StringKey("settings_output_device_default")

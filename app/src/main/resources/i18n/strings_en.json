@@ -417,6 +417,7 @@
 "delete_downloads": "Delete downloads",
 "delete_playlist": "Delete playlist",
 "delete_playlist_title": "Delete playlist?",
+"desktop_clipboard_busy": "Couldn't copy: another app is using the clipboard",
 "desktop_copied_to_clipboard": "Copied to clipboard",
 "detecting": "Detecting…",
 "discover": "Discover",
