@@ -101,6 +101,16 @@ class ControllerManagerTest {
     private val load1 = TraktorS2Mk1.DECKS[0].load
 
     @Test
+    fun invertTempoIsKeptAcrossRuns() {
+        val first = ControllerManager(surface, bus, temp.root, scanIntervalMs = 10)
+        assertFalse(first.invertTempo)
+        first.invertTempo = true
+        assertTrue(ControllerManager(surface, bus, temp.root, scanIntervalMs = 10).invertTempo)
+        first.invertTempo = false
+        assertFalse(ControllerManager(surface, bus, temp.root, scanIntervalMs = 10).invertTempo)
+    }
+
+    @Test
     fun pluggedInItConnectsAndLights() {
         val s2 = FakeS2()
         bus.plugged = s2

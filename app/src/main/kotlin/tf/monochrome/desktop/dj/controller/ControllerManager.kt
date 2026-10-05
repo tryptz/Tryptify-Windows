@@ -7,6 +7,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Properties
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -94,12 +95,39 @@ class ControllerManager internal constructor(
         }
     }
 
-    /** See [S2Mk1Mapping.invertTempo]; MIDI tempo faders follow it too. */
+    // Desktop-only settings, so a file beside the mappings rather than the shared preferences.
+    private val settingsFile = File(mappingsDir, SETTINGS_FILE)
+
+    init {
+        s2.invertTempo = readSettings().getProperty(KEY_INVERT_TEMPO).toBoolean()
+    }
+
+    /** See [S2Mk1Mapping.invertTempo]; MIDI tempo faders follow it too. Kept across runs. */
     var invertTempo: Boolean
         get() = s2.invertTempo
         set(value) {
+            if (s2.invertTempo == value) return
             s2.invertTempo = value
+            writeSettings(readSettings().apply { setProperty(KEY_INVERT_TEMPO, value.toString()) })
         }
+
+    private fun readSettings(): Properties = Properties().apply {
+        if (!settingsFile.isFile) return@apply
+        try {
+            settingsFile.inputStream().use(::load)
+        } catch (e: IOException) {
+            Log.w(TAG, "could not read $settingsFile: ${e.message}")
+        }
+    }
+
+    private fun writeSettings(settings: Properties) {
+        try {
+            settingsFile.parentFile?.mkdirs()
+            settingsFile.outputStream().use { settings.store(it, null) }
+        } catch (e: IOException) {
+            Log.w(TAG, "could not write $settingsFile: ${e.message}")
+        }
+    }
 
     /** Write every report to a file in the logs directory; the thread opens and closes it. */
     @Volatile var logReports: Boolean = false
@@ -285,6 +313,8 @@ class ControllerManager internal constructor(
     companion object {
         private const val TAG = "ControllerManager"
         const val SCAN_INTERVAL_MS = 1500L
+        private const val SETTINGS_FILE = "settings.properties"
+        private const val KEY_INVERT_TEMPO = "invertTempo"
         private const val READ_TIMEOUT_MS = 10
         /** About 30 frames a second: the meters move smoothly, the bus stays quiet. */
         private const val LED_INTERVAL_MS = 33L

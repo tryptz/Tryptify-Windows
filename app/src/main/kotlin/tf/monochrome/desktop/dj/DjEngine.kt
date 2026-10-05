@@ -5,10 +5,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import tf.monochrome.desktop.audio.dsp.DspEngineManager
@@ -58,20 +61,10 @@ class DjEngine @Inject constructor(
     init {
         decks[0].peer = decks[1]
         decks[1].peer = decks[0]
-        for (d in decks) d.onUserTempo = ::onUserTempo
-        scope.launch {
-            // The player takes the output back (play pressed on a track, a
-            // device change it could not follow): the decks stop with it.
-            controller.liveInput.collect { live -> if (!live && _running.value) onStopped() }
-        }
-        scope.launch {
-            // Snapshots for the screen, only while something watches them.
-            _state.subscriptionCount.collectLatest { n ->
-                while (n > 0) {
-                    publish()
-                    delay(SNAPSHOT_MS)
-                }
-            }
+        for (d in decks) {
+            d.onUserTempo = ::onUserTempo
+            // PLAY on a controller is asking for the console: take the output for it.
+            d.onDetachedStart = { scope.launch { start() } }
         }
     }
 
@@ -103,13 +96,21 @@ class DjEngine @Inject constructor(
         decks[1].render(l, r, frames, outRate, gainsB[1])
     }
 
+    /** Held by [start] and [stop], which a controller's thread and the screen can call at once. */
+    private val runLock = Any()
+
     /**
      * Takes the output: the queue's track pauses, the decks play. Sets the
      * mixer up as the console the first time (only when no bus hears deck B
      * yet, so a layout the user changed stays theirs) and turns the mixer on,
-     * since deck B is heard only through it.
+     * since deck B is heard only through it. A controller's PLAY reaching a
+     * deck before this calls it too, from any thread.
      */
     fun start() {
+        synchronized(runLock) { startLocked() }
+    }
+
+    private fun startLocked() {
         if (_running.value) return
         val rate = controller.engine.preferredLiveRate
         outRate = rate
@@ -124,8 +125,10 @@ class DjEngine @Inject constructor(
 
     /** Hands the output back to the player. The decks stop where they are. */
     fun stop() {
-        controller.stopLiveInput()
-        onStopped()
+        synchronized(runLock) {
+            controller.stopLiveInput()
+            onStopped()
+        }
     }
 
     private fun onStopped() {
@@ -257,6 +260,22 @@ class DjEngine @Inject constructor(
     override fun fxOn(unit: Int, slot: Int): Boolean = plugin(unit, slot)?.let { !it.bypassed } ?: false
 
     fun fxName(unit: Int, slot: Int): String? = plugin(unit, slot)?.displayName
+
+    /** An effect in an FX unit, as the screen shows it. */
+    data class FxSlot(val name: String, val on: Boolean)
+
+    /**
+     * Each unit's effects, null where a slot is empty: whatever is on the FX
+     * buses, so the screen follows a change made in the Mixer or from a controller.
+     */
+    val fxSlots: Flow<List<List<FxSlot?>>> = dsp.buses
+        .map { buses ->
+            List(2) { unit ->
+                val plugins = buses.firstOrNull { it.index == fxBus(unit) }?.plugins
+                List(FX_SLOTS) { slot -> plugins?.getOrNull(slot)?.let { FxSlot(it.displayName, !it.bypassed) } }
+            }
+        }
+        .distinctUntilChanged()
 
     override fun fxMix(unit: Int): Float = _fx.value[unit].mix
 
@@ -399,6 +418,26 @@ class DjEngine @Inject constructor(
             eqHigh = d.eqHigh,
             filter = d.filter,
         )
+    }
+
+    // Last in the class: these run on another thread at once, so every field
+    // they reach (_state is declared above) must be set first. Kotlin
+    // initialises a class top to bottom.
+    init {
+        scope.launch {
+            // The player takes the output back (play pressed on a track, a
+            // device change it could not follow): the decks stop with it.
+            controller.liveInput.collect { live -> if (!live && _running.value) onStopped() }
+        }
+        scope.launch {
+            // Snapshots for the screen, only while something watches them.
+            _state.subscriptionCount.collectLatest { n ->
+                while (n > 0) {
+                    publish()
+                    delay(SNAPSHOT_MS)
+                }
+            }
+        }
     }
 
     companion object {

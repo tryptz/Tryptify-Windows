@@ -37,6 +37,31 @@ class DeckTest {
     private fun Deck.run(blocks: Int) = repeat(blocks) { render(l, r, block, sr, 1f) }
 
     @Test
+    fun playBeforeTheConsoleRunsAsksForIt() {
+        val d = Deck(0).apply {
+            quantize = false
+            load(track())
+        }
+        var asked = 0
+        d.onDetachedStart = { asked++ }
+        d.play()
+        assertEquals(1, asked)
+        assertTrue(d.playing)
+        // A cue preview is playing too.
+        d.pause()
+        d.rewind()
+        d.cueDown()
+        assertEquals(2, asked)
+        d.cueUp()
+        // Attached, the output plays it: nothing to ask for.
+        d.attach()
+        d.play()
+        d.run(1)
+        assertTrue(d.playing)
+        assertEquals(2, asked)
+    }
+
+    @Test
     fun playsAtTheTempoFadersSpeed() {
         val d = deck()
         d.play()

@@ -70,6 +70,13 @@ class Deck(val index: Int) {
     /** The other deck: the one sync follows. */
     @Volatile var peer: Deck? = null
 
+    /**
+     * Called (on the caller's thread) when the deck starts playing while no
+     * output pulls it ([attach]): a controller's PLAY pressed before the
+     * console took the output, which would otherwise play in silence.
+     */
+    @Volatile var onDetachedStart: ((Deck) -> Unit)? = null
+
     fun setTempoFader(position: Float) = setSpeed(DjMath.speedFor(position, tempoRange))
 
     fun setSpeed(value: Double) {
@@ -207,6 +214,7 @@ class Deck(val index: Int) {
                 // At the cue point: play while the button is held.
                 playing = true
                 cuePreview = true
+                if (!attached) onDetachedStart?.invoke(this@Deck)
             } else {
                 // Elsewhere: the cue point is here now.
                 cuePoint = snap(t, position).coerceAtLeast(0.0)
@@ -406,6 +414,7 @@ class Deck(val index: Int) {
         playing = true
         park = Double.NaN
         if (syncLock) syncNow(phase = true)
+        if (!attached) onDetachedStart?.invoke(this)
     }
 
     private fun stopAt(target: Double) {
