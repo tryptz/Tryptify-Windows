@@ -69,6 +69,7 @@ object FilePickers {
             when (mime.lowercase()) {
                 "application/json" -> listOf("json")
                 "text/plain" -> listOf("txt")
+                "text/xml", "application/xml" -> listOf("xml")
                 "text/csv", "text/comma-separated-values" -> listOf("csv")
                 "text/*" -> listOf("txt", "csv", "tsv", "json")
                 "audio/x-mpegurl", "audio/mpegurl", "application/vnd.apple.mpegurl" -> listOf("m3u", "m3u8")
@@ -81,7 +82,7 @@ object FilePickers {
     }
 
     private val KNOWN = setOf(
-        "application/json", "text/plain", "text/csv", "text/comma-separated-values", "text/*",
+        "application/json", "text/plain", "text/xml", "application/xml", "text/csv", "text/comma-separated-values", "text/*",
         "audio/x-mpegurl", "audio/mpegurl", "application/vnd.apple.mpegurl",
         "font/ttf", "font/otf", "font/*", "application/x-font-ttf", "application/font-sfnt",
         "application/x-hdf5", "application/x-sofa", "audio/*",

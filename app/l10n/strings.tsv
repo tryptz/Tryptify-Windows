@@ -1858,3 +1858,102 @@ mouse_right_click	Right-click	右键点击	右クリック	Clic droit	Clic derec
 mouse_double_click	Double-click	双击	ダブルクリック	Double-clic	Doble clic	Çift tık	Doppelklick
 mouse_back_button	Mouse back button	鼠标后退键	マウスの戻るボタン	Bouton Retour de la souris	Botón Atrás del mouse	Farenin geri düğmesi	Zurück-Taste der Maus
 mouse_forward_button	Mouse forward button	鼠标前进键	マウスの進むボタン	Bouton Avancer de la souris	Botón Adelante del mouse	Farenin ileri düğmesi	Vorwärts-Taste der Maus
+dj_title	DJ	DJ	DJ	DJ	DJ	DJ	DJ
+dj_open	Open the DJ decks	打开 DJ 打碟台	DJ デッキを開く	Ouvrir les platines DJ	Abrir los platos DJ	DJ decklerini aç	DJ-Decks öffnen
+dj_console_on	Console on	调音台已开启	コンソール オン	Console allumée	Consola encendida	Konsol açık	Konsole an
+dj_console_off	Console off	调音台已关闭	コンソール オフ	Console éteinte	Consola apagada	Konsol kapalı	Konsole aus
+dj_console_hint	While the console is on it has the audio output, through Mix A → FX A and Mix B → FX B. Off, the output goes back to the player.	调音台开启时接管音频输出，经由 Mix A → FX A 和 Mix B → FX B。关闭后输出交还给播放器。	コンソールがオンの間は音声出力を使い、Mix A → FX A と Mix B → FX B を通ります。オフにすると出力はプレーヤーに戻ります。	Allumée, la console prend la sortie audio, par Mix A → FX A et Mix B → FX B. Éteinte, la sortie revient au lecteur.	Encendida, la consola toma la salida de audio, por Mix A → FX A y Mix B → FX B. Apagada, la salida vuelve al reproductor.	Konsol açıkken ses çıkışını alır; Mix A → FX A ve Mix B → FX B üzerinden çalar. Kapalıyken çıkış oynatıcıya döner.	Ist die Konsole an, gehört ihr der Audioausgang, über Mix A → FX A und Mix B → FX B. Aus, geht er zurück an den Player.
+dj_deck_a	Deck A	碟机 A	デッキ A	Platine A	Plato A	Deck A	Deck A
+dj_deck_b	Deck B	碟机 B	デッキ B	Platine B	Plato B	Deck B	Deck B
+dj_deck_empty	Load a track from the browser	从浏览器载入曲目	ブラウザーから曲を読み込んでください	Chargez un morceau depuis le navigateur	Carga una pista desde el navegador	Tarayıcıdan bir parça yükleyin	Lade einen Titel aus dem Browser
+dj_loading	Loading %1$s…	正在载入 %1$s…	%1$s を読み込み中…	Chargement de %1$s…	Cargando %1$s…	%1$s yükleniyor…	%1$s wird geladen…
+dj_load_failed	Could not load it: %1$s	无法载入：%1$s	読み込めませんでした: %1$s	Chargement impossible : %1$s	No se pudo cargar: %1$s	Yüklenemedi: %1$s	Laden fehlgeschlagen: %1$s
+dj_truncated	Too long to hold in memory; it plays up to %1$s	太长，无法完整放入内存；可播放至 %1$s	長すぎてメモリに収まりません。%1$s まで再生できます	Trop long pour la mémoire ; il joue jusqu'à %1$s	Demasiado larga para la memoria; suena hasta %1$s	Bellek için çok uzun; %1$s noktasına kadar çalar	Zu lang für den Speicher; er spielt bis %1$s
+dj_no_bpm	No beat grid yet	尚无节拍网格	ビートグリッドはまだありません	Pas encore de grille rythmique	Aún sin cuadrícula de beats	Henüz vuruş ızgarası yok	Noch kein Beatgrid
+dj_leader	Leader	主导	リーダー	Maître	Líder	Lider	Leader
+dj_seek	Position	播放位置	再生位置	Position	Posición	Konum	Position
+dj_tempo_range	Tempo range	速度范围	テンポ範囲	Plage de tempo	Rango de tempo	Tempo aralığı	Tempobereich
+dj_load_to_a	Load to deck A	载入到碟机 A	デッキ A に読み込む	Charger sur la platine A	Cargar en el plato A	Deck A'ya yükle	In Deck A laden
+dj_load_to_b	Load to deck B	载入到碟机 B	デッキ B に読み込む	Charger sur la platine B	Cargar en el plato B	Deck B'ye yükle	In Deck B laden
+dj_load_refused	Deck %1$s is playing. Pause it first.	碟机 %1$s 正在播放，请先暂停。	デッキ %1$s は再生中です。先に一時停止してください。	La platine %1$s joue. Mettez-la d'abord en pause.	El plato %1$s está sonando. Ponlo en pausa primero.	Deck %1$s çalıyor. Önce duraklatın.	Deck %1$s spielt. Pausiere es zuerst.
+dj_mixer	Mixer	混音	ミキサー	Mixage	Mezcla	Mikser	Mixer
+dj_fx_unit	FX %1$s	FX %1$s	FX %1$s	FX %1$s	FX %1$s	FX %1$s	FX %1$s
+dj_fx_empty	Empty	空	空き	Vide	Vacío	Boş	Leer
+dj_fx_hint	The effects are the first three on the %1$s bus in the Mixer.	效果是混音器中 %1$s 总线上的前三个。	エフェクトはミキサーの %1$s バスの最初の 3 つです。	Les effets sont les trois premiers du bus %1$s dans le Mixeur.	Los efectos son los tres primeros del bus %1$s en el Mezclador.	Efektler, Mikser'deki %1$s veriyolunun ilk üçüdür.	Die Effekte sind die ersten drei auf dem Bus %1$s im Mixer.
+dj_browser	Browser	浏览器	ブラウザー	Navigateur	Navegador	Tarayıcı	Browser
+dj_browser_search	Search this list	搜索此列表	このリストを検索	Rechercher dans cette liste	Buscar en esta lista	Bu listede ara	Diese Liste durchsuchen
+dj_browser_empty	Nothing here	这里什么都没有	何もありません	Rien ici	No hay nada aquí	Burada bir şey yok	Hier ist nichts
+dj_controllers	Controllers	控制器	コントローラー	Contrôleurs	Controladores	Kontrolcüler	Controller
+dj_controllers_none	Nothing plugged in. USB MIDI controllers and the Traktor Kontrol S2 MK1 are picked up as soon as they are plugged in.	未连接控制器。USB MIDI 控制器和 Traktor Kontrol S2 MK1 一插入即可识别。	何も接続されていません。USB MIDI コントローラーと Traktor Kontrol S2 MK1 は接続するとすぐに認識されます。	Rien n'est branché. Les contrôleurs USB MIDI et la Traktor Kontrol S2 MK1 sont reconnus dès qu'ils sont branchés.	No hay nada conectado. Los controladores USB MIDI y la Traktor Kontrol S2 MK1 se detectan en cuanto se conectan.	Bağlı bir şey yok. USB MIDI kontrolcüleri ve Traktor Kontrol S2 MK1 takıldığı anda algılanır.	Nichts angeschlossen. USB-MIDI-Controller und der Traktor Kontrol S2 MK1 werden erkannt, sobald sie eingesteckt sind.
+dj_controller_connected	Connected	已连接	接続済み	Connecté	Conectado	Bağlı	Verbunden
+dj_controller_busy	In use by another program. Close Traktor and NI Controller Editor.	正被其他程序占用。请关闭 Traktor 和 NI Controller Editor。	他のプログラムが使用中です。Traktor と NI Controller Editor を閉じてください。	Utilisé par un autre programme. Fermez Traktor et NI Controller Editor.	Lo está usando otro programa. Cierra Traktor y NI Controller Editor.	Başka bir program kullanıyor. Traktor'u ve NI Controller Editor'ü kapatın.	Von einem anderen Programm belegt. Schließe Traktor und den NI Controller Editor.
+dj_controller_failed	It would not open. Unplug it and plug it back in.	无法打开。请拔下后重新插入。	開けませんでした。いったん抜いて、もう一度接続してください。	Impossible de l'ouvrir. Débranchez-le puis rebranchez-le.	No se pudo abrir. Desconéctalo y vuelve a conectarlo.	Açılamadı. Çıkarıp yeniden takın.	Ließ sich nicht öffnen. Zieh ihn ab und steck ihn wieder ein.
+dj_controller_unmapped	No mapping yet. Learn its controls, or import a Mixxx mapping.	尚无映射。请学习它的控件，或导入 Mixxx 映射。	マッピングがまだありません。コントロールを学習するか、Mixxx のマッピングを読み込んでください。	Pas encore de mappage. Apprenez ses commandes ou importez un mappage Mixxx.	Aún no hay asignación. Aprende sus controles o importa una asignación de Mixxx.	Henüz eşleme yok. Kontrollerini öğretin veya bir Mixxx eşlemesini içe aktarın.	Noch keine Zuordnung. Lerne seine Bedienelemente an oder importiere eine Mixxx-Zuordnung.
+dj_controller_mapping	Mapping: %1$s	映射：%1$s	マッピング: %1$s	Mappage : %1$s	Asignación: %1$s	Eşleme: %1$s	Zuordnung: %1$s
+dj_controller_unverified	Written from the maker's documentation and not yet tried on this hardware. If a control does the wrong thing, learn it again.	根据厂商文档编写，尚未在此硬件上测试。如有控件不对，请重新学习。	メーカーの資料をもとに作成したもので、この機器ではまだ試されていません。動作がおかしいコントロールは学習し直してください。	Écrit d'après la documentation du fabricant, pas encore essayé sur ce matériel. Si une commande fait erreur, apprenez-la à nouveau.	Escrito a partir de la documentación del fabricante y aún sin probar en este equipo. Si un control hace algo incorrecto, apréndelo de nuevo.	Üreticinin belgelerinden yazıldı, bu donanımda henüz denenmedi. Bir kontrol yanlış çalışırsa onu yeniden öğretin.	Nach der Herstellerdokumentation erstellt und auf dieser Hardware noch nicht getestet. Macht ein Bedienelement das Falsche, lerne es neu an.
+dj_controller_midi	USB MIDI	USB MIDI	USB MIDI	USB MIDI	USB MIDI	USB MIDI	USB MIDI
+dj_controller_hid	USB HID	USB HID	USB HID	USB HID	USB HID	USB HID	USB HID
+dj_learn	Learn	学习	学習	Apprendre	Aprender	Öğret	Anlernen
+dj_learn_title	Learn a control on %1$s	在 %1$s 上学习控件	%1$s のコントロールを学習	Apprendre une commande de %1$s	Aprender un control de %1$s	%1$s üzerinde bir kontrol öğret	Bedienelement an %1$s anlernen
+dj_learn_pick	Choose what the control should do, then press Listen and move it.	先选择控件的功能，再按“开始监听”并操作它。	コントロールの機能を選び、「待ち受け開始」を押してから動かしてください。	Choisissez ce que fera la commande, puis appuyez sur Écouter et actionnez-la.	Elige qué hará el control, pulsa Escuchar y muévelo.	Kontrolün ne yapacağını seçin, sonra Dinle'ye basıp onu hareket ettirin.	Wähle, was das Bedienelement tun soll, tippe auf Zuhören und bewege es.
+dj_learn_waiting	Move the control for: %1$s	请操作用于此功能的控件：%1$s	次の機能に使うコントロールを動かしてください: %1$s	Actionnez la commande pour : %1$s	Mueve el control para: %1$s	Şu işlev için kontrolü hareket ettirin: %1$s	Bewege das Bedienelement für: %1$s
+dj_learn_listen	Listen	开始监听	待ち受け開始	Écouter	Escuchar	Dinle	Zuhören
+dj_reset_mapping	Reset mapping	重置映射	マッピングをリセット	Réinitialiser le mappage	Restablecer la asignación	Eşlemeyi sıfırla	Zuordnung zurücksetzen
+dj_reset_mapping_title	Reset the mapping for %1$s?	要重置 %1$s 的映射吗？	%1$s のマッピングをリセットしますか？	Réinitialiser le mappage de %1$s ?	¿Restablecer la asignación de %1$s?	%1$s için eşleme sıfırlansın mı?	Zuordnung für %1$s zurücksetzen?
+dj_reset_mapping_body	What you learned or imported for it is deleted. A controller with a built-in mapping goes back to it.	你为它学习或导入的映射将被删除。有内置映射的控制器会恢复为内置映射。	学習または読み込んだ内容は削除されます。内蔵マッピングのあるコントローラーはそれに戻ります。	Ce que vous avez appris ou importé pour lui est supprimé. Un contrôleur doté d'un mappage intégré y revient.	Se borra lo que aprendiste o importaste para él. Un controlador con asignación integrada vuelve a ella.	Onun için öğrettikleriniz veya içe aktardıklarınız silinir. Yerleşik eşlemesi olan bir kontrolcü ona geri döner.	Was du dafür angelernt oder importiert hast, wird gelöscht. Ein Controller mit eingebauter Zuordnung kehrt zu ihr zurück.
+dj_import_mixxx	Import Mixxx mapping	导入 Mixxx 映射	Mixxx のマッピングを読み込む	Importer un mappage Mixxx	Importar asignación de Mixxx	Mixxx eşlemesini içe aktar	Mixxx-Zuordnung importieren
+dj_import_done	Mapping imported: %1$s controls. Skipped %2$s scripted and %3$s unsupported.	映射已导入：%1$s 个控件。跳过了 %2$s 个脚本控件和 %3$s 个不支持的控件。	マッピングを読み込みました: コントロール %1$s 個。スクリプト %2$s 個と非対応 %3$s 個はスキップしました。	Mappage importé : %1$s commandes. Ignorées : %2$s scriptées et %3$s non prises en charge.	Asignación importada: %1$s controles. Omitidos: %2$s con script y %3$s no compatibles.	Eşleme içe aktarıldı: %1$s kontrol. %2$s betikli ve %3$s desteklenmeyen atlandı.	Zuordnung importiert: %1$s Bedienelemente. Übersprungen: %2$s per Skript und %3$s nicht unterstützt.
+dj_import_failed	Not a Mixxx mapping: %1$s	不是 Mixxx 映射：%1$s	Mixxx のマッピングではありません: %1$s	Pas un mappage Mixxx : %1$s	No es una asignación de Mixxx: %1$s	Mixxx eşlemesi değil: %1$s	Keine Mixxx-Zuordnung: %1$s
+dj_mapping_controls	Controls (%1$s)	控件（%1$s）	コントロール（%1$s）	Commandes (%1$s)	Controles (%1$s)	Kontroller (%1$s)	Bedienelemente (%1$s)
+dj_forget	Forget this control	移除此控件	このコントロールを解除	Oublier cette commande	Olvidar este control	Bu kontrolü unut	Dieses Bedienelement entfernen
+dj_invert_tempo	Invert tempo faders	反转速度推子	テンポフェーダーを反転	Inverser les faders de tempo	Invertir los faders de tempo	Tempo fader'larını ters çevir	Tempofader umkehren
+dj_invert_tempo_desc	Off: pulling a fader towards you speeds up, as in Traktor and Mixxx. On: pushing it away speeds up.	关闭：把推子拉向自己时加速，与 Traktor 和 Mixxx 一致。开启：把推子推离自己时加速。	オフ: フェーダーを手前に引くと速くなります（Traktor や Mixxx と同じ）。オン: 奥へ押すと速くなります。	Désactivé : tirer le fader vers soi accélère, comme dans Traktor et Mixxx. Activé : le pousser accélère.	Desactivado: tirar del fader hacia ti acelera, como en Traktor y Mixxx. Activado: empujarlo acelera.	Kapalı: fader'ı kendinize doğru çekmek hızlandırır, Traktor ve Mixxx'teki gibi. Açık: ileri itmek hızlandırır.	Aus: Den Fader zu dir ziehen beschleunigt, wie in Traktor und Mixxx. An: Wegschieben beschleunigt.
+dj_log_reports	Log raw controller data	记录控制器原始数据	コントローラーの生データを記録	Journaliser les données brutes du contrôleur	Registrar los datos sin procesar del controlador	Ham kontrolcü verilerini kaydet	Rohdaten des Controllers protokollieren
+dj_log_reports_desc	For a USB HID controller that misbehaves: everything it sends is written to a file to attach to a bug report.	用于排查异常的 USB HID 控制器：它发送的所有数据都会写入文件，可附在问题报告中。	動作がおかしい USB HID コントローラー向け: 送信されたすべてのデータがファイルに書き込まれ、不具合報告に添付できます。	Pour un contrôleur USB HID qui se comporte mal : tout ce qu'il envoie est écrit dans un fichier à joindre à un rapport de bug.	Para un controlador USB HID que falla: todo lo que envía se escribe en un archivo para adjuntar a un informe de error.	Hatalı çalışan bir USB HID kontrolcüsü için: gönderdiği her şey, hata raporuna eklenecek bir dosyaya yazılır.	Für einen USB-HID-Controller, der sich falsch verhält: Alles, was er sendet, wird in eine Datei geschrieben, die du einem Fehlerbericht anhängen kannst.
+dj_log_file	Writing to %1$s	正在写入 %1$s	%1$s に書き込み中	Écriture dans %1$s	Escribiendo en %1$s	%1$s dosyasına yazılıyor	Schreibe in %1$s
+dj_action_play	Play	播放	再生	Lecture	Reproducir	Çal	Wiedergabe
+dj_action_cue	Cue	Cue	キュー	Cue	Cue	Cue	Cue
+dj_action_start	Back to start	回到开头	先頭へ	Retour au début	Volver al inicio	Başa dön	Zum Anfang
+dj_action_sync	Sync	同步	シンク	Sync	Sync	Sync	Sync
+dj_action_sync_lock	Sync lock	同步锁定	シンクロック	Verrou de sync	Bloqueo de sync	Sync kilidi	Sync-Sperre
+dj_action_keylock	Key lock	调性锁定	キーロック	Verrou de tonalité	Bloqueo de tono	Ton kilidi	Tonart-Sperre
+dj_action_quantize	Quantize	量化	クオンタイズ	Quantification	Cuantizar	Kuantize	Quantisieren
+dj_action_load	Load	载入	読み込む	Charger	Cargar	Yükle	Laden
+dj_action_eject	Eject	弹出	イジェクト	Éjecter	Expulsar	Çıkar	Auswerfen
+dj_action_hot_cue	Hot cue	热点	ホットキュー	Hot cue	Hot cue	Hot cue	Hotcue
+dj_action_clear_hot_cue	Clear hot cue	清除热点	ホットキューを削除	Effacer le hot cue	Borrar hot cue	Hot cue'yu sil	Hotcue löschen
+dj_action_loop_in	Loop in	循环起点	ループイン	Début de boucle	Inicio de bucle	Döngü başı	Loop-Anfang
+dj_action_loop_out	Loop out	循环终点	ループアウト	Fin de boucle	Fin de bucle	Döngü sonu	Loop-Ende
+dj_action_loop	Loop	循环	ループ	Boucle	Bucle	Döngü	Loop
+dj_action_reloop	Reloop	重新循环	リループ	Reboucler	Repetir bucle	Tekrar döngü	Reloop
+dj_action_loop_halve	Halve loop	循环减半	ループを半分に	Diviser la boucle	Reducir el bucle a la mitad	Döngüyü yarıya indir	Loop halbieren
+dj_action_loop_double	Double loop	循环加倍	ループを倍に	Doubler la boucle	Duplicar el bucle	Döngüyü ikiye katla	Loop verdoppeln
+dj_action_jump_back	Beat jump back	节拍后跳	ビートジャンプで戻る	Saut de temps arrière	Salto de beat atrás	Geri vuruş atlama	Beatjump zurück
+dj_action_jump_forward	Beat jump forward	节拍前跳	ビートジャンプで進む	Saut de temps avant	Salto de beat adelante	İleri vuruş atlama	Beatjump vor
+dj_action_jog_touch	Jog wheel touch	转盘触摸	ジョグのタッチ	Toucher du jog	Toque del jog	Jog dokunma	Jogwheel-Berührung
+dj_action_volume	Volume	音量	ボリューム	Volume	Volumen	Ses	Lautstärke
+dj_action_tempo	Tempo	速度	テンポ	Tempo	Tempo	Tempo	Tempo
+dj_action_trim	Gain	增益	ゲイン	Gain	Ganancia	Kazanç	Gain
+dj_action_eq_high	High	高音	ハイ	Aigus	Agudos	Tiz	Höhen
+dj_action_eq_mid	Mid	中音	ミッド	Médiums	Medios	Orta	Mitten
+dj_action_eq_low	Low	低音	ロー	Graves	Graves	Bas	Bässe
+dj_action_filter	Filter	滤波	フィルター	Filtre	Filtro	Filtre	Filter
+dj_action_jog	Jog wheel	转盘	ジョグホイール	Jog	Jog	Jog tekerleği	Jogwheel
+dj_action_crossfader	Crossfader	交叉推子	クロスフェーダー	Crossfader	Crossfader	Crossfader	Crossfader
+dj_action_browse	Browse	浏览	ブラウズ	Parcourir	Navegar	Gezin	Durchsuchen
+dj_action_fx_toggle	Effect on/off	效果开关	エフェクト オン/オフ	Effet on/off	Efecto on/off	Efekt aç/kapat	Effekt an/aus
+dj_action_fx_assign	FX unit on the deck	效果单元接入碟机	FX ユニットをデッキに割り当て	Unité FX sur la platine	Unidad FX en el plato	FX ünitesi deck'te	FX-Einheit auf dem Deck
+dj_action_fx_mix	FX dry/wet	效果干湿比	FX ドライ/ウェット	Dosage FX	Mezcla FX	FX kuru/ıslak	FX Dry/Wet
+dj_action_fx_amount	Effect amount	效果量	エフェクト量	Intensité de l'effet	Cantidad de efecto	Efekt miktarı	Effektstärke
+dj_bpm	%1$s BPM	%1$s BPM	%1$s BPM	%1$s BPM	%1$s BPM	%1$s BPM	%1$s BPM
+dj_crate_queue	Queue	队列	キュー	File d'attente	Cola	Sıra	Warteschlange
+dj_crate_local	Local files	本地文件	ローカルファイル	Fichiers locaux	Archivos locales	Yerel dosyalar	Lokale Dateien
+dj_crate_liked	Liked	喜欢的	お気に入り	Favoris	Favoritos	Beğenilenler	Favoriten
+dj_crate_history	History	历史	履歴	Historique	Historial	Geçmiş	Verlauf
+dj_jump_smaller	Shorter beat jump	缩短跳拍	ビートジャンプを短く	Saut de temps plus court	Salto de tiempos más corto	Daha kısa vuruş atlama	Kürzerer Beat-Sprung
+dj_jump_larger	Longer beat jump	加长跳拍	ビートジャンプを長く	Saut de temps plus long	Salto de tiempos más largo	Daha uzun vuruş atlama	Längerer Beat-Sprung
+dj_hot_cue_n	Hot cue %1$s	热 Cue %1$s	ホットキュー %1$s	Hot cue %1$s	Hot cue %1$s	Hot cue %1$s	Hotcue %1$s
+dj_phase	Beat phase	节拍相位	ビート位相	Phase des temps	Fase del tiempo	Vuruş fazı	Beat-Phase
+dj_fx_assigned	On deck %1$s	作用于唱盘 %1$s	デッキ %1$s に適用	Sur la platine %1$s	En el deck %1$s	%1$s destesinde	Auf Deck %1$s
+dj_fx_slot	Effect %1$s	效果 %1$s	エフェクト %1$s	Effet %1$s	Efecto %1$s	Efekt %1$s	Effekt %1$s
+dj_learn_done	Learned. Choose another control, or close.	已学会。选择另一个控件，或关闭。	覚えました。別のコントロールを選ぶか、閉じてください。	Appris. Choisissez une autre commande, ou fermez.	Aprendido. Elige otro control o cierra.	Öğrenildi. Başka bir kontrol seçin ya da kapatın.	Gelernt. Wähle ein weiteres Bedienelement oder schließe.

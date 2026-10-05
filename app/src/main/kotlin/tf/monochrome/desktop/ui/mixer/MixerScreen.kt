@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.mixer
 
+import tf.monochrome.desktop.ui.navigation.Screen
 import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import android.net.Uri
 import android.widget.Toast
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.SettingsBackupRestore
@@ -520,6 +522,12 @@ fun MixerScreen(
                             icon = Icons.Default.Album,
                             contentDescription = stringResource(R.string.mixer_console_layout),
                             onClick = { showConsoleConfirm = true }
+                        )
+                        // Desktop: the DJ decks, which drive this console.
+                        NavIconButton(
+                            icon = Icons.Default.Headphones,
+                            contentDescription = stringResource(R.string.dj_open),
+                            onClick = { navController.navigate(Screen.Dj.route) }
                         )
                         NavIconButton(
                             icon = Icons.Default.SettingsBackupRestore,

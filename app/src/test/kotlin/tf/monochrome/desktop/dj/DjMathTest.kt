@@ -95,4 +95,25 @@ class DjMathTest {
         assertEquals("1/4", DjMath.beatsLabel(0.25))
         assertEquals("16", DjMath.beatsLabel(16.0))
     }
+
+    @Test
+    fun theScreensDbKnobsLandWhereTheEngineReadsThem() {
+        // The screen turns its knobs in dB; the engine keeps 0..1 with unity at the centre.
+        assertEquals(0.5f, DjMath.trimKnob(0f), 0f)
+        assertEquals(0.5f, DjMath.eqKnob(0f), 0f)
+        assertEquals(0f, DjMath.trimKnob(DjMath.TRIM_MIN_DB), 0f)
+        assertEquals(1f, DjMath.trimKnob(DjMath.TRIM_MAX_DB), 0f)
+        assertEquals(1f, DjMath.eqKnob(DjMath.EQ_MAX_DB), 0f)
+        // All the way down is the kill, not merely -26 dB.
+        assertEquals(0f, DjMath.eqGain(DjMath.eqKnob(DjMath.EQ_MIN_DB)), 0f)
+        for (db in listOf(-24f, -9.5f, -0.1f, 0.1f, 3f, 12f)) {
+            assertEquals(db, DjMath.trimDb(DjMath.trimKnob(db)), 1e-4f)
+        }
+        for (db in listOf(-26f, -12f, -0.1f, 0.1f, 6f)) {
+            assertEquals(db, DjMath.eqDb(DjMath.eqKnob(db)), 1e-4f)
+        }
+        for (k in listOf(0.1f, 0.3f, 0.7f, 0.95f)) {
+            assertEquals(DjMath.dbToGain(DjMath.eqDb(k)), DjMath.eqGain(k), 1e-5f)
+        }
+    }
 }

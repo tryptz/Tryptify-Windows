@@ -33,6 +33,9 @@ abstract class ViewModelModule {
     @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.discover.WorldRadioViewModel::class)
     abstract fun bindWorldRadioViewModel(vm: tf.monochrome.desktop.ui.discover.WorldRadioViewModel): ViewModel
 
+    @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.dj.DjViewModel::class)
+    abstract fun bindDjViewModel(vm: tf.monochrome.desktop.ui.dj.DjViewModel): ViewModel
+
     @Binds @IntoMap @ViewModelKey(tf.monochrome.desktop.ui.downloads.DownloadCenterViewModel::class)
     abstract fun bindDownloadCenterViewModel(vm: tf.monochrome.desktop.ui.downloads.DownloadCenterViewModel): ViewModel
 

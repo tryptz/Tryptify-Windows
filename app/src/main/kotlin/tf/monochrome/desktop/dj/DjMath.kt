@@ -133,6 +133,12 @@ object DjMath {
         return if (k < 0.5f) TRIM_MIN_DB * (0.5f - k) * 2f else TRIM_MAX_DB * (k - 0.5f) * 2f
     }
 
+    /** The trim knob (0..1) that gives [db]: the inverse of [trimDb]. */
+    fun trimKnob(db: Float): Float {
+        val d = db.coerceIn(TRIM_MIN_DB, TRIM_MAX_DB)
+        return if (d < 0f) 0.5f - d / TRIM_MIN_DB * 0.5f else 0.5f + d / TRIM_MAX_DB * 0.5f
+    }
+
     /** Below this an EQ knob is a kill: the band goes silent. */
     const val EQ_KILL = 0.02f
     const val EQ_MIN_DB = -26f
@@ -147,6 +153,21 @@ object DjMath {
         if (k <= EQ_KILL) return 0f
         val db = if (k < 0.5f) EQ_MIN_DB * (0.5f - k) / (0.5f - EQ_KILL) else EQ_MAX_DB * (k - 0.5f) * 2f
         return dbToGain(db)
+    }
+
+    /** EQ knob [knob] 0..1 to dB, [EQ_MIN_DB] standing for the kill below [EQ_KILL]. */
+    fun eqDb(knob: Float): Float {
+        val k = knob.coerceIn(EQ_KILL, 1f)
+        return if (k < 0.5f) EQ_MIN_DB * (0.5f - k) / (0.5f - EQ_KILL) else EQ_MAX_DB * (k - 0.5f) * 2f
+    }
+
+    /** The EQ knob (0..1) that gives [db]: the inverse of [eqDb], so [EQ_MIN_DB] is the kill. */
+    fun eqKnob(db: Float): Float {
+        val d = db.coerceIn(EQ_MIN_DB, EQ_MAX_DB)
+        // The bottom is the kill: all the way down, as a controller's knob is,
+        // not a rounding error above [EQ_KILL].
+        if (d <= EQ_MIN_DB) return 0f
+        return if (d < 0f) 0.5f - d / EQ_MIN_DB * (0.5f - EQ_KILL) else 0.5f + d / EQ_MAX_DB * 0.5f
     }
 
     /** Around the filter knob's centre nothing is filtered, so a knob that rests a hair off does nothing. */

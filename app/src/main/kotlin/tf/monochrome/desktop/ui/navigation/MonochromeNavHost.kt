@@ -102,6 +102,7 @@ import tf.monochrome.desktop.ui.discover.DiscoverShelfScreen
 import tf.monochrome.desktop.ui.discover.GenreChartScreen
 import tf.monochrome.desktop.ui.discover.GenreMapScreen
 import tf.monochrome.desktop.ui.home.HomeScreen
+import tf.monochrome.desktop.ui.dj.DjScreen
 import tf.monochrome.desktop.ui.mixer.MixerScreen
 import tf.monochrome.desktop.ui.library.LibraryScreen
 import tf.monochrome.desktop.ui.library.DownloadsScreen
@@ -193,6 +194,8 @@ sealed class Screen(val route: String) {
             "local_facet/${facet.key}/${android.net.Uri.encode(value)}"
     }
     data object Mixer : Screen("mixer")
+    // Desktop: the DJ decks, which drive the Mixer's A and B buses.
+    data object Dj : Screen("dj")
     data object CarMode : Screen("car_mode")
     data object Oxford : Screen("oxford?tab={tab}") {
         /** tab: 0 = Compressor, 1 = Inflator. */
@@ -226,6 +229,7 @@ private val pagerRoutes =
 internal val chromeHiddenRoutes = setOf(
     Screen.NowPlaying.route,
     Screen.Mixer.route,
+    Screen.Dj.route,
     Screen.Oxford.route,
     Screen.CarMode.route,
 )
@@ -890,6 +894,14 @@ fun MonochromeNavHost(initialRoute: String? = null) {
                             navController = navController,
                             viewModel = hiltViewModel(),
                             playerViewModel = playerViewModel
+                        )
+                    }
+                }
+                composable(Screen.Dj.route) {
+                    tf.monochrome.desktop.devedit.DevEditScreen("dj") {
+                        DjScreen(
+                            navController = navController,
+                            viewModel = hiltViewModel(),
                         )
                     }
                 }
