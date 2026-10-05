@@ -19,32 +19,6 @@ import tf.monochrome.desktop.dj.controller.TraktorS2Mk1.Nibble
  */
 class S2Mk1Test {
 
-    /** A console with two real decks and the rest recorded. */
-    private class Surface : DjSurface {
-        override val decks = arrayOf(Deck(0), Deck(1))
-        override var crossfader = 0f
-        val calls = mutableListOf<String>()
-        private val on = Array(2) { BooleanArray(3) }
-        private val mix = FloatArray(2) { 1f }
-        private val amounts = Array(2) { FloatArray(3) { 0.5f } }
-        private val assigned = BooleanArray(2) { true }
-
-        override fun setSyncLock(deck: Int, on: Boolean) {
-            decks[deck].syncLock = on
-            calls += "lock $deck $on"
-        }
-        override fun browse(steps: Int) { calls += "browse $steps" }
-        override fun loadSelected(deck: Int): Boolean { calls += "load $deck"; return true }
-        override fun toggleFx(unit: Int, slot: Int) { on[unit][slot] = !on[unit][slot] }
-        override fun fxOn(unit: Int, slot: Int) = on[unit][slot]
-        override fun fxMix(unit: Int) = mix[unit]
-        override fun setFxMix(unit: Int, value: Float) { mix[unit] = value }
-        override fun fxAmount(unit: Int, slot: Int) = amounts[unit][slot]
-        override fun setFxAmount(unit: Int, slot: Int, value: Float) { amounts[unit][slot] = value }
-        override fun fxAssigned(unit: Int) = assigned[unit]
-        override fun toggleFxAssign(unit: Int) { assigned[unit] = !assigned[unit] }
-    }
-
     private val sr = 48_000
 
     private fun track(): DeckTrack {
@@ -53,7 +27,7 @@ class S2Mk1Test {
         return DeckTrack.fromSamples(ramp, ramp.copyOf(), sr).also { it.grid = BeatGrid(120.0, 0.0, 1f) }
     }
 
-    private fun surface() = Surface().apply {
+    private fun surface() = FakeDjSurface().apply {
         for (d in decks) {
             d.quantize = false
             d.load(track())

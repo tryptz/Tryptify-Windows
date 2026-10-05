@@ -173,6 +173,11 @@ object TraktorS2Mk1 {
         /** Per deck: the platter's touch sensor reads above this when a hand is on it. */
         val jogTouched: IntArray,
     ) {
+        /** Every control's ends in order: a controller that answered with zeros has none, and every fader would be dead. */
+        val plausible: Boolean
+            get() = (volume + crossfader).all { it.max > it.min } &&
+                (eq.flatten() + fxMix + fxKnobs.flatten() + sampler).all { it.min < it.centre && it.centre < it.max }
+
         companion object {
             /** The ends Mixxx scales the uncalibrated controls (rate, head mix) to. */
             val FULL = Fader(16, 4080)

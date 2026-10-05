@@ -27,6 +27,7 @@ import tf.monochrome.desktop.data.sync.LibraryRestoreCoordinator
 import tf.monochrome.desktop.data.sync.SettingsSyncCoordinator
 import tf.monochrome.desktop.debug.CrashLogger
 import tf.monochrome.desktop.debug.DebugLogCollector
+import tf.monochrome.desktop.dj.controller.ControllerManager
 import tf.monochrome.desktop.performance.DeviceCapabilities
 import tf.monochrome.desktop.performance.PerformanceProfile
 import tf.monochrome.desktop.platform.AppScope
@@ -92,6 +93,7 @@ class AppLifecycle @Inject constructor(
     private val audioOutput: AudioOutputController,
     private val scanRunner: ScanRunner,
     private val usbExclusiveController: UsbExclusiveController,
+    private val controllerManager: ControllerManager,
     // Providers: these are only warmed on a background coroutine, so building
     // them here would move their cost onto the startup path the warm-up clears.
     private val genreGraph: Provider<GenreGraphRepository>,
@@ -136,6 +138,8 @@ class AppLifecycle @Inject constructor(
         // The Exclusive USB DAC toggle: claims a WinUSB-bound DAC and routes
         // the engine to it while on; without this the toggle does nothing.
         usbExclusiveController.start()
+        // Desktop: DJ controllers, found as they are plugged in, from any screen.
+        controllerManager.start()
         appScope.launch {
             runCatching { preferencesProvider.get().retireRemovedKeys() }
         }

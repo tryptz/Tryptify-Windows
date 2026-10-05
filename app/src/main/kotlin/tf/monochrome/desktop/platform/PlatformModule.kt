@@ -8,10 +8,13 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import tf.monochrome.desktop.dj.controller.HidBus
+import tf.monochrome.desktop.platform.windows.WindowsHid
 
 /**
  * What Android's Application used to be: the desktop Context, the app-wide
- * coroutine scope and the paths. Bound once in AppComponent.
+ * coroutine scope and the paths, and the platform's own devices (HID).
+ * Bound once in AppComponent.
  */
 @Module
 object PlatformModule {
@@ -29,4 +32,8 @@ object PlatformModule {
     @Singleton
     @AppScope
     fun appScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** USB HID, for the DJ controllers. Elsewhere than Windows it lists no devices. */
+    @Provides
+    fun hidBus(): HidBus = WindowsHid
 }
