@@ -24,6 +24,7 @@ class DspStateJsonTest {
     /**
      * Seven buses, the master fifth, with sparse parameters, every plugin flag
      * and two routes: bus 1 to the master and bus 7, bus 2 to bus 6 alone.
+     * Bus 3 hears deck B (the side input).
      */
     private val fixture = listOf(
         bus(0) { copy(gainDb = -3.5f, pan = 0.25f, inputEnabled = true, sends = mapOf(6 to 0.5f, 4 to 1f), plugins = listOf(
@@ -31,7 +32,7 @@ class DspStateJsonTest {
             plugin(SnapinType.GAIN, 0 to -1f),
         )) },
         bus(1) { copy(muted = true, sends = mapOf(5 to 0.25f)) },
-        bus(2) { copy(soloed = true) },
+        bus(2) { copy(soloed = true, inputEnabled = true, inputSource = BusConfig.INPUT_SIDE) },
         bus(3),
         bus(4) { copy(gainDb = 1.5f, plugins = listOf(plugin(SnapinType.LIMITER, 1 to -1f))) },
         bus(5) { copy(gainDb = -6f, plugins = listOf(plugin(SnapinType.EQ_10BAND, 2 to 3f, bypassed = true))) },
@@ -47,7 +48,8 @@ class DspStateJsonTest {
 
     @Test
     fun `a bus routed to the master alone carries no sends`() {
-        val json = DspStateJson.encode(BusConfig.defaultBuses())
+        val json = DspStateJson.encode((0..BusConfig.MASTER_INDEX).map { BusConfig(index = it, name = BusConfig.nameFor(it)) })
         assertEquals(false, json.contains("sends"))
+        assertEquals(false, json.contains("inputSource"))
     }
 }

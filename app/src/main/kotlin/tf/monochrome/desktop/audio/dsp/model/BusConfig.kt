@@ -11,6 +11,12 @@ data class BusConfig(
     val muted: Boolean = false,
     val soloed: Boolean = false,
     val inputEnabled: Boolean = false,
+    /**
+     * Desktop: which input the bus hears while [inputEnabled]: the player
+     * ([INPUT_PLAYER], deck A while the DJ console runs) or deck B
+     * ([INPUT_SIDE]), which is silent outside the console.
+     */
+    val inputSource: Int = INPUT_PLAYER,
     val plugins: List<PluginInstance> = emptyList(),
     /**
      * The channel group of a multichannel stream this bus carries right now
@@ -59,8 +65,26 @@ data class BusConfig(
 
         fun numberFor(index: Int): Int = if (index < MASTER_INDEX) index + 1 else index
 
-        fun nameFor(index: Int): String =
-            if (index == MASTER_INDEX) "Master" else "Bus ${numberFor(index)}"
+        /** Bus input sources, as the engine numbers them. */
+        const val INPUT_PLAYER = 0
+        const val INPUT_SIDE = 1
+
+        /**
+         * Desktop: the four fixed buses are a two-deck DJ console. Each deck
+         * has a channel ("Mix") that feeds its own effects bus ("FX"), and
+         * both FX buses go to the master.
+         */
+        const val MIX_A = 0
+        const val FX_A = 1
+        const val MIX_B = 2
+        const val FX_B = 3
+        private val CONSOLE_NAMES = listOf("Mix A", "FX A", "Mix B", "FX B")
+
+        fun nameFor(index: Int): String = when {
+            index == MASTER_INDEX -> "Master"
+            index < MASTER_INDEX -> CONSOLE_NAMES[index]
+            else -> "Bus ${numberFor(index)}"
+        }
 
         /** Mix buses in number order, then the master. */
         fun displayOrder(buses: List<BusConfig>): List<BusConfig> =
@@ -68,12 +92,36 @@ data class BusConfig(
 
         fun mixBusCount(buses: List<BusConfig>): Int = buses.count { !it.isMaster }
 
-        fun defaultBuses(): List<BusConfig> = listOf(
-            BusConfig(index = 0, name = nameFor(0), inputEnabled = true),
-            BusConfig(index = 1, name = nameFor(1)),
-            BusConfig(index = 2, name = nameFor(2)),
-            BusConfig(index = 3, name = nameFor(3)),
-            BusConfig(index = MASTER_INDEX, name = nameFor(MASTER_INDEX))
-        )
+        /**
+         * The console's routing for bus [index] 0–3: input on the Mix buses
+         * (A from the player, B from deck B), each Mix into its FX bus, the FX
+         * buses into the master. Null for any other bus.
+         */
+        fun consoleRouting(index: Int): ConsoleRouting? = when (index) {
+            MIX_A -> ConsoleRouting(inputEnabled = true, inputSource = INPUT_PLAYER, sends = mapOf(FX_A to 1f))
+            FX_A -> ConsoleRouting(inputEnabled = false, inputSource = INPUT_PLAYER, sends = DEFAULT_SENDS)
+            MIX_B -> ConsoleRouting(inputEnabled = true, inputSource = INPUT_SIDE, sends = mapOf(FX_B to 1f))
+            FX_B -> ConsoleRouting(inputEnabled = false, inputSource = INPUT_PLAYER, sends = DEFAULT_SENDS)
+            else -> null
+        }
+
+        /** Whether some bus in [buses] hears deck B and reaches the master unmuted. */
+        fun hearsDeckB(buses: List<BusConfig>): Boolean = buses.any {
+            it.inputEnabled && it.inputSource == INPUT_SIDE && !it.muted && it.sends.values.any { lv -> lv > 0f }
+        }
+
+        fun defaultBuses(): List<BusConfig> = (0 until MIN_MIX_BUSES).map { index ->
+            val routing = consoleRouting(index)!!
+            BusConfig(
+                index = index,
+                name = nameFor(index),
+                inputEnabled = routing.inputEnabled,
+                inputSource = routing.inputSource,
+                sends = routing.sends,
+            )
+        } + BusConfig(index = MASTER_INDEX, name = nameFor(MASTER_INDEX))
     }
+
+    /** One bus's place in the console layout ([consoleRouting]). */
+    data class ConsoleRouting(val inputEnabled: Boolean, val inputSource: Int, val sends: Map<Int, Float>)
 }

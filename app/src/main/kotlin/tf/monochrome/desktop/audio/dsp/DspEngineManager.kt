@@ -168,12 +168,14 @@ class DspEngineManager @Inject constructor(
     suspend fun reapplyAfterEngineRecreated() {
         val json = liveStateJson ?: preferences.dspStateJson.first()
         if (!json.isNullOrEmpty() && json != "{}") loadStateJson(json)
+        else loadStateJson(getMirrorStateJson())
         processor.setMixBypassed(!_enabled.value)
     }
 
     /**
      * Back to a bare mixer: no plugins anywhere, every bus at unity and centre,
-     * nothing muted or soloed, and input on bus 1 alone.
+     * nothing muted or soloed, and the console's routing (Desktop: input on
+     * Mix A and Mix B, each into its FX bus).
      *
      * Driven through the ordinary setters rather than by loading a hand-written
      * default JSON, so native, the Kotlin mirror and the save all move together
@@ -193,13 +195,10 @@ class DspEngineManager @Inject constructor(
             setBusPan(default.index, default.pan)
             setBusMute(default.index, default.muted)
             setBusSolo(default.index, default.soloed)
-            setBusInputEnabled(default.index, default.inputEnabled)
         }
-        // Every bus back to the master alone.
-        for (bus in _buses.value.filter { it.hasCustomSends }) {
-            for (dst in bus.sends.keys - BusConfig.DEFAULT_SENDS.keys) setSend(bus.index, dst, 0f)
-            setSend(bus.index, BusConfig.MASTER_INDEX, 1f)
-        }
+        // Desktop: and the routing back to the console's (Mix A / FX A /
+        // Mix B / FX B), inputs and sends together.
+        applyConsoleLayout()
         // And plain stereo: a bare mixer has no upmix.
         if (_upmix.value) setUpmix(false)
     }
@@ -342,6 +341,10 @@ class DspEngineManager @Inject constructor(
         if (!stateJson.isNullOrEmpty() && stateJson != "{}") {
             loadStateJson(stateJson)
             liveStateJson = stateJson
+        } else {
+            // Desktop: nothing saved yet, so the mirror holds the defaults —
+            // the console's routing, which a new engine doesn't start with.
+            loadStateJson(getMirrorStateJson())
         }
 
         _enabled.value = enabled
@@ -478,6 +481,40 @@ class DspEngineManager @Inject constructor(
         if (ptr != 0L) processor.nativeSetBusInputEnabled(ptr, busIndex, enabled)
         updateBus(busIndex) { it.copy(inputEnabled = enabled) }
         requestSave()
+    }
+
+    /** Desktop: whether bus [busIndex] hears the player or deck B ([BusConfig.INPUT_SIDE]). */
+    fun setBusInputSource(busIndex: Int, source: Int) {
+        if (busIndex == BusConfig.MASTER_INDEX) return
+        val src = if (source == BusConfig.INPUT_SIDE) BusConfig.INPUT_SIDE else BusConfig.INPUT_PLAYER
+        val ptr = processor.getEnginePtr()
+        if (ptr != 0L) processor.nativeSetBusInputSource(ptr, busIndex, src)
+        updateBus(busIndex) { it.copy(inputSource = src) }
+        requestSave()
+    }
+
+    /**
+     * Desktop: routes buses 1–4 as the DJ console (Mix A → FX A, Mix B →
+     * FX B, both FX to the master; see [BusConfig.consoleRouting]). Inputs and
+     * sends only: the plugins, faders and mutes the user set stay.
+     */
+    fun applyConsoleLayout() {
+        for (index in 0 until BusConfig.MIN_MIX_BUSES) {
+            val routing = BusConfig.consoleRouting(index) ?: continue
+            setBusInputEnabled(index, routing.inputEnabled)
+            setBusInputSource(index, routing.inputSource)
+        }
+        // Clear the routes the layout doesn't have before adding its own, so
+        // no intermediate state is refused as a loop.
+        for (index in 0 until BusConfig.MIN_MIX_BUSES) {
+            val routing = BusConfig.consoleRouting(index) ?: continue
+            val bus = _buses.value.firstOrNull { it.index == index } ?: continue
+            for (dst in bus.sends.keys - routing.sends.keys) setSend(index, dst, 0f)
+        }
+        for (index in 0 until BusConfig.MIN_MIX_BUSES) {
+            val routing = BusConfig.consoleRouting(index) ?: continue
+            for ((dst, level) in routing.sends) setSend(index, dst, level)
+        }
     }
 
     fun setBusSolo(busIndex: Int, soloed: Boolean) {
@@ -643,6 +680,10 @@ class DspEngineManager @Inject constructor(
         return MixUpmix.attach(buses, _upmix.value)
     }
 
+    /** The mirror as state JSON, whether or not an engine exists. */
+    private fun getMirrorStateJson(): String =
+        MixUpmix.attach(DspStateJson.encode(_buses.value), _upmix.value)
+
     fun loadStateJson(json: String) {
         // A mix without the key turns the upmix off: loading a preset is
         // loading all of it.
@@ -759,6 +800,10 @@ class DspEngineManager @Inject constructor(
                     muted = obj["muted"]?.jsonPrimitive?.boolean ?: false,
                     soloed = obj["soloed"]?.jsonPrimitive?.boolean ?: false,
                     inputEnabled = obj["inputEnabled"]?.jsonPrimitive?.boolean ?: (index == 0),
+                    // Absent in every mix but one with deck B on a bus.
+                    inputSource = if (index != BusConfig.MASTER_INDEX &&
+                        obj["inputSource"]?.jsonPrimitive?.int == BusConfig.INPUT_SIDE
+                    ) BusConfig.INPUT_SIDE else BusConfig.INPUT_PLAYER,
                     plugins = plugins,
                     sends = sends
                 )

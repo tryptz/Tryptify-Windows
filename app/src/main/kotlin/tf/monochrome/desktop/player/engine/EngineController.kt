@@ -186,14 +186,12 @@ class EngineController @Inject constructor(
     // ── Transport (what the UI calls) ────────────────────────────────────────
     fun playQueue() {
         val track = queueManager.currentTrack.value ?: return
+        // Desktop: playing from the queue takes the output back from the decks.
+        stopLiveInput()
         scope.launch {
             try {
                 val unified = unifiedTrackRegistry[track.id]
-                val item: MediaItem? = if (unified != null) {
-                    streamResolver.resolveUnifiedTrack(unified).takeIf { it.isPlayable }?.mediaItem
-                } else {
-                    streamResolver.resolveMediaItem(track).first
-                }
+                val item: MediaItem? = resolvePlayable(track)
                 if (item == null) { onTrackEnded(); return@launch }
                 val start = playbackState.consumePendingStart(track.id)
                 engine.setMediaItem(item, start.coerceAtLeast(0L))
@@ -232,10 +230,53 @@ class EngineController @Inject constructor(
     fun seekTo(positionMs: Long) = engine.seekTo(positionMs)
 
     fun togglePlayPause() {
+        // Desktop: the player's play key while the decks run hands the output back.
+        if (liveInputActive) { stopLiveInput(); if (engine.currentMediaItem != null) engine.play() else playQueue(); return }
         if (engine.isPlaying) engine.pause() else if (engine.currentMediaItem != null) engine.play() else playQueue()
     }
 
+    /**
+     * Desktop: the playable item for [track], as [playQueue] resolves it
+     * (asking about another service if it must); null when nothing plays it.
+     * The DJ decks load through this, so a deck plays whatever the player can.
+     */
+    suspend fun resolvePlayable(track: Track): MediaItem? {
+        val unified = unifiedTrackRegistry[track.id]
+        return if (unified != null) {
+            streamResolver.resolveUnifiedTrack(unified).takeIf { it.isPlayable }?.mediaItem
+        } else {
+            streamResolver.resolveMediaItem(track).first
+        }
+    }
+
     fun setPlaybackSpeed(speed: Float, preservePitch: Boolean) = pushPlaybackParameters(speed, preservePitch)
+
+    // Desktop: the DJ decks. While they run, the engine renders them instead of
+    // the queue's track (which pauses where it was), and the player's speed and
+    // pitch stages stay neutral: each deck does its own tempo and keylock, so a
+    // player speed of 1.25 must not also speed up the mix.
+    @Volatile private var liveInputActive = false
+    private val _liveInput = MutableStateFlow(false)
+    /** Desktop: whether the DJ decks have the output (the player stopping them clears it). */
+    val liveInput: StateFlow<Boolean> = _liveInput.asStateFlow()
+
+    fun startLiveInput(input: PlaybackEngine.LiveInput, sampleRate: Int) {
+        liveInputActive = true
+        _liveInput.value = true
+        floatSonic.setSpeed(1f)
+        variRateProcessor.setRatio(1f)
+        stretchProcessor.setSemitones(0f)
+        engine.setLiveInput(input, sampleRate)
+    }
+
+    fun stopLiveInput() {
+        if (!liveInputActive) return
+        liveInputActive = false
+        _liveInput.value = false
+        engine.setLiveInput(null)
+        stretchProcessor.setSemitones(lastSemitones)
+        applyPlaybackSpeed()
+    }
 
     private fun onTrackEnded() {
         if (queueManager.next() != null) playQueue()
@@ -359,7 +400,7 @@ class EngineController @Inject constructor(
                 .collect { (speed, preservePitch) -> pushPlaybackParameters(speed, preservePitch) }
         }
         scope.launch {
-            preferences.pitchSemitones.collect { st -> lastSemitones = st; stretchProcessor.setSemitones(st); pushAutoEqWarp() }
+            preferences.pitchSemitones.collect { st -> lastSemitones = st; if (!liveInputActive) stretchProcessor.setSemitones(st); pushAutoEqWarp() }
         }
         scope.launch {
             combine(preferences.pitchEngine, preferences.pitchQuality) { e, q -> e to q }
@@ -419,6 +460,8 @@ class EngineController @Inject constructor(
 
     private fun pushPlaybackParameters(speed: Float, preservePitch: Boolean) {
         val pitch = if (preservePitch) 1f else speed
+        // Desktop: kept for when the decks stop; stopLiveInput pushes it then.
+        if (liveInputActive) { lastPitchRatio = pitch; return }
         // Preserve-pitch speed goes to the time-stretch stage; vinyl-style speed to
         // the resampler. Set before the engine hears of it, so the render thread's
         // next membership check already sees the stage that has to join.

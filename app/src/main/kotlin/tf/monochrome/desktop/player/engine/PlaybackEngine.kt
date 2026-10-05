@@ -166,6 +166,7 @@ class PlaybackEngine(
         object CancelCrossfade : Command
         class SetSink(val factory: () -> AudioSink) : Command
         class SetSpeed(val parameters: PlaybackParameters) : Command
+        class SetLive(val input: LiveInput?, val sampleRate: Int) : Command
         object Release : Command
     }
 
@@ -212,6 +213,10 @@ class PlaybackEngine(
     private var mixOutgoing = FloatArray(0)
     private var draining = false
     private var drainStartedNs = 0L
+    // Desktop: the DJ console's stream (see [setLiveInput]).
+    private var live: LiveInput? = null
+    private var liveFormat: AudioFormat = AudioFormat.NOT_SET
+    private var liveBlock = FloatArray(0)
 
     // The sink clock. Everything here counts from the sink's last configure or
     // flush, when the device's played-frame counter restarts too.
@@ -307,6 +312,32 @@ class PlaybackEngine(
     fun setSink(factory: () -> AudioSink) { commands.add(Command.SetSink(factory)) }
 
     /**
+     * Desktop: a live stream the render thread plays in place of the item:
+     * the DJ console's deck A. It runs through the same chain and sink as a
+     * track, so the mixer's buses, the EQs and the visualizer all hear it.
+     */
+    fun interface LiveInput {
+        /**
+         * Fills [dst] with [frames] frames of interleaved float stereo. Runs on
+         * the render thread once per block, so it must not block.
+         */
+        fun read(dst: FloatArray, frames: Int)
+    }
+
+    /**
+     * Desktop: plays [input] at [sampleRate] instead of the item, or, with
+     * null, hands the output back. The item pauses where it was and stays
+     * there (play is ignored while a live input runs; seeks and new items
+     * still land, unheard) and resumes from there when the output comes back.
+     */
+    fun setLiveInput(input: LiveInput?, sampleRate: Int = preferredLiveRate) {
+        commands.add(Command.SetLive(input, sampleRate))
+    }
+
+    /** Desktop: the rate a live input should run at: the device's, once one is open, so nothing resamples twice. */
+    val preferredLiveRate: Int get() = sinkFormat?.sampleRate ?: DEFAULT_LIVE_RATE
+
+    /**
      * Media time, microseconds, as of the render thread's last reading of the
      * device clock (it reads it on every pass, every few milliseconds while
      * playing). The sink itself is never called from another thread: the
@@ -321,6 +352,7 @@ class PlaybackEngine(
             try {
                 val cmd = commands.poll()
                 if (cmd != null) { handle(cmd); continue }
+                live?.let { liveStep(it); continue }
                 val src = current
                 if (src == null || !_playWhenReady || _playbackState == Player.STATE_IDLE || _playbackState == Player.STATE_ENDED) {
                     if (src != null && !_playWhenReady && _playbackState == Player.STATE_BUFFERING) settleWhilePaused(src)
@@ -346,6 +378,8 @@ class PlaybackEngine(
         when (cmd) {
             is Command.SetItem -> openItem(cmd.item, cmd.startMs * 1000)
             Command.Play -> {
+                // Desktop: the DJ console has the output; the item stays paused.
+                if (live != null) return
                 _playWhenReady = true
                 _error = null
                 if (_playbackState == Player.STATE_ENDED) { current?.let { openItem(it.item, 0) } }
@@ -358,7 +392,7 @@ class PlaybackEngine(
             }
             Command.Pause -> {
                 _playWhenReady = false
-                if (sinkRunning) { sink?.pause(); sinkRunning = false }
+                if (sinkRunning && live == null) { sink?.pause(); sinkRunning = false }
                 publishPosition()
                 updateIsPlaying()
                 notify { it.onPlayWhenReadyChanged(false, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) }
@@ -391,8 +425,62 @@ class PlaybackEngine(
                 if (sinkFormat != null) timeline.setFactor(outUs(sinkFrame()), cmd.parameters.speed.toDouble())
                 notify { it.onPlaybackParametersChanged(cmd.parameters) }
             }
+            is Command.SetLive -> setLiveInternal(cmd.input, cmd.sampleRate)
             Command.Release -> alive = false
         }
+    }
+
+    /**
+     * Desktop: starts, swaps or ends the live input. Starting pauses the item
+     * (reported as a pause, so the controls agree) and keeps its position;
+     * ending re-anchors it there, as a sink switch does.
+     */
+    private fun setLiveInternal(input: LiveInput?, sampleRate: Int) {
+        val was = live
+        if (input != null) {
+            if (was == null) {
+                if (_playWhenReady) {
+                    _playWhenReady = false
+                    notify { it.onPlayWhenReadyChanged(false, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) }
+                }
+                positionHoldUs = computePositionUs()
+                publishedPositionUs = positionHoldUs
+                baseMediaUs = C.TIME_UNSET
+                flushOutput()
+                updateIsPlaying()
+            }
+            live = input
+            val format = AudioFormat(sampleRate.coerceAtLeast(8_000), 2, C.ENCODING_PCM_FLOAT)
+            if (format != liveFormat) { liveFormat = format; chainConfigured = false }
+            Log.i(TAG, "live input on at ${format.sampleRate} Hz")
+            return
+        }
+        if (was == null) return
+        live = null
+        flushOutput()
+        chainConfigured = false
+        liveFormat = AudioFormat.NOT_SET
+        Log.i(TAG, "live input off")
+        if (current != null && (_playbackState == Player.STATE_READY || _playbackState == Player.STATE_BUFFERING)) {
+            seekInternal(positionHoldUs)
+        }
+    }
+
+    /** Desktop: one pass of the live input: a block of it through the chain, written with back-pressure. */
+    private fun liveStep(input: LiveInput) {
+        ensureConfigured(liveFormat)
+        if (pendingProcessed.hasRemaining()) {
+            writeOut(pendingProcessed)
+            if (pendingProcessed.hasRemaining()) { LockSupport.parkNanos(2_000_000); return }
+        }
+        val frames = liveFormat.sampleRate / LIVE_BLOCKS_PER_SECOND
+        val samples = frames * 2
+        if (liveBlock.size < samples) liveBlock = FloatArray(samples)
+        input.read(liveBlock, frames)
+        inputBuf.clear()
+        for (i in 0 until samples) inputBuf.putFloat(liveBlock[i])
+        inputBuf.flip()
+        process(inputBuf)
     }
 
     private fun openItem(item: MediaItem, startUs: Long) {
@@ -497,6 +585,9 @@ class PlaybackEngine(
      * The sink is left stopped and its clock restarts.
      */
     private fun flushOutput() {
+        // Desktop: the live input's stream owns the output while it runs; what
+        // was flushed for the item happens when it gets the output back.
+        if (live != null) return
         pendingProcessed = AudioProcessor.EMPTY_BUFFER
         sink?.flush()
         sinkRunning = false
@@ -525,7 +616,7 @@ class PlaybackEngine(
      */
     private fun startSink() {
         val s = sink ?: return
-        if (!_playWhenReady) return
+        if (!_playWhenReady && live == null) return
         if (!sinkRunning) { s.play(); sinkRunning = true }
         if (!clockAnchored) {
             clockOffsetFrames = (s.playedFrames() + s.pendingFrames() - framesWritten).coerceAtLeast(0)
@@ -533,10 +624,12 @@ class PlaybackEngine(
         }
     }
 
-    private fun ensureConfigured(src: Source) {
-        if (chainConfigured && audioFormat == src.format) return
-        val out = chain.configure(src.format)
-        audioFormat = src.format
+    private fun ensureConfigured(src: Source) = ensureConfigured(src.format)
+
+    private fun ensureConfigured(format: AudioFormat) {
+        if (chainConfigured && audioFormat == format) return
+        val out = chain.configure(format)
+        audioFormat = format
         var s = sink
         if (s == null || sinkIsLastResort) {
             // A track every output refused fell back to the engine's own Java
@@ -558,7 +651,7 @@ class PlaybackEngine(
         }
         sinkFormat = negotiated
         packer = PcmPacker(out, negotiated)
-        val chunkBytes = (src.format.sampleRate / 50) * src.format.bytesPerFrame   // 20 ms of input
+        val chunkBytes = (format.sampleRate / 50) * format.bytesPerFrame   // 20 ms of input
         if (inputBuf.capacity() < chunkBytes) {
             inputBuf = ByteBuffer.allocateDirect(chunkBytes).order(ByteOrder.nativeOrder())
             tailBuf = ByteBuffer.allocateDirect(chunkBytes).order(ByteOrder.nativeOrder())
@@ -571,7 +664,7 @@ class PlaybackEngine(
         if (baseMediaUs != C.TIME_UNSET) { positionHoldUs = publishedPositionUs; baseMediaUs = C.TIME_UNSET }
         resetClock()
         val active = sink
-        Log.i(TAG, "configured chain in=${src.format} out=$out sink=$negotiated (${active?.javaClass?.simpleName}${if (active?.isExclusive == true) " exclusive" else ""})")
+        Log.i(TAG, "configured chain in=$format out=$out sink=$negotiated (${active?.javaClass?.simpleName}${if (active?.isExclusive == true) " exclusive" else ""})")
     }
 
     private fun step() {
@@ -1116,6 +1209,10 @@ class PlaybackEngine(
         private const val MIN_BUFFER_US = 500_000L
         /** Longest the chain may take to give up its tail at the end of a track. */
         private const val DRAIN_TIMEOUT_NS = 2_000_000_000L
+        /** Desktop: a live input's rate before any device has been opened. */
+        const val DEFAULT_LIVE_RATE = 48_000
+        /** Desktop: a live input is pulled in 10 ms blocks, so a deck answers its controls within one. */
+        private const val LIVE_BLOCKS_PER_SECOND = 100
         /** Ten seconds of PCM per source, capped for very high rates and channel counts. */
         private fun ringCapacity(format: AudioFormat): Int =
             (format.sampleRate.toLong() * format.bytesPerFrame * 10).coerceAtMost(24L * 1024 * 1024).toInt()
