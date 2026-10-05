@@ -60,6 +60,8 @@ class S2Mk1Mapping(private val dj: DjSurface) {
         var padPage = 0
         var leftHeld = false
         var cueHeld = false
+        /** The platter's top touched, as last read. */
+        var jogHeld = false
         /** When SYNC went down, while it is held and may yet lock; -1 otherwise. */
         var syncDownAt = -1L
         var jog = -1
@@ -90,6 +92,26 @@ class S2Mk1Mapping(private val dj: DjSurface) {
         browseEncoder = -1
         buttons = null
         analog = null
+    }
+
+    /**
+     * Lets go of what the controller is holding: a CUE previewing, a platter
+     * touched. For one unplugged mid-gesture, which never sends the release:
+     * without this the deck would preview, or scratch, for ever.
+     */
+    fun release() {
+        for (i in decks.indices) {
+            val s = decks[i]
+            if (s.cueHeld) {
+                dj.decks[i].cueUp()
+                s.cueHeld = false
+            }
+            if (s.jogHeld) {
+                dj.decks[i].jogTouched = false
+                s.jogHeld = false
+            }
+            s.syncDownAt = -1
+        }
     }
 
     /** An input report as read, ID first. [now] is a monotonic clock in ms. */
@@ -233,7 +255,10 @@ class S2Mk1Mapping(private val dj: DjSurface) {
                 val v = cal.eq[i][2].map(raw(l.eqLow))
                 if (s.eq[2].accept(v, d.eqLow)) d.eqLow = v
             }
-            if (changed(l.jogTouch)) d.jogTouched = raw(l.jogTouch) > cal.jogTouched[i]
+            if (changed(l.jogTouch)) {
+                s.jogHeld = raw(l.jogTouch) > cal.jogTouched[i]
+                d.jogTouched = s.jogHeld
+            }
 
             val left = nibble(l.leftEncoder)
             val leftStep = TraktorS2Mk1.encoderStep(s.leftEncoder, left)

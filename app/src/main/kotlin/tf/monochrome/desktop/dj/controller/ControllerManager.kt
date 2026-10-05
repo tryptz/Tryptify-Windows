@@ -29,9 +29,11 @@ import tf.monochrome.desktop.platform.AppPaths
  * console. Unplugged, the read fails, the mapping forgets the controller, and
  * the thread goes back to looking.
  *
- * Today that is the Traktor Kontrol S2 MK1, over HID. Its controls need no
- * driver: Windows' own HID class driver serves them (Native Instruments'
- * driver is only for its sound card).
+ * Over HID, that is the Traktor Kontrol S2 MK1. Its controls need no driver:
+ * Windows' own HID class driver serves them (Native Instruments' driver is
+ * only for its sound card). Over USB MIDI, it is any controller with a
+ * mapping, built in, learned or imported from Mixxx: [midi] has those, on a
+ * thread of its own, and [controllers] lists both.
  *
  * [logReports] writes every report read, with the calibration, to a file
  * under the logs directory: what verifying the mapping against a real
@@ -43,8 +45,11 @@ class ControllerManager internal constructor(
     private val hid: HidBus,
     private val logsDir: File,
     private val scanIntervalMs: Long,
+    midiBus: MidiBus = NoMidiBus,
+    mappingsDir: File = File(logsDir, "controllers"),
 ) {
-    @Inject constructor(dj: DjEngine, hid: HidBus, paths: AppPaths) : this(dj, hid, paths.logsDir, SCAN_INTERVAL_MS)
+    @Inject constructor(dj: DjEngine, hid: HidBus, midiBus: MidiBus, paths: AppPaths) :
+        this(dj, hid, paths.logsDir, SCAN_INTERVAL_MS, midiBus, paths.dataDir.resolve("controllers"))
 
     enum class State {
         CONNECTED,
@@ -52,9 +57,20 @@ class ControllerManager internal constructor(
         BUSY,
         /** Plugged in, and it would not open. */
         FAILED,
+        /** A MIDI port with no mapping: left closed for other programs, until one is learned or imported. */
+        UNMAPPED,
     }
 
-    data class Status(val name: String, val state: State)
+    data class Status(
+        val name: String,
+        val state: State,
+        /** A MIDI port, [name] as Windows calls it; otherwise a HID controller. */
+        val midi: Boolean = false,
+        /** The MIDI mapping driving it. */
+        val mapping: String? = null,
+        /** False while [mapping] is a built-in one not yet checked on the hardware. */
+        val verified: Boolean = true,
+    )
 
     private val _controllers = MutableStateFlow<List<Status>>(emptyList())
     /** The known controllers plugged in, and whether each is driving the console. */
@@ -66,7 +82,19 @@ class ControllerManager internal constructor(
 
     private val s2 = S2Mk1Mapping(dj)
 
-    /** See [S2Mk1Mapping.invertTempo]. */
+    private val statusLock = Any()
+    private var hidStatus: List<Status> = emptyList()
+    private var midiStatus: List<Status> = emptyList()
+
+    /** The MIDI controllers: their mappings, learning, and importing. */
+    val midi = MidiControllers(dj, midiBus, mappingsDir, scanIntervalMs, invertTempo = { s2.invertTempo }) { list ->
+        synchronized(statusLock) {
+            midiStatus = list
+            _controllers.value = hidStatus + midiStatus
+        }
+    }
+
+    /** See [S2Mk1Mapping.invertTempo]; MIDI tempo faders follow it too. */
     var invertTempo: Boolean
         get() = s2.invertTempo
         set(value) {
@@ -98,6 +126,7 @@ class ControllerManager internal constructor(
                 start()
             }
         }
+        midi.start()
     }
 
     /**
@@ -105,6 +134,7 @@ class ControllerManager internal constructor(
      * light, as Mixxx leaves it: nothing is driving it now. Waits for that.
      */
     fun stop() {
+        midi.stop()
         val t = synchronized(lock) {
             running = false
             stopping.countDown()
@@ -187,6 +217,7 @@ class ControllerManager internal constructor(
             Log.i(TAG, "${TraktorS2Mk1.NAME} disconnected: ${e.message}")
         } finally {
             connection.close()
+            mapping.release()
             mapping.reset()
             features = emptyList()
             publish(null)
@@ -194,7 +225,10 @@ class ControllerManager internal constructor(
     }
 
     private fun publish(state: State?) {
-        _controllers.value = if (state == null) emptyList() else listOf(Status(TraktorS2Mk1.NAME, state))
+        synchronized(statusLock) {
+            hidStatus = if (state == null) emptyList() else listOf(Status(TraktorS2Mk1.NAME, state))
+            _controllers.value = hidStatus + midiStatus
+        }
     }
 
     // ── The report log ────────────────────────────────────────────────
@@ -207,7 +241,7 @@ class ControllerManager internal constructor(
 
     /** Opens or closes the log as [logReports] asks; flushes it now and then. Reader thread. */
     private fun syncLog() {
-        val want = logReports && _controllers.value.any { it.state == State.CONNECTED }
+        val want = logReports && hidStatus.any { it.state == State.CONNECTED }
         val writer = log
         if (want && writer == null) {
             openLog()

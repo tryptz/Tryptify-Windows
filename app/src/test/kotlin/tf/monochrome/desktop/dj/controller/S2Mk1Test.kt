@@ -287,6 +287,25 @@ class S2Mk1Test {
     }
 
     @Test
+    fun releaseLetsGoOfWhatAnUnpluggedS2Held() {
+        val s = surface()
+        val m = S2Mk1Mapping(s)
+        m.send(buttons())
+        // CUE held at the cue point previews; a platter touched scratches.
+        m.send(buttons(deck1.cue))
+        assertTrue(s.decks[0].playing)
+        m.send(Analog().value(deck2.jogTouch, 0x0D00).r)
+        assertTrue(s.decks[1].jogTouched)
+        // Pulled out: neither release ever comes.
+        m.release()
+        assertFalse(s.decks[0].playing)
+        assertFalse(s.decks[1].jogTouched)
+        // Let go once: a second time finds nothing held.
+        m.release()
+        assertFalse(s.decks[0].playing)
+    }
+
+    @Test
     fun knobsTakeOverSoftly() {
         val s = surface()
         val m = S2Mk1Mapping(s)
