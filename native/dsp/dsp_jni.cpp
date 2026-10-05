@@ -79,6 +79,39 @@ Java_tf_monochrome_desktop_audio_dsp_MixBusProcessor_nativeProcess(
     env->ReleaseFloatArrayElements(outputR, outR, 0);
 }
 
+// Desktop: the DJ decks. As nativeProcess, with deck B beside the player's
+// signal: the buses set to the side input hear it instead.
+extern "C" JNIEXPORT void JNICALL
+Java_tf_monochrome_desktop_audio_dsp_MixBusProcessor_nativeProcessDual(
+    JNIEnv* env, jobject /*thiz*/, jlong enginePtr,
+    jfloatArray inputL, jfloatArray inputR,
+    jfloatArray sideL, jfloatArray sideR,
+    jfloatArray outputL, jfloatArray outputR,
+    jint numFrames) {
+    auto* engine = getEngine(enginePtr);
+    if (!engine || numFrames <= 0) return;
+
+    float* inL = env->GetFloatArrayElements(inputL, nullptr);
+    float* inR = env->GetFloatArrayElements(inputR, nullptr);
+    float* sL = env->GetFloatArrayElements(sideL, nullptr);
+    float* sR = env->GetFloatArrayElements(sideR, nullptr);
+    float* outL = env->GetFloatArrayElements(outputL, nullptr);
+    float* outR = env->GetFloatArrayElements(outputR, nullptr);
+
+    if (inL && inR && sL && sR && outL && outR) {
+        std::copy(inL, inL + numFrames, outL);
+        std::copy(inR, inR + numFrames, outR);
+        engine->primary().process(outL, outR, sL, sR, numFrames);
+    }
+
+    if (inL)  env->ReleaseFloatArrayElements(inputL, inL, JNI_ABORT);
+    if (inR)  env->ReleaseFloatArrayElements(inputR, inR, JNI_ABORT);
+    if (sL)   env->ReleaseFloatArrayElements(sideL, sL, JNI_ABORT);
+    if (sR)   env->ReleaseFloatArrayElements(sideR, sR, JNI_ABORT);
+    if (outL) env->ReleaseFloatArrayElements(outputL, outL, 0);
+    if (outR) env->ReleaseFloatArrayElements(outputR, outR, 0);
+}
+
 // ── Bus configuration ───────────────────────────────────────────────────
 
 extern "C" JNIEXPORT void JNICALL
@@ -165,6 +198,15 @@ Java_tf_monochrome_desktop_audio_dsp_MixBusProcessor_nativeSetBusInputEnabled(
     jint busIndex, jboolean enabled) {
     auto* engine = getEngine(enginePtr);
     if (engine) engine->forEach([&](DspEngine& e) { e.setBusInputEnabled(busIndex, enabled); });
+}
+
+// Desktop: which input a bus hears, the player's (0) or deck B's (1).
+extern "C" JNIEXPORT void JNICALL
+Java_tf_monochrome_desktop_audio_dsp_MixBusProcessor_nativeSetBusInputSource(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong enginePtr,
+    jint busIndex, jint source) {
+    auto* engine = getEngine(enginePtr);
+    if (engine) engine->forEach([&](DspEngine& e) { e.setBusInputSource(busIndex, source); });
 }
 
 // Every lane carries the same graph, so a route is set on all of them; the

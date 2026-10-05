@@ -40,6 +40,9 @@ struct Bus {
     std::atomic<bool> muted{false};
     std::atomic<bool> soloed{false};
     std::atomic<bool> inputEnabled{false};
+    // Which signal a bus taking input hears: the player's (INPUT_PLAYER) or
+    // the side input, a second deck mixed alongside it (INPUT_SIDE).
+    std::atomic<int> inputSource{0};
 
     // Routing (mix buses only): post-fader send level to each other bus,
     // linear 0..1, indexed by destination engine index (MASTER_BUS = the
@@ -123,6 +126,14 @@ public:
 
     // Audio processing — called from audio thread
     void process(float* left, float* right, int numFrames);
+    // The same, with a second stereo input beside the player's: the buses set
+    // to INPUT_SIDE hear [sideL]/[sideR] instead. Null is silence.
+    void process(float* left, float* right, const float* sideL, const float* sideR, int numFrames);
+
+    static constexpr int INPUT_PLAYER = 0;
+    static constexpr int INPUT_SIDE = 1;
+    void setBusInputSource(int busIndex, int source);
+    int getBusInputSource(int busIndex) const;
 
     // ── Lane stepping, for MultiLaneEngine ──────────────────────────────
     // process() is these three in a row. A host running several engines as
@@ -270,6 +281,11 @@ private:
     // The player's signal, PDC_SIZE of history, for the input delays.
     std::vector<float> inRingL_, inRingR_;
     int inRingPos_ = 0;
+    // The side input for the block being processed (null: silence) and its
+    // history, kept in step with the player's at inRingPos_.
+    const float* sideL_ = nullptr;
+    const float* sideR_ = nullptr;
+    std::vector<float> sideRingL_, sideRingR_;
     // Mix-bus order for this block, every bus after the buses sending to it.
     int orderLocked(int* order) const;
     // One piece (<= ROUTE_BLOCK frames at [offset]) of processMixBusesLocked,
