@@ -1608,6 +1608,15 @@ mixer_routed_nowhere	Routed nowhere — this bus is silent. Tap ▲ under a stri
 mixer_remove_route_to	Remove route to %1$s	移除到 %1$s 的路由	%1$s へのルーティングを削除	Supprimer la route vers %1$s	Quitar la ruta a %1$s	%1$s yönlendirmesini kaldır	Route zu %1$s entfernen
 mixer_input_routing_caps	INPUT ROUTING	输入路由	入力ルーティング	ROUTAGE D’ENTRÉE	ENRUTAMIENTO DE ENTRADA	GİRİŞ YÖNLENDİRMESİ	EINGANGS-ROUTING
 mixer_channels_caps	CHANNELS	声道	チャンネル	CANAUX	CANALES	KANALLAR	KANÄLE
+action_apply	Apply	应用	適用	Appliquer	Aplicar	Uygula	Anwenden
+mixer_deck_b_input	Deck B input	唱盘 B 输入	デッキ B 入力	Entrée de la platine B	Entrada del deck B	B deck’i girişi	Deck-B-Eingang
+mixer_input_source_player	Player	播放器	プレーヤー	Lecteur	Reproductor	Oynatıcı	Player
+mixer_input_source_deck_b	Deck B	唱盘 B	デッキ B	Platine B	Deck B	B deck’i	Deck B
+mixer_deck_b_hint	Heard while the DJ decks are open.	打开 DJ 唱盘时可听到。	DJ デッキを開いている間だけ聞こえます。	Audible tant que les platines DJ sont ouvertes.	Se oye mientras los decks de DJ están abiertos.	DJ deck’leri açıkken duyulur.	Hörbar, solange die DJ-Decks geöffnet sind.
+mixer_deck_b_caps	DECK B	唱盘 B	デッキ B	PLATINE B	DECK B	B DECK’İ	DECK B
+mixer_console_layout	DJ console layout	DJ 控制台布局	DJ コンソールのレイアウト	Disposition console DJ	Disposición de consola DJ	DJ konsol düzeni	DJ-Konsolen-Layout
+mixer_console_layout_title	Route as the DJ console?	要按 DJ 控制台路由吗？	DJ コンソールとしてルーティングしますか？	Router comme la console DJ ?	¿Enrutar como la consola DJ?	DJ konsolu olarak yönlendirilsin mi?	Als DJ-Konsole routen?
+mixer_console_layout_body	Mix A hears the player (deck A) and goes to FX A; Mix B hears deck B and goes to FX B; both FX buses go to the master. Only inputs and routes change: plugins, faders and mutes stay as they are.	Mix A 接收播放器（唱盘 A）并送往 FX A；Mix B 接收唱盘 B 并送往 FX B；两条 FX 总线都送往主输出。只更改输入和路由：插件、推子和静音保持不变。	Mix A はプレーヤー（デッキ A）を受けて FX A へ、Mix B はデッキ B を受けて FX B へ送り、両方の FX バスはマスターへ送ります。変わるのは入力とルーティングだけで、プラグイン、フェーダー、ミュートはそのままです。	Mix A reçoit le lecteur (platine A) et va vers FX A ; Mix B reçoit la platine B et va vers FX B ; les deux bus FX vont au master. Seuls les entrées et le routage changent : plug-ins, faders et sourdines restent tels quels.	Mix A recibe el reproductor (deck A) y va a FX A; Mix B recibe el deck B y va a FX B; ambos buses FX van al máster. Solo cambian las entradas y el enrutamiento: los plugins, faders y silencios se quedan como están.	Mix A oynatıcıyı (A deck’i) alır ve FX A’ya gider; Mix B, B deck’ini alır ve FX B’ye gider; iki FX bus’ı da master’a gider. Yalnızca girişler ve yönlendirme değişir: eklentiler, faderlar ve sessize almalar olduğu gibi kalır.	Mix A hört den Player (Deck A) und geht auf FX A; Mix B hört Deck B und geht auf FX B; beide FX-Busse gehen auf den Master. Nur Eingänge und Routing ändern sich: Plug-ins, Fader und Stummschaltungen bleiben, wie sie sind.
 mixer_multichannel	Multichannel	多声道	マルチチャンネル	Multicanal	Multicanal	Çok kanallı	Mehrkanal
 mixer_spread	Spread	分散	分散	Répartir	Repartir	Dağıt	Verteilen
 mixer_one_bus	One bus	单一总线	1 つのバス	Un seul bus	Un solo bus	Tek bus	Ein Bus

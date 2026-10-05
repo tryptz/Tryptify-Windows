@@ -88,6 +88,8 @@ fun InsertRack(
     onApplyPreset: (busIndex: Int, slotIndex: Int, preset: FxPreset) -> Unit = { _, _, _ -> },
     onPluginDryWet: (busIndex: Int, slotIndex: Int, dryWet: Float) -> Unit = { _, _, _ -> },
     onBusInputToggle: (busIndex: Int, enabled: Boolean) -> Unit = { _, _ -> },
+    /** Desktop: the player or deck B ([BusConfig.INPUT_SIDE]) as the bus's input. */
+    onBusInputSource: (busIndex: Int, source: Int) -> Unit = { _, _ -> },
     onSendLevel: (src: Int, dst: Int, level: Float) -> Unit = { _, _, _ -> },
     spreadChannels: Boolean = true,
     onSpreadChannelsChange: (Boolean) -> Unit = {},
@@ -214,6 +216,7 @@ fun InsertRack(
                     .padding(horizontal = MonoDimens.spacingSm, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                val deckB = bus.inputSource == BusConfig.INPUT_SIDE
                 Text(
                     text = stringResource(R.string.mixer_routing_caps),
                     style = MaterialTheme.typography.labelSmall,
@@ -230,7 +233,11 @@ fun InsertRack(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(stringResource(R.string.mixer_player_input), fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        stringResource(if (deckB) R.string.mixer_deck_b_input else R.string.mixer_player_input),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                     Text(
                         text = if (bus.inputEnabled) "ON" else "OFF",
                         fontSize = 8.sp,
@@ -238,6 +245,35 @@ fun InsertRack(
                         color = if (bus.inputEnabled) Color(0xFF4CAF50)
                         else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                     )
+                }
+                // Desktop: the DJ console's second input. Mix B hears deck B, which
+                // plays only while the DJ decks are open.
+                if (bus.inputEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            BusConfig.INPUT_PLAYER to stringResource(R.string.mixer_input_source_player),
+                            BusConfig.INPUT_SIDE to stringResource(R.string.mixer_input_source_deck_b),
+                        ).forEach { (source, label) ->
+                            GlassChoiceChip(
+                                label = label,
+                                selected = (source == BusConfig.INPUT_SIDE) == deckB,
+                                accent = MaterialTheme.colorScheme.primary,
+                                onClick = { if (bus.inputSource != source) onBusInputSource(bus.index, source) },
+                                modifier = Modifier.weight(1f),
+                                height = 30.dp,
+                            )
+                        }
+                    }
+                    if (deckB) {
+                        Text(
+                            text = stringResource(R.string.mixer_deck_b_hint),
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 val sends = bus.sends.entries.filter { it.value > 0f }
                     .sortedBy { if (it.key == BusConfig.MASTER_INDEX) -1 else BusConfig.numberFor(it.key) }
@@ -366,6 +402,8 @@ fun InsertRack(
                         Text(
                             text = when {
                                 routed -> stringResource(R.string.mixer_channels_caps)
+                                mixBus.inputEnabled && mixBus.inputSource == BusConfig.INPUT_SIDE ->
+                                    stringResource(R.string.mixer_deck_b_caps)
                                 mixBus.inputEnabled -> "ON"
                                 else -> "OFF"
                             },
