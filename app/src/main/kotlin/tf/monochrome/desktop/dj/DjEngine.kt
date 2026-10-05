@@ -15,6 +15,7 @@ import tf.monochrome.desktop.audio.dsp.DspEngineManager
 import tf.monochrome.desktop.audio.dsp.MixBusProcessor
 import tf.monochrome.desktop.audio.dsp.SnapinType
 import tf.monochrome.desktop.audio.dsp.model.BusConfig
+import tf.monochrome.desktop.dj.controller.DjSurface
 import tf.monochrome.desktop.domain.model.Track
 import tf.monochrome.desktop.player.engine.EngineController
 import tf.monochrome.desktop.player.engine.PlaybackEngine
@@ -41,11 +42,11 @@ class DjEngine @Inject constructor(
     private val controller: EngineController,
     private val dsp: DspEngineManager,
     private val mixBus: MixBusProcessor,
-) {
-    val decks: Array<Deck> = arrayOf(Deck(0), Deck(1))
+) : DjSurface {
+    override val decks: Array<Deck> = arrayOf(Deck(0), Deck(1))
 
     /** Crossfader, -1 (all A) .. 1 (all B). */
-    @Volatile var crossfader: Float = 0f
+    @Volatile override var crossfader: Float = 0f
     @Volatile var crossfaderCurve: DjMath.CrossfaderCurve = DjMath.CrossfaderCurve.SMOOTH
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -193,9 +194,9 @@ class DjEngine @Inject constructor(
 
     fun select(index: Int) = _browser.update { it.copy(selected = index.coerceIn(0, (it.tracks.size - 1).coerceAtLeast(0))) }
 
-    fun browse(steps: Int) = _browser.update { it.copy(selected = (it.selected + steps).coerceIn(0, (it.tracks.size - 1).coerceAtLeast(0))) }
+    override fun browse(steps: Int) = _browser.update { it.copy(selected = (it.selected + steps).coerceIn(0, (it.tracks.size - 1).coerceAtLeast(0))) }
 
-    fun loadSelected(deck: Int): Boolean {
+    override fun loadSelected(deck: Int): Boolean {
         val b = _browser.value
         val t = b.tracks.getOrNull(b.selected) ?: return false
         return load(deck, t)
@@ -204,7 +205,7 @@ class DjEngine @Inject constructor(
     // ── Sync ───────────────────────────────────────────────────────────
 
     /** Sync lock on deck [deck]. With both locked, the one locked first leads until the other's tempo is moved. */
-    fun setSyncLock(deck: Int, on: Boolean) {
+    override fun setSyncLock(deck: Int, on: Boolean) {
         val d = decks[deck]
         val p = decks[1 - deck]
         d.syncLock = on
@@ -232,11 +233,13 @@ class DjEngine @Inject constructor(
     /**
      * An FX unit in group mode, as a Traktor controller sees it: three
      * effects (the first three on its FX bus), each with an on button and an
-     * amount knob, and one dry/wet knob over all of them.
+     * amount knob, and one dry/wet knob over all of them. Unassigned, the
+     * unit is out of its deck's path: every effect sounds dry.
      */
     data class FxUnit(
         val mix: Float = 1f,
         val amounts: List<Float> = List(FX_SLOTS) { DEFAULT_FX_AMOUNT },
+        val assigned: Boolean = true,
     )
 
     private val _fx = MutableStateFlow(List(2) { FxUnit() })
@@ -246,21 +249,32 @@ class DjEngine @Inject constructor(
     fun fxBus(unit: Int): Int = if (unit == 0) BusConfig.FX_A else BusConfig.FX_B
 
     /** Effect [slot] of unit [unit]: on/off. */
-    fun toggleFx(unit: Int, slot: Int) {
+    override fun toggleFx(unit: Int, slot: Int) {
         val p = plugin(unit, slot) ?: return
         dsp.setPluginBypassed(fxBus(unit), slot, !p.bypassed)
     }
 
-    fun fxOn(unit: Int, slot: Int): Boolean = plugin(unit, slot)?.let { !it.bypassed } ?: false
+    override fun fxOn(unit: Int, slot: Int): Boolean = plugin(unit, slot)?.let { !it.bypassed } ?: false
 
     fun fxName(unit: Int, slot: Int): String? = plugin(unit, slot)?.displayName
 
-    fun setFxAmount(unit: Int, slot: Int, value: Float) {
+    override fun fxMix(unit: Int): Float = _fx.value[unit].mix
+
+    override fun fxAmount(unit: Int, slot: Int): Float = _fx.value[unit].amounts[slot]
+
+    override fun fxAssigned(unit: Int): Boolean = _fx.value[unit].assigned
+
+    override fun toggleFxAssign(unit: Int) {
+        _fx.update { l -> l.toMutableList().also { it[unit] = it[unit].copy(assigned = !it[unit].assigned) } }
+        for (s in 0 until FX_SLOTS) applyFx(unit, s)
+    }
+
+    override fun setFxAmount(unit: Int, slot: Int, value: Float) {
         _fx.update { l -> l.toMutableList().also { it[unit] = it[unit].copy(amounts = it[unit].amounts.toMutableList().also { a -> a[slot] = value.coerceIn(0f, 1f) }) } }
         applyFx(unit, slot)
     }
 
-    fun setFxMix(unit: Int, value: Float) {
+    override fun setFxMix(unit: Int, value: Float) {
         _fx.update { l -> l.toMutableList().also { it[unit] = it[unit].copy(mix = value.coerceIn(0f, 1f)) } }
         for (s in 0 until FX_SLOTS) applyFx(unit, s)
     }
@@ -268,7 +282,7 @@ class DjEngine @Inject constructor(
     private fun applyFx(unit: Int, slot: Int) {
         if (plugin(unit, slot) == null) return
         val u = _fx.value[unit]
-        dsp.setPluginDryWet(fxBus(unit), slot, u.mix * u.amounts[slot])
+        dsp.setPluginDryWet(fxBus(unit), slot, if (u.assigned) u.mix * u.amounts[slot] else 0f)
     }
 
     private fun plugin(unit: Int, slot: Int) =
