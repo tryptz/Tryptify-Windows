@@ -26,6 +26,37 @@ JVM with Compose Multiplatform, on a native audio stack written for Windows:
 Download the `.msi` from the [releases](../../releases) and run it. Releases
 are built by GitHub Actions from tagged commits (`.github/workflows/windows.yml`).
 
+### "Failed to launch JVM"
+
+That dialog comes from jpackage's launcher, and it means only that the app
+exited with an error before its window opened; it says nothing about which
+error. Since the fix in `Startup.kt`, the app shows its own dialog with the
+real cause instead and writes it to
+`%LOCALAPPDATA%\Tryptify\data\logs\startup-crash.log`. If you still get
+the launcher's dialog, the JVM itself did not start: an install path or
+Windows user name with characters outside ASCII (or an `&`) is the usual
+reason; the Java Access Bridge being enabled is another.
+
+The cause the log most often names is a DLL that would not load
+(`UnsatisfiedLinkError`). The binaries are not code-signed, so Windows
+security may refuse them:
+
+- **Smart App Control** (Windows 11) blocks unsigned DLLs outright. Event
+  Viewer, under *Applications and Services Logs > Microsoft > Windows >
+  CodeIntegrity > Operational*, logs the blocked file as event 3076 or 3077.
+  Smart App Control cannot be turned off per app; it has to be switched off
+  in Windows Security > App & browser control.
+- **Defender** may quarantine a DLL as a false positive; restore it from
+  *Protection history* and add exclusions for the install folder and
+  `%LOCALAPPDATA%\Tryptify`.
+- **Exploit protection** rules such as "Code integrity guard" or "Arbitrary
+  code guard" set for `Tryptify.exe` have the same effect; remove them.
+
+The DLLs the app itself ships are in the install folder. FFmpeg and LWJGL
+unpack theirs at first run into `%LOCALAPPDATA%\Tryptify\cache\natives`
+(not `%USERPROFILE%\.javacpp` or `%TEMP%`, where such writes look like an
+attack), so one exclusion covers everything.
+
 ### Exclusive USB output
 
 WASAPI exclusive mode needs nothing extra. Driving a USB DAC directly

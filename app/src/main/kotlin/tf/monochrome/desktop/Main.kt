@@ -53,6 +53,7 @@ import tf.monochrome.desktop.locale.AppLanguage
 import tf.monochrome.desktop.platform.AppPaths
 import tf.monochrome.desktop.platform.DesktopUriHandler
 import tf.monochrome.desktop.platform.FilePickers
+import tf.monochrome.desktop.platform.Startup
 import tf.monochrome.desktop.platform.ToastHost
 import tf.monochrome.desktop.platform.windows.WindowChrome
 import tf.monochrome.desktop.res.stringResource
@@ -79,7 +80,22 @@ fun main() {
     // Before anything can wake Dispatchers.Default: this sets the coroutine
     // scheduler's pool sizes from the performance tier (see MonochromeApp).
     MonochromeApp.profile
-    val component = DaggerAppComponent.factory().create(AppPaths())
+    // Desktop: until CrashLogger is installed (inside onCreate) nothing catches
+    // what startup throws, and under jpackage's launcher an exception here is
+    // shown as "Failed to launch JVM" with the cause lost. See Startup.
+    var paths: AppPaths? = null
+    try {
+        paths = AppPaths()
+        Startup.configureNativeExtraction(paths)
+        runApp(paths)
+    } catch (t: Throwable) {
+        Startup.reportStartupFailure(t, paths)
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+private fun runApp(paths: AppPaths) {
+    val component = DaggerAppComponent.factory().create(paths)
     component.appLifecycle.onCreate()
     // What MainActivity did before its first frame: attachBaseContext put the
     // app in the chosen language, and onCreate pointed the EQ targets at the
