@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.isActive
+import tf.monochrome.desktop.audio.dsp.DspNativeLoader
 import tf.monochrome.desktop.audio.eq.WaveScopeNative
 import tf.monochrome.desktop.domain.model.WaveCandySettings
 import tf.monochrome.desktop.domain.model.WaveGlow
@@ -58,6 +59,8 @@ fun WaveCandyOverlay(
     }
 
     Canvas(modifier) {
+        // Desktop: the scope is in monochrome_dsp, which Windows can block; nothing to draw then.
+        if (!DspNativeLoader.isAvailable) return@Canvas
         @Suppress("UNUSED_VARIABLE") val t = tick.intValue
         val k = kick?.floatValue ?: 0f
         val n = WaveScopeNative.nativeRender(

@@ -28,6 +28,8 @@ object LoudnessNative {
         private set
 
     fun acquire() {
+        // Desktop: without monochrome_dsp (Windows can block it) the meter stays off and reads null.
+        if (!DspNativeLoader.isAvailable) return
         if (readers.incrementAndGet() == 1) {
             nativeRequestReset()
             active = true
@@ -39,10 +41,13 @@ object LoudnessNative {
     }
 
     /** A new track, or a tap on a readout: Integrated, Range and peak start over. */
-    fun reset() = nativeRequestReset()
+    fun reset() {
+        if (DspNativeLoader.isAvailable) nativeRequestReset()
+    }
 
     /** The current reading, or null when nothing has been measured yet. */
     fun read(): LoudnessReading? {
+        if (!DspNativeLoader.isAvailable) return null
         val out = FloatArray(5)
         nativeRead(out)
         return LoudnessReading.from(out)

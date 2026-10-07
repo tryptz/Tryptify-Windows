@@ -53,6 +53,7 @@ import tf.monochrome.desktop.locale.AppLanguage
 import tf.monochrome.desktop.platform.AppPaths
 import tf.monochrome.desktop.platform.DesktopUriHandler
 import tf.monochrome.desktop.platform.FilePickers
+import tf.monochrome.desktop.platform.StartupFailure
 import tf.monochrome.desktop.platform.ToastHost
 import tf.monochrome.desktop.platform.windows.WindowChrome
 import tf.monochrome.desktop.res.stringResource
@@ -73,9 +74,23 @@ import tf.monochrome.desktop.ui.main.WindowTitleBar
  * `-Dtryptify.smoke=true` or `TRYPTIFY_SMOKE=1` builds the graph, runs the
  * startup work, renders one frame and exits: the headless check the Linux
  * build runs under Xvfb.
+ *
+ * A failure on the way up is explained by [StartupFailure] rather than left
+ * to the Windows launcher.
  */
-@OptIn(ExperimentalComposeUiApi::class)
 fun main() {
+    val smoke = System.getProperty("tryptify.smoke") == "true" || System.getenv("TRYPTIFY_SMOKE") == "1"
+    try {
+        startApp(smoke)
+    } catch (e: Throwable) {
+        // An error out of main() is what the Windows launcher reports as
+        // "Failed to launch JVM", with nothing to say which file or why.
+        StartupFailure.report(e, showDialog = !smoke)
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+private fun startApp(smoke: Boolean) {
     // Before anything can wake Dispatchers.Default: this sets the coroutine
     // scheduler's pool sizes from the performance tier (see MonochromeApp).
     MonochromeApp.profile
@@ -95,7 +110,6 @@ fun main() {
     // Mouse side buttons, and whether focus came from the keyboard.
     DesktopInput.install()
 
-    val smoke = System.getProperty("tryptify.smoke") == "true" || System.getenv("TRYPTIFY_SMOKE") == "1"
     application {
         DisposableEffect(windowOwner) {
             onDispose { windowOwner.viewModelStore.clear() }

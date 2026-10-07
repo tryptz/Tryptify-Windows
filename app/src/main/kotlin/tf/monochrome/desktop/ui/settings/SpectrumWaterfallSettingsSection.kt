@@ -48,6 +48,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import tf.monochrome.desktop.audio.dsp.DspNativeLoader
 import tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap
 import tf.monochrome.desktop.audio.eq.WaterfallNative
 import tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings
@@ -340,7 +341,7 @@ private fun WaterfallPreview(
                             // the shape of the drag it started.
                             val at = event.changes.firstOrNull()
                             if (at != null && at.type == PointerType.Mouse && !event.buttons.isPrimaryPressed) {
-                                overFadeLine = abs(at.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
+                                overFadeLine = DspNativeLoader.isAvailable && abs(at.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
                             }
                             continue
                         }
@@ -379,7 +380,8 @@ private fun WaterfallPreview(
                     if (down.type == PointerType.Mouse && !currentEvent.buttons.isPrimaryPressed) {
                         return@awaitEachGesture
                     }
-                    val onFadeLine = abs(down.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
+                    // Desktop: no fade line without monochrome_dsp, which Windows can block.
+                    val onFadeLine = DspNativeLoader.isAvailable && abs(down.position.y - guides[1]) < FADE_LINE_GRAB.toPx()
                     var s = current
                     var changed = false
                     while (true) {
@@ -449,6 +451,8 @@ private fun WaterfallPreview(
             gone = stringResource(R.string.waterfall_guide_gone, settings.depthSeconds),
         )
         Canvas(Modifier.fillMaxSize()) {
+            // Desktop: the projection is in monochrome_dsp, which Windows can block; no guides then.
+            if (!DspNativeLoader.isAvailable) return@Canvas
             WaterfallNative.nativeGuides(size.width, size.height, settings.fadeStart, settings.angleDeg, guides)
             drawGuides(textMeasurer, settings, guides, accent, guideLabels)
         }

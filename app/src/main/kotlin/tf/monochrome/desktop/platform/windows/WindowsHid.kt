@@ -2,6 +2,7 @@ package tf.monochrome.desktop.platform.windows
 
 import com.sun.jna.Memory
 import com.sun.jna.Native
+import com.sun.jna.Platform
 import com.sun.jna.Pointer
 import com.sun.jna.WString
 import com.sun.jna.ptr.IntByReference
@@ -57,7 +58,9 @@ object WindowsHid : HidBus {
     private const val WRITE_TIMEOUT_MS = 100
     private const val IOCTL_TIMEOUT_MS = 500
 
-    private val pointerSize = Native.POINTER_SIZE
+    // Not Native.POINTER_SIZE: that loads JNA's DLL as soon as this object is
+    // built, during startup, and Windows can block the DLL; Platform asks the JVM.
+    private val pointerSize = if (Platform.is64Bit()) 8 else 4
     /** SP_DEVICE_INTERFACE_DATA: cbSize, the class GUID, flags, a ULONG_PTR. */
     private val interfaceDataSize = if (pointerSize == 8) 32 else 28
     /** SP_DEVICE_INTERFACE_DETAIL_DATA_W's cbSize: setupapi packs it to 8 on x64, 1 on x86. */

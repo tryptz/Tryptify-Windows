@@ -619,6 +619,14 @@ class MixBusProcessor @Inject constructor(
 
         if (formatChanged) {
             inputFormat = pendingFormat
+            // Desktop: without monochrome_dsp (Windows can block the DLL) there
+            // is no engine and queueInput passes audio through; the crossfeed,
+            // plain Kotlin that DownmixProcessor runs, still needs the rate.
+            if (!DspNativeLoader.isAvailable) {
+                crossfeed.prepare(inputFormat.sampleRate.toDouble())
+                pendingFormat = AudioFormat.NOT_SET
+                return
+            }
             if (enginePtr == 0L) {
                 // Cold start — no existing engine, full construct + state restore.
                 enginePtr = nativeCreate(inputFormat.sampleRate, MAX_BLOCK_SIZE)

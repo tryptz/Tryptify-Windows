@@ -17,7 +17,17 @@ import tf.monochrome.desktop.platform.NativeLibraries
  * processing runs on its own thread that necessarily blocks here as well.
  */
 internal object DspNativeLoader {
-    init { NativeLibraries.load("monochrome_dsp") }
+    /**
+     * Desktop: false when Windows refused the DLL (Smart App Control or an
+     * antivirus can block an unsigned one). The engine then passes audio
+     * through untouched instead of the app failing to start.
+     */
+    val isAvailable: Boolean = try {
+        NativeLibraries.load("monochrome_dsp")
+        true
+    } catch (e: LinkageError) {
+        false
+    }
 
     @JvmStatic
     fun ensureLoaded() {

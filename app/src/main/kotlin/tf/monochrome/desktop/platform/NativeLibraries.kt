@@ -30,6 +30,9 @@ object NativeLibraries {
 
     private val loaded = LinkedHashMap<String, Boolean>()
 
+    /** Why each library that would not load failed, in the JVM's words. */
+    private val failed = LinkedHashMap<String, String>()
+
     val platformFolder: String by lazy {
         val os = System.getProperty("os.name").orEmpty().lowercase()
         val arch = System.getProperty("os.arch").orEmpty().lowercase()
@@ -59,12 +62,28 @@ object NativeLibraries {
         else if (System.getProperty("os.name").orEmpty().startsWith("Mac", ignoreCase = true)) "lib$name.dylib"
         else "lib$name.so"
 
-    /** Loads [name] once; throws [UnsatisfiedLinkError] when it cannot be found or linked. */
+    /**
+     * Loads [name] once; throws [UnsatisfiedLinkError] when it cannot be found or linked.
+     *
+     * A library that failed is not tried again: the next call throws the same
+     * error at once. On Windows the usual cause is Smart App Control or an
+     * antivirus refusing the file, and every attempt would raise its notice
+     * (and its scan) again.
+     */
     @Synchronized
     fun load(name: String) {
         if (loaded[name] == true) return
+        failed[name]?.let { throw UnsatisfiedLinkError(it) }
         val file = candidateDirs().asSequence().map { it.resolve(fileName(name)) }.firstOrNull { it.isFile }
-        if (file != null) System.load(file.absolutePath) else System.loadLibrary(name)
+        try {
+            if (file != null) System.load(file.absolutePath) else System.loadLibrary(name)
+        } catch (e: LinkageError) {
+            val reason = e.message ?: e.toString()
+            failed[name] = reason
+            loaded[name] = false
+            Log.w(TAG, "$name unavailable: $reason")
+            throw e
+        }
         loaded[name] = true
     }
 
@@ -77,13 +96,11 @@ object NativeLibraries {
     @Synchronized
     fun preload(): Map<String, Boolean> {
         for (name in NAMES) {
-            if (loaded[name] == true) continue
-            loaded[name] = try {
+            if (name in loaded) continue
+            try {
                 load(name)
-                true
-            } catch (e: UnsatisfiedLinkError) {
-                Log.w(TAG, "$name unavailable: ${e.message}")
-                false
+            } catch (e: LinkageError) {
+                // Logged and remembered by load.
             }
         }
         Log.i(TAG, "native libraries: ${loaded.entries.joinToString { "${it.key}=${if (it.value) "ok" else "missing"}" }}")
@@ -92,4 +109,8 @@ object NativeLibraries {
 
     @Synchronized
     fun isLoaded(name: String): Boolean = loaded[name] == true
+
+    /** Each library that would not load, with the reason the JVM gave. */
+    @Synchronized
+    fun failures(): Map<String, String> = failed.toMap()
 }

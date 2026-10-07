@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import tf.monochrome.desktop.audio.dsp.DspNativeLoader
 import tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap
 import tf.monochrome.desktop.audio.eq.WaterfallNative
 import tf.monochrome.desktop.domain.model.SpectrumWaterfallSettings
@@ -137,8 +138,9 @@ internal fun SpectrumOverlay(
     val currentWaterfall by rememberUpdatedState(clampedWaterfall)
 
     // The native history, freed with the overlay.
-    val handle = remember { WaterfallNative.nativeCreate() }
-    DisposableEffect(handle) { onDispose { WaterfallNative.nativeDestroy(handle) } }
+    // Desktop: 0 when Windows blocked monochrome_dsp; only the glass style draws then.
+    val handle = remember { if (DspNativeLoader.isAvailable) WaterfallNative.nativeCreate() else 0L }
+    DisposableEffect(handle) { onDispose { if (handle != 0L) WaterfallNative.nativeDestroy(handle) } }
     val draw = remember { WaterfallDrawState() }
 
     LaunchedEffect(Unit) {
@@ -227,6 +229,7 @@ internal fun SpectrumOverlay(
             return@Canvas
         }
         draw.hasBody = false
+        if (handle == 0L) return@Canvas
 
         val lines = WaterfallNative.nativeRender(
             handle, smoothed, nowSec,
