@@ -1901,6 +1901,10 @@ object R {
         val desktop_save_crash_reports_on = StringKey("desktop_save_crash_reports_on")
         val desktop_save_crash_reports_off = StringKey("desktop_save_crash_reports_off")
         val desktop_eq_off_preset_detail = StringKey("desktop_eq_off_preset_detail")
+        val dj_browser_search_in = StringKey("dj_browser_search_in")
+        val dj_browser_search_service = StringKey("dj_browser_search_service")
+        val dj_browser_searching = StringKey("dj_browser_searching")
+        val dj_browser_service_failed = StringKey("dj_browser_service_failed")
     }
 
     object plurals {
@@ -1988,6 +1992,7 @@ object R {
         val ic_glass_skip_previous get() = Res.drawable.ic_glass_skip_previous
         val ic_glass_skip_previous_chevron get() = Res.drawable.ic_glass_skip_previous_chevron
         val ic_glass_tab_discover get() = Res.drawable.ic_glass_tab_discover
+        val ic_glass_tab_dj get() = Res.drawable.ic_glass_tab_dj
         val ic_glass_tab_downloads get() = Res.drawable.ic_glass_tab_downloads
         val ic_glass_tab_favorites get() = Res.drawable.ic_glass_tab_favorites
         val ic_glass_tab_home get() = Res.drawable.ic_glass_tab_home

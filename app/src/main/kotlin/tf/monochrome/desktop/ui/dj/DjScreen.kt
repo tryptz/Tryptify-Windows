@@ -90,6 +90,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -741,6 +742,7 @@ private fun BrowserPanel(vm: DjViewModel, modifier: Modifier) {
     val browser by vm.browser.collectAsStateWithLifecycle()
     val crate by vm.crate.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
+    val searchStatus by vm.searchStatus.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     // A controller's browse knob moves the selection: keep it in sight.
@@ -764,30 +766,50 @@ private fun BrowserPanel(vm: DjViewModel, modifier: Modifier) {
             open = true,
             query = query,
             onQueryChange = vm::setQuery,
-            placeholder = stringResource(R.string.dj_browser_search),
+            placeholder = crate.service?.let { stringResource(R.string.dj_browser_search_in, it) }
+                ?: stringResource(R.string.dj_browser_search),
             onClose = null,
             autoFocus = false,
             scrollState = listState,
             barContent = {
-                Row(
+                // The listener's own crates, then the services' catalogues.
+                Column(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = MonoDimens.spacingSm, vertical = MonoDimens.spacingXs),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(MonoDimens.spacingXs),
                 ) {
-                    for (c in DjViewModel.Crate.entries) {
-                        GlassChoiceChip(
-                            label = stringResource(crateLabel(c)),
-                            selected = c == crate,
-                            accent = cs.primary,
-                            onClick = { vm.setCrate(c) },
-                            modifier = Modifier.weight(1f),
-                        )
+                    for (row in DjViewModel.Crate.entries.partition { !it.isStreaming }.toList()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for (c in row) {
+                                GlassChoiceChip(
+                                    label = crateLabel(c),
+                                    selected = c == crate,
+                                    accent = cs.primary,
+                                    onClick = { vm.setCrate(c) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
                     }
                 }
             },
         ) { topInset ->
             if (browser.tracks.isEmpty()) {
+                val service = crate.service
+                val empty = when {
+                    service == null -> stringResource(R.string.dj_browser_empty)
+                    searchStatus == DjViewModel.SearchStatus.PROMPT -> stringResource(R.string.dj_browser_search_service, service)
+                    searchStatus == DjViewModel.SearchStatus.SEARCHING -> stringResource(R.string.dj_browser_searching, service)
+                    searchStatus == DjViewModel.SearchStatus.FAILED -> stringResource(R.string.dj_browser_service_failed, service)
+                    else -> stringResource(R.string.dj_browser_empty)
+                }
                 Box(Modifier.fillMaxSize().padding(top = topInset), contentAlignment = Alignment.Center) {
-                    Text(stringResource(R.string.dj_browser_empty), style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                    Text(
+                        empty,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = cs.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = MonoDimens.spacingLg),
+                    )
                 }
             } else {
                 LazyColumn(
@@ -842,11 +864,14 @@ private fun BrowserRow(track: Track, selected: Boolean, onSelect: () -> Unit, on
     }
 }
 
-private fun crateLabel(crate: DjViewModel.Crate): StringKey = when (crate) {
-    DjViewModel.Crate.QUEUE -> R.string.dj_crate_queue
-    DjViewModel.Crate.LOCAL -> R.string.dj_crate_local
-    DjViewModel.Crate.LIKED -> R.string.dj_crate_liked
-    DjViewModel.Crate.HISTORY -> R.string.dj_crate_history
+/** A crate's chip: a service by its brand name, shown as is; the rest translated. */
+@Composable
+private fun crateLabel(crate: DjViewModel.Crate): String = when (crate) {
+    DjViewModel.Crate.QUEUE -> stringResource(R.string.dj_crate_queue)
+    DjViewModel.Crate.LOCAL -> stringResource(R.string.dj_crate_local)
+    DjViewModel.Crate.LIKED -> stringResource(R.string.dj_crate_liked)
+    DjViewModel.Crate.HISTORY -> stringResource(R.string.dj_crate_history)
+    DjViewModel.Crate.TIDAL, DjViewModel.Crate.QOBUZ, DjViewModel.Crate.DEEZER -> crate.service.orEmpty()
 }
 
 // ── Controllers ────────────────────────────────────────────────────────

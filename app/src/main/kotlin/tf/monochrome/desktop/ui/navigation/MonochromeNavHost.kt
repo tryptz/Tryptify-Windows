@@ -434,6 +434,11 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     // so the keyboard comes up for a tap and not for coming back to results.
     var focusSearch by remember { mutableStateOf(false) }
     val onTab: (AppTab) -> Unit = { tab ->
+        if (tab == AppTab.DJ) {
+            // Desktop: straight to the decks, over whatever is open, so Back
+            // returns to it. A DJ visit already on the stack is reused.
+            navController.navigateTool(Screen.Dj)
+        } else {
         // A tab tapped from a pushed screen closes it, as in Apple Music: the
         // pager is only drawn while the NavHost is on "home".
         if (!isOnMainTab && !navController.popBackStack(Screen.Home.route, inclusive = false)) {
@@ -444,6 +449,7 @@ fun MonochromeNavHost(initialRoute: String? = null) {
         if (!isOnMainTab) forwardHistory.clear()
         if (tab == AppTab.SEARCH) focusSearch = true
         selectPageWith(pageForTab(tab, pages, lastLibrarySection, navBarSlots), false)
+        }
     }
 
     val goForward: () -> Unit = {
@@ -515,7 +521,7 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             cycleRepeat = playerViewModel::cycleRepeatMode,
             toggleLike = playerViewModel::toggleLikeCurrentTrack,
             openSearch = { onTab(AppTab.SEARCH) },
-            tabs = (pillTabs(pages, navBarSlots) + AppTab.SEARCH).map { tab -> { onTab(tab) } },
+            tabs = (pillTabs(pages, navBarSlots) + AppTab.SEARCH + AppTab.DJ).map { tab -> { onTab(tab) } },
             openSettings = {
                 // Settings is a nested graph: on any of its screens, stay put.
                 val inSettings = currentDestination?.hierarchy?.any { it.route == Screen.Settings.route } == true
@@ -1295,7 +1301,7 @@ private fun FlatTabChrome(
                 .padding(bottom = CHROME_GAP),
         )
         NavigationBar {
-            (tabs + AppTab.SEARCH).forEach { tab ->
+            (tabs + AppTab.DJ + AppTab.SEARCH).forEach { tab ->
                 val label = androidx.compose.ui.res.stringResource(tab.label)
                 NavigationBarItem(
                     selected = tab == selected,
@@ -1398,6 +1404,15 @@ private fun TabChrome(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                // Desktop: the DJ decks, one tap from anywhere the bar is.
+                GlassTabBar(
+                    tabs = listOf(AppTab.DJ),
+                    selected = selected,
+                    onSelect = onTab,
+                    accent = accent,
+                    hazeState = hazeState,
+                    modifier = Modifier.width(TabBarHeight),
+                )
                 GlassTabBar(
                     tabs = listOf(AppTab.SEARCH),
                     selected = selected,
