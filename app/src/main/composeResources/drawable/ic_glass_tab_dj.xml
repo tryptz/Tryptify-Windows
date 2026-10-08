@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Tab bar glyph, punched out of the glass slab like the others.
+         DJ: a record with a groove ring and its spindle hole, and the tonearm
+         beside it. One evenOdd path; the arm never overlaps the disc, so no
+         part cancels another into a stray hole. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M3,13.5 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0 Z M5.7,13.5 a4.8,4.8 0 1,0 9.6,0 a4.8,4.8 0 1,0 -9.6,0 Z M7.1,13.5 a3.4,3.4 0 1,0 6.8,0 a3.4,3.4 0 1,0 -6.8,0 Z M9.5,13.5 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0 Z M18.3,3.9 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0 Z M19.3,6 L20.5,6 L20.5,14.6 L19.3,14.6 Z M18.2,14.8 L20.5,14.8 L20.5,17 L18.2,17 Z" />
+</vector>

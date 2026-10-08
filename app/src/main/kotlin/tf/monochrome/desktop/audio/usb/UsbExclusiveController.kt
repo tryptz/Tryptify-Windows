@@ -58,6 +58,7 @@ class UsbExclusiveController @Inject constructor(
     private val driver: LibusbUacDriver,
     private val preferences: PreferencesManager,
     private val output: AudioOutputController,
+    private val volume: BypassVolumeController,
 ) {
     enum class Status {
         Disabled,
@@ -274,6 +275,11 @@ class UsbExclusiveController @Inject constructor(
             )
             return
         }
+        // A DAC just claimed starts quiet, whatever the last session ended at.
+        // Only on the claim itself: this runs again while the DAC is already
+        // open (returning above), and dropping the level then would cut it
+        // mid-song.
+        volume.startSession()
         failedDevice = null
         _lastOpenError.value = null
         _status.value = Status.DeviceOpen
@@ -315,7 +321,9 @@ class UsbExclusiveController @Inject constructor(
 
     /** Points the engine at the DAC; a fresh sink each time, so a dead stream is rebuilt. */
     private fun route() {
-        output.overrideSink { LibusbUacSink(driver, onLost = ::onSinkLost, onRefused = ::onSinkRefused) }
+        output.overrideSink {
+            LibusbUacSink(driver, onLost = ::onSinkLost, onRefused = ::onSinkRefused, dacGain = volume::getDacGain)
+        }
         routed = true
     }
 

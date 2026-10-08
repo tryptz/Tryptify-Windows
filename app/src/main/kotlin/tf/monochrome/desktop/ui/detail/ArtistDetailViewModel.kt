@@ -57,6 +57,15 @@ class ArtistDetailViewModel @AssistedInject constructor(
     private val _downloadMessage = MutableSharedFlow<tf.monochrome.desktop.ui.components.UiText>(extraBufferCapacity = 2)
     val downloadMessage: SharedFlow<tf.monochrome.desktop.ui.components.UiText> = _downloadMessage.asSharedFlow()
 
+    private val _source = MutableStateFlow<tf.monochrome.desktop.domain.model.SourceType?>(null)
+
+    /** The catalog this artist was loaded from, for its source tag. */
+    val source: StateFlow<tf.monochrome.desktop.domain.model.SourceType?> = _source
+
+    // Last: Kotlin runs initializers top to bottom, and loadArtist's coroutine
+    // starts at once (Main.immediate). An artist already cached never
+    // suspends, so it writes every flow above before the constructor returns;
+    // a flow declared below this block would still be null then.
     init {
         loadArtist()
     }
@@ -70,11 +79,6 @@ class ArtistDetailViewModel @AssistedInject constructor(
      * pre-registered, so it must still resolve via /api/get-artist. Both layers
      * are Result-wrapped so a miss surfaces as a clean error instead of a crash.
      */
-    private val _source = MutableStateFlow<tf.monochrome.desktop.domain.model.SourceType?>(null)
-
-    /** The catalog this artist was loaded from, for its source tag. */
-    val source: StateFlow<tf.monochrome.desktop.domain.model.SourceType?> = _source
-
     private fun loadArtist() {
         viewModelScope.launch {
             _isLoading.value = true

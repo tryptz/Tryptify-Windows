@@ -44,6 +44,15 @@ data class RoutedOutput(
     val channels: Int? = null,
     /** True when the preferred route refused this stream and a fallback carries it. */
     val isFallback: Boolean = false,
+    /**
+     * The device's own name, or null when it has none. [name] falls back to
+     * [typeLabel] for display; this does not, so a headphone is never mistaken
+     * for one called "Bluetooth" (see OutputEq).
+     *
+     * Desktop: a USB DAC's USB product string, the same whether WASAPI or
+     * libusb carries it; otherwise the endpoint's name.
+     */
+    val productName: String? = null,
 )
 
 /**
@@ -126,6 +135,7 @@ class OutputDeviceProbe @Inject constructor(
                 bitsPerSample = stream?.bitsPerSample,
                 channels = stream?.channels ?: current.format?.channelCount,
                 isFallback = current.isFallback,
+                productName = productNameOf((driver.dacInfo.value ?: dac)?.product),
             )
         }
         if (current != null) {
@@ -141,7 +151,10 @@ class OutputDeviceProbe @Inject constructor(
         val state = output.state.value
         if (state.usbExclusive) {
             val owned = driver.dacInfo.value ?: dac
-            return RoutedOutput(owned?.displayName ?: USB_DAC, OutputMode.USB_EXCLUSIVE.label, OutputKind.USB, OutputMode.USB_EXCLUSIVE)
+            return RoutedOutput(
+                owned?.displayName ?: USB_DAC, OutputMode.USB_EXCLUSIVE.label, OutputKind.USB, OutputMode.USB_EXCLUSIVE,
+                productName = productNameOf(owned?.product),
+            )
         }
         val mode = when (state.kind) {
             OutputSelection.Kind.WASAPI_SHARED -> OutputMode.WASAPI_SHARED
@@ -161,18 +174,22 @@ class OutputDeviceProbe @Inject constructor(
     private fun routedFor(mode: OutputMode?, name: String?, format: AudioFormat?, dac: DacInfo?, isFallback: Boolean): RoutedOutput? {
         if (mode == null && name == null) return null
         val shape = format?.let(::pcmShape)
+        val kind = outputKindFor(mode, name, dac?.product)
         return RoutedOutput(
             name = name ?: mode?.label ?: return null,
             typeLabel = mode?.label ?: "Audio output",
-            kind = outputKindFor(mode, name, dac?.product),
+            kind = kind,
             mode = mode,
             sampleRateHz = format?.sampleRate?.takeIf { it > 0 },
             bitsPerSample = shape?.first,
             isFloat = shape?.second ?: false,
             channels = format?.channelCount?.takeIf { it > 0 },
             isFallback = isFallback,
+            productName = productNameOf(if (kind == OutputKind.USB) dac?.product else name),
         )
     }
+
+    private fun productNameOf(name: String?): String? = name?.trim()?.takeIf { it.isNotEmpty() }
 
     companion object {
         private const val POLL_MS = 1_000L

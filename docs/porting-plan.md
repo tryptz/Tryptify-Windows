@@ -223,6 +223,43 @@ pager, the row heights, the themes); `docs/agent-playbook.md` carries the
 realtime-audio and cloud-sync invariants. Commits are authored by `tryptz`, with
 no tool attribution.
 
+## Keeping up with Android
+
+The port was taken from Android at `5340a92` ("Local library: optional
+titles from file names", 4 October 2026) and has since been brought up to
+**`e927efd`** (1.9.3, 8 October 2026). The next merge starts from that
+commit: update this line when it is done.
+
+A merge is a three-way merge per file, the same thing `git merge` does,
+with the package renamed on the Android side:
+
+- *base*: the Android file at the last synced commit, renamed;
+- *theirs*: the Android file now, renamed;
+- *ours*: the file here.
+
+`git merge-file ours base theirs` then carries Android's changes over the
+desktop's own. A file the port never changed simply takes Android's version;
+a conflict is where both sides edited the same lines, and is resolved by
+hand. Files Android added are copied (renamed), and each one that needs a
+system service, a content resolver or MediaCodec gets a desktop version or
+goes to `port/dropped/` with a header saying why. A change Android made in
+a file the port replaced (`PlaybackService`, `LibusbAudioSink`,
+`MainActivity`, `DownloadQueueWorker`) is carried into the replacement by
+hand (`EngineController`, `LibusbUacSink`, `MonochromeNavHost`,
+`DownloadQueueRunner`), or recorded as Android-only. Afterwards, read the
+merged code for Android-only behaviour that compiles anyway: the compiler
+catches a missing API, not a setting that does nothing on Windows.
+
+What the 1.9.3 merge left Android-only: "Play alongside other apps" (no
+audio focus on Windows), the previous process's native-crash report
+(ApplicationExitInfo), the DAC as the media session's remote volume and the
+one-time player-volume reset that went with it (Ctrl+Up/Down reach the DAC
+here instead), FloatPcmGuard and SourceDepthMediaCodecAdapterFactory
+(MediaCodec), SafPaths (document links), and the tilt sliders for the new
+lyric glass and god rays (no tilt sensor). Per-device AutoEQ recognises USB
+DACs only, by product name: Windows does not say whether an endpoint is a
+speaker or a headphone.
+
 ## Status
 
 - **Done**: native layer builds for Linux and cross-compiles to six Windows

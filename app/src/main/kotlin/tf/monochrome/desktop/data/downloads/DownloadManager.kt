@@ -29,6 +29,8 @@ data class ActiveDownload(
     val status: DownloadStatus,
     val progress: Float,
     val isThxSpatialAudio: Boolean = false,
+    /** Why a FAILED download failed, when known. */
+    val error: String? = null,
 )
 
 /**
@@ -56,6 +58,7 @@ class DownloadManager @Inject constructor(
     private val preferences: PreferencesManager,
     private val runner: DownloadQueueRunner,
     @AppScope private val scope: CoroutineScope,
+    private val qobuzIdRegistry: tf.monochrome.desktop.data.api.QobuzIdRegistry,
 ) {
 
     init {
@@ -77,7 +80,7 @@ class DownloadManager @Inject constructor(
 
     fun downloadTracks(tracks: List<Track>) {
         if (tracks.isEmpty()) return
-        queue.enqueue(tracks.map { DownloadItem.from(it) })
+        queue.enqueue(tracks.map { DownloadItem.from(it, isQobuz = qobuzIdRegistry.isQobuzTrack(it.id)) })
         startWorker()
     }
 
@@ -144,6 +147,7 @@ class DownloadManager @Inject constructor(
                         status = entry.status,
                         progress = entry.progress,
                         isThxSpatialAudio = entry.item.isThxSpatialAudio,
+                        error = entry.error,
                     )
                 }
                 .sortedWith(

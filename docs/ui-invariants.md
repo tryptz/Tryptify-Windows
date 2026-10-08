@@ -57,12 +57,22 @@ output is bit-identical to the alpha-only glass. The profile is circular, not a 
 width, only its outermost pixels bent, and on device the refraction read as too
 weak.
 
+**With "Remove liquid glass" on, glass is flat Material 3, never nothing.**
+`Modifier.liquidGlass` draws a flat fill in the caller's shape, between
+`surfaceContainerLow` and `surfaceContainerHighest` by the caller's `tintAlpha`
+(a quieter pane a tone lower), and `GlassPanel` its own `surfaceContainerHigh`. The switch turns off the haze
+blur too, and the shared modifier used to fall through to the LOW-tier return
+and draw nothing: the nav bar, the mini player and every pane went
+see-through, and the page read straight through them (seen on device). The
+switch is for the blur, the rim and the refraction, not the surface.
+
 **Prototype: the mini player, the tab bar, `GlassPanel` and the full player's disc and dock bend the live screen**
 (`LiveGlassLens.kt`, behind `LIVE_LENS_GLASS`). **The mini player and the tab bar are one
 material and must match exactly:** same lens, same blur share
-(`LIVE_LENS_CHROME_BLUR_SHARE`, a little more than panels so page text behind
-does not fight their labels), same frost, and the same tint — the nav host takes
-the tab bar's tint *outside* `DynamicColorScope` and hands it to the mini player
+(`LIVE_LENS_CHROME_BLUR_SHARE`, now the same share as every other pane's, kept
+as its own name so the two bars always pass one value), same frost, and the
+same tint — the nav host takes the tab bar's tint *outside* `DynamicColorScope`
+and hands it to the mini player
 (`glassTintColor`), because inside it `primary` is the album's colour and the
 bar came out a different hue from the tab bar under it. Their haze pane is replaced by a
 layer that draws Haze's own capture of the screen behind them
@@ -209,6 +219,158 @@ how the real screen is built, and a `GlassPanel` there would be drawing the *UI
 panels* blob, which those sliders do not control. The pane belongs to the UI
 panels tab, alongside the mini player bar, because that tab is what tunes it.
 
+**The UI panels preview is a small screen built the way the real one is**
+(`UiPanelsPreview`): a page of drawn covers and song rows as the haze source,
+and as its siblings the real `GlassSearchBar` on top and the mini player
+stacked over the tab pill and Search button below, with the nav host's tint
+and ground handed to the mini player. **Every one of them is given the
+preview's haze state.** A mini player without it draws neither its live lens
+nor its shadow, and the preview shows a flat pill that is not what ships,
+which is what it did until this was fixed. The backdrop must have detail:
+over a smooth gradient, blur, refraction and dispersion move nothing visible.
+
+### Lyrics: letter glass and god rays
+
+**The lyric glass reads the same optics as the player's, and its defaults are
+the old pins.** `liquidGlassModifier` used to set roundness, depth, motion,
+reflection, gloss, tilt, light angle, Fresnel and frost by hand; they are
+`LyricsFxSettings.glass*` now, mapped exactly as `playerGlassModifier` maps the
+glass fields, and each default reproduces the pinned uniform
+(`the letter glass defaults are the uniforms the lyric shader used to pin`).
+Moving a default restyles every listener's lyrics. Still letters
+(`glassSurfaceMotion` 0) run no frame clock and tilt-blind ones
+(`glassTiltReactivity` 0) hold no gravity sensor, as on the player glass. The
+letters get no lens rim, haze or drop shadow: those belong to panes.
+
+**The shadow and the god rays live on the background, under the glass UI — in
+both modes.** They are drawn by `LyricBackdropFx` in the player's `fxUnderlay`:
+full screen, after the album background, inside the haze sources, before the
+hero and the chrome. Drawn inside the lyric surface, a shaft stopped dead at its
+bottom edge, just above the song title, and the title, the progress tube, the
+disc and the dock had none of the light under them (seen on device, in "Under"
+and then again in "On top", which was left behind in the surface). A render
+effect reads only its own layer, so the lyric view records its letters into a
+`GraphicsLayer` (`captureLetters`, innermost, before the glass, so the glass
+shader does not run twice) and the backdrop draws that copy as its input and
+hands back only the shadow and the shafts (`uRaysOnly`); the real letters draw
+over them. Where a pixel's march misses the sung line it hands back nothing,
+never the copy: returning the copy there drew plain letters under the glass
+ones on every line the march missed. It fades the copy's top and bottom as
+`lyricsEdgeFade` fades the real ones, and fades as a whole with
+`lyricsProgress`. The legacy player has no `fxUnderlay` and is given no
+backdrop, so its lyric view draws both itself. The Studio's preview is built
+the same way as the player, down to the `lyricsEdgeFade` box around the
+playing song's lyrics.
+
+**A `GraphicsLayer` recorded in a draw modifier gets a plain `Density`.**
+`LyricBackdropFx` records its copy with `layer.record(Density(density,
+fontScale), layoutDirection, size) { … }`, never the node's `record { … }`
+shorthand. Inside the shorthand's block the node's draw scope is its own
+density (Compose 1.10's `LayoutNodeDrawScope.record` hands itself to the layer
+as the density and then reads it back), so the first `dp.toPx()` there
+recursed until the stack overflowed: the app crashed the moment the lyrics
+opened (seen on device, a `StackOverflowError` in `getDensity`). Work out
+every length before recording either way. `record { drawContent() }` is safe:
+`drawContent()` draws the children in their own scopes.
+
+**"On top" is the backdrop's shafts plus the letters' own light, added to
+their own pixels.** A layer under the letters cannot add light over them, so
+`lyricRaysOnLetters` does that part alone (`uOnLetters`): a render effect on
+the real letters' layer, outside the glass, that adds the light falling on
+each letter to it, capped where the old composite capped it, at what the
+letter covers. Over the shafts that is the old in-surface composite, to float
+precision under white light (checked by running the shader through Skia:
+1.2e-7); under a coloured backlight a see-through letter can come out a few
+percent dimmer, because its colour cannot pass its own coverage. Two ways of
+doing it are wrong, and both were tried. Measuring the cap on the backdrop's
+copy: the copy is drawn before the glass at full strength, so there was never
+any room and the sung line stood grey under its own light (seen in that
+render). Adding the light as a separate layer: the layer brings alpha of its
+own, which in the edge fade's offscreen buffer hides that much of the shafts
+behind every soft letter. The effect leaves the letters' alpha alone, so the
+edge fade takes them like any letters.
+
+**The light is one light, in root px, sized by the window.** `LyricRayLight`
+works it out once, in root px, and every layer that draws it — the backdrop,
+the light on the letters, the glass, the shadow — only moves it into its own
+pixels (`frameFor`). Every distance in it (how far the light stands off the
+line, the reach cap, the tilt and the sway, the backlight disc) is a share of
+the window's short side, and it centres on the lyric surface's box, not on the
+layer drawing it. It was worked out as shares of the rays layer's long side,
+which is the preview's width in the Studio and the screen's height in the
+player, so the same settings put the light more than twice as far from the
+sung line in the player and the preview showed a different picture (seen on
+device). `GodRayGeometryTest` pins it.
+
+**The Studio previews the playing song with the song's beat.** Its lyrics pulse
+from the player's own analyzer, still when the song is paused. The synthetic
+kick under them pushed every shaft brighter and longer twice a second, so a
+paused song's preview showed shafts its player did not. The sample row, with no
+song behind it, keeps the kick: it is the only way to see the beat settings.
+
+**God rays drawn in the lyric surface (no backdrop) wrap the lyric list outside
+its side inset and outside the glass.**
+`lyricGodRays` is a RenderEffect, and a layer cannot draw past its own bounds,
+so a rays layer inside the inset cuts every shaft off in a hard vertical line
+14dp from the edge. Outside the glass, so the shafts are gathered from the
+finished glass letters. The effect is rebuilt in the layer block every draw,
+like the glass: a RuntimeShader effect takes its uniforms when it is created.
+
+**Only what is being sung shines, and it is dimmed on itself.** The band is
+the active line from `layoutInfo` (`item.offset - viewportStartOffset`, read in
+the draw phase so the shafts follow the scroll glide) or, with "Follow the sung
+word", the word the karaoke line reports. Letting every visible line emit made
+the screen a wash; with no guard at all the sung line was buried under its own
+light (the first prototype, at 90° elevation). The guard takes 65% of the light
+off *under the sung letters, in their shape* (their coverage, `src.a * lit`),
+never across the band: dimmed across the whole band, the shafts showed on device
+a darker rectangle wherever the sung line was. The band's sides
+are `GodRayGeometry.UNBOUNDED`, not infinity: an infinity reaching
+`smoothstep` comes back NaN. The one exception is "All lyrics shine", which is
+the Shadertoy's whole image as the light and asks for exactly that trade.
+
+**The Letters march is the Shadertoy, tap for tap.** "Crepuscular light"
+(ls2Xzd) starts from a centre tap, `texture(tc) * 0.4`, and steps *before* it
+samples, so its taps sit 1..N steps toward the light. Both are kept: without
+the centre tap the port was 5% off the original, and with it, at the 50-sample
+quality, 0.1% (correlation 0.99998, checked against the GLSL run verbatim).
+`GodRayGeometryTest` pins the weights, so a change to the gain, the tap or the
+decay conversion that drifts from the original fails there. The jitter is the
+one deliberate difference: interleaved gradient noise instead of its sine hash,
+for the same banding fix with less visible grain.
+
+**Backlight decays from the light, Letters from the pixel.** The article's
+decay weights samples by their distance from the pixel. In Backlight the light
+is always at the far end of the march, so that weighting all but erased it;
+there the march is averaged plainly and the decay is counted out from the light.
+Letters keeps the article's weighting. Both normalise by the sample count, so
+the quality setting changes grain, not length or brightness (`GodRayGeometryTest`).
+
+**The lyrics' shadow is on the background, never on the letters.** Nothing
+dark may be drawn inside the lyric glass layer: the glass bevels and relights
+everything in it, so an extruded backing glyph and a contact `Shadow` there came
+out as solid blocks with dark slabs stuck to every letter (seen on device). The
+shadow is `lyricShadow`, its own layer outside the glass and the side inset — a
+blurred, offset, darkened silhouette of the finished letters laid under them,
+falling away from the light — and inside the rays, whose shader weighs every
+sample by `lit` so the shadow neither shines nor blocks the light, and composites
+it under the shafts.
+
+**The glass letters catch the rays' light from one shared light.**
+`LyricRayLight` computes the light once, from the rays layer's own box, and
+both layers read it in their draw phase; the glass moves it into its own pixels
+through the two layers' root positions (`frameFor`). Computing it twice, once
+per layer, is how a glint ends up somewhere the shafts are not. The `uRay*`
+term in `LIQUID_GLASS_SRC` is gated on `uRayAmount`, and every pane — the
+transport, the mini player, every panel — sets it to 0 (`setNoRayLight`), which
+leaves their pixels bit-identical: added exactly 0. The term only ever adds
+light. It used to dim the bevels turned away from the light and darken backlit
+letters into silhouettes, and on device that read as shadows on the letters.
+
+The rays are off by default, and the 17 presets ahead of `Sunburst` set no
+glass optic and no ray field, so nobody's lyrics change on upgrade. The
+low-performance glass switch drops the rays with the glass.
+
 ### Search bars
 
 Every search bar in the app is `SearchOverlay` + `GlassSearchBar`. There is one
@@ -273,6 +435,13 @@ frosted pane with ordinary icons, because a solid slab without the shader is an
 opaque block with holes in it. Its titles are plain text, not punched: the
 glyphs are chunky because the bevel needs about 3dp of stroke to read as an
 edge, and an 11sp title's strokes are thinner than the bevel.
+
+**With liquid glass removed, the bar is Material 3's.** `FlatTabChrome`: a
+`NavigationBar` across the bottom with every tab in it, Search included, and
+the mini player docked flat above it. It stands on the system bar's inset
+itself, so `chromeHeight` has its own value for it (`FLAT_NAV_BAR_HEIGHT`),
+and it does not fold. The floating pill without its glass was a shape with
+nothing under it.
 
 **Scrolling down folds the mini player into the bar; scrolling up unfolds it.**
 It is driven by nested scroll at the nav host, so every list drives it without

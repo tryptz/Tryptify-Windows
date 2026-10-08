@@ -7,6 +7,10 @@ import java.io.File
 import java.io.InputStream
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -17,12 +21,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import tf.monochrome.desktop.data.local.repository.LocalMediaRepository
 import tf.monochrome.desktop.data.repository.LibraryRepository
+import tf.monochrome.desktop.data.repository.MusicRepository
 import tf.monochrome.desktop.dj.DjEngine
 import tf.monochrome.desktop.dj.controller.ControllerManager
 import tf.monochrome.desktop.dj.controller.MidiBinding
@@ -51,6 +57,7 @@ class DjViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val localMedia: LocalMediaRepository,
     private val registry: UnifiedTrackRegistry,
+    private val musicRepository: MusicRepository,
 ) : ViewModel() {
 
     // ── The console ───────────────────────────────────────────────────
@@ -114,7 +121,20 @@ class DjViewModel @Inject constructor(
 
     // ── The browser ───────────────────────────────────────────────────
 
-    enum class Crate { QUEUE, LOCAL, LIKED, HISTORY }
+    /**
+     * What the browser lists. The first four are the listener's own; the
+     * streaming ones search that service's catalogue for the query, and a
+     * track from one loads from that service, as it would play in the player.
+     */
+    enum class Crate(val service: String? = null) {
+        QUEUE, LOCAL, LIKED, HISTORY,
+        TIDAL("TIDAL"), QOBUZ("Qobuz"), DEEZER("Deezer");
+
+        val isStreaming: Boolean get() = service != null
+    }
+
+    /** Where a streaming crate's search is, for what the empty list says. */
+    enum class SearchStatus { IDLE, PROMPT, SEARCHING, FAILED }
 
     val browser: StateFlow<DjEngine.Browser> = dj.browser
 
@@ -132,6 +152,9 @@ class DjViewModel @Inject constructor(
         _query.value = query
     }
 
+    private val _searchStatus = MutableStateFlow(SearchStatus.IDLE)
+    val searchStatus: StateFlow<SearchStatus> = _searchStatus.asStateFlow()
+
     fun select(index: Int) = dj.select(index)
 
     /** False while [deck] is playing: a playing deck is never replaced. */
@@ -148,14 +171,58 @@ class DjViewModel @Inject constructor(
     }
 
     private fun tracks(crate: Crate, query: String): Flow<List<Track>> = when (crate) {
-        Crate.QUEUE -> queueManager.queue.map { it.matching(query) }
-        Crate.LIKED -> libraryRepository.getFavoriteTracks().map { it.matching(query) }
-        Crate.HISTORY -> libraryRepository.getHistory().map { it.matching(query) }
+        Crate.TIDAL, Crate.QOBUZ, Crate.DEEZER -> serviceTracks(crate, query)
+        Crate.QUEUE -> queueManager.queue.map { it.matching(query) }.also { _searchStatus.value = SearchStatus.IDLE }
+        Crate.LIKED -> libraryRepository.getFavoriteTracks().map { it.matching(query) }.also { _searchStatus.value = SearchStatus.IDLE }
+        Crate.HISTORY -> libraryRepository.getHistory().map { it.matching(query) }.also { _searchStatus.value = SearchStatus.IDLE }
         Crate.LOCAL -> (if (query.isEmpty()) localMedia.getAllTracks() else localMedia.searchTracks(query)).map { list ->
             // A local file plays only once the registry knows it: the deck,
             // like the player, resolves a track's audio through it.
             list.map { ut -> ut.toLegacyTrack().also { registry.put(it.id, ut) } }
+        }.also { _searchStatus.value = SearchStatus.IDLE }
+    }
+
+    /**
+     * [crate]'s catalogue searched for [query]. The search already registers
+     * each Qobuz and Deezer id it returns (QobuzIdRegistry), which is what
+     * sends a deck's load to the right service. The old list stays up while a
+     * search runs, so typing does not flash the crate empty.
+     */
+    private fun serviceTracks(crate: Crate, query: String): Flow<List<Track>> = flow {
+        if (query.isEmpty()) {
+            _searchStatus.value = SearchStatus.PROMPT
+            emit(emptyList())
+            return@flow
         }
+        _searchStatus.value = SearchStatus.SEARCHING
+        // On top of the query's own debounce: each keystroke here is a request
+        // to a server, and flatMapLatest cancels this wait for the next one.
+        delay(SERVICE_DEBOUNCE_MS)
+        val found = runCatching { search(crate, query) }.getOrNull()
+        _searchStatus.value = if (found == null) SearchStatus.FAILED else SearchStatus.IDLE
+        emit(found.orEmpty())
+    }
+
+    /** Null when the service could not be reached; a list, maybe empty, when it answered. */
+    private suspend fun search(crate: Crate, query: String): List<Track>? = when (crate) {
+        Crate.TIDAL -> musicRepository.searchTracks(query, limit = SERVICE_RESULTS).getOrThrow()
+        // Qobuz and Deezer answer a few tracks a page: ask for several at once.
+        Crate.QOBUZ -> pages { offset -> musicRepository.searchQobuz(query, offset).getOrThrow().tracks }
+        Crate.DEEZER -> pages { offset -> musicRepository.searchDeezer(query, offset).getOrThrow().tracks }
+        else -> emptyList()
+    }
+
+    /**
+     * [SERVICE_PAGES] pages from [page], in order and without repeats. The first
+     * page failing fails the search; a later one only shortens it.
+     */
+    private suspend fun pages(page: suspend (offset: Int) -> List<Track>): List<Track> = coroutineScope {
+        val first = page(0)
+        if (first.isEmpty()) return@coroutineScope first
+        val rest = (1 until SERVICE_PAGES).map { i ->
+            async { runCatching { page(i * first.size) }.getOrDefault(emptyList()) }
+        }.awaitAll()
+        (first + rest.flatten()).distinctBy { it.id }
     }
 
     private fun List<Track>.matching(query: String): List<Track> =
@@ -200,5 +267,11 @@ class DjViewModel @Inject constructor(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 200L
+        /** Added to [SEARCH_DEBOUNCE_MS] before a streaming crate asks its server. */
+        const val SERVICE_DEBOUNCE_MS = 250L
+        /** TIDAL's page, in tracks. */
+        const val SERVICE_RESULTS = 50
+        /** Qobuz and Deezer pages fetched together for one crate. */
+        const val SERVICE_PAGES = 3
     }
 }

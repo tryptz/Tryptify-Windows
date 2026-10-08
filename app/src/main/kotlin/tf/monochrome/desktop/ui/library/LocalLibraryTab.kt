@@ -130,7 +130,8 @@ fun LocalLibraryTab(
     val songSort by viewModel.songSort.collectAsStateWithLifecycle()
     val albumSort by viewModel.albumSort.collectAsStateWithLifecycle()
     val artistSort by viewModel.artistSort.collectAsStateWithLifecycle()
-    val rootFolders by viewModel.displayRootFolders.collectAsStateWithLifecycle()
+    val rootFolders by viewModel.sortedRootFolders.collectAsStateWithLifecycle()
+    val folderSort by viewModel.folderSort.collectAsStateWithLifecycle()
     val scanProgress by viewModel.scanProgress.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -280,6 +281,10 @@ fun LocalLibraryTab(
                 val (keys, current, onChange) = sortTriple
                 SortMenu(keys = keys, current = current, onChange = onChange)
             }
+            // The folders' half of the one folder sort every folder screen uses.
+            if (openCategory == LibraryCategory.FOLDERS) {
+                FolderSortButton(sort = folderSort, onChange = viewModel::setFolderSort, showSongs = false)
+            }
             IconButton(onClick = { showSearch = !showSearch; if (!showSearch) viewModel.setSearchQuery("") }) {
                 Icon(Icons.Default.Search, contentDescription = stringResource(R.string.tab_search))
             }
@@ -376,7 +381,12 @@ fun LocalLibraryTab(
             LibraryCategory.FOLDERS -> FolderList(
                 folders = rootFolders,
                 onFolderClick = onFolderClick,
-                onFolderLongClick = { path, name ->
+                onPlayFolder = { path, shuffle ->
+                    viewModel.loadFolderForPlay(path) { tracks ->
+                        if (shuffle) playerViewModel.shufflePlayUnified(tracks) else playerViewModel.playAllUnified(tracks)
+                    }
+                },
+                onRemoveFolder = { path, name ->
                     folderToExclude = FolderToExclude(path = path, displayName = name)
                 },
             )
@@ -727,6 +737,10 @@ private fun SongRow(
                     )
                     Spacer(modifier = Modifier.width(MonoDimens.spacingSm))
                     tf.monochrome.desktop.ui.components.SourcePill(track.sourceType)
+                    if (track.isDolbyAtmos) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        tf.monochrome.desktop.ui.components.DolbyAtmosBadgePill()
+                    }
                     track.qualityBadge?.let { badge ->
                         Spacer(modifier = Modifier.width(MonoDimens.spacingSm))
                         Text(
@@ -841,9 +855,13 @@ fun SongList(
 fun FolderList(
     folders: List<FolderRoot>,
     onFolderClick: (String) -> Unit,
-    onFolderLongClick: (String, String) -> Unit = { _, _ -> },
+    /** Plays (false) or shuffles (true) a folder and everything inside it. */
+    onPlayFolder: (String, Boolean) -> Unit = { _, _ -> },
+    onRemoveFolder: (String, String) -> Unit = { _, _ -> },
 ) {
     val state = rememberLazyListState()
+    // The folder whose long-press menu is open, by path.
+    var menuFolder by remember { mutableStateOf<String?>(null) }
     Box {
         LazyColumn(
             state = state,
@@ -856,6 +874,7 @@ fun FolderList(
             items(folders, key = { it.path }) { folder ->
                 val name = folder.displayName
                 val path = folder.path
+                Box {
                 Row(
                     // A pane each, like Home's page list: the gutter padding
                     // and the gap between rows are what make these read as
@@ -872,7 +891,7 @@ fun FolderList(
                         .height(MonoDimens.listRowHeight)
                         .liquidGlass(shape = MonoDimens.shapeMd)
                         .bounceCombinedClick(
-                            onLongClick = { onFolderLongClick(path, name) },
+                            onLongClick = { menuFolder = path },
                             onClick = { onFolderClick(path) },
                         )
                         .padding(horizontal = MonoDimens.listItemPaddingH),
@@ -913,27 +932,23 @@ fun FolderList(
                         maxLines = 1,
                     )
                     // The long press, where a mouse and the keyboard can see it.
-                    // It only opens the menu: removing still asks first.
-                    Box {
-                        var menuOpen by remember { mutableStateOf(false) }
-                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                contentDescription = stringResource(R.string.action_more_options),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.remove_folder)) },
-                                onClick = {
-                                    menuOpen = false
-                                    onFolderLongClick(path, name)
-                                },
-                            )
-                        }
+                    // It opens the same menu: removing still asks first.
+                    IconButton(onClick = { menuFolder = path }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = stringResource(R.string.action_more_options),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
+                }
+                FolderActionsMenu(
+                    expanded = menuFolder == path,
+                    onDismiss = { menuFolder = null },
+                    onPlay = { onPlayFolder(path, false) },
+                    onShuffle = { onPlayFolder(path, true) },
+                    onRemove = { onRemoveFolder(path, name) },
+                )
                 }
             }
         }
