@@ -17,6 +17,7 @@ import tf.monochrome.desktop.data.local.db.LocalGenreEntity
 import tf.monochrome.desktop.data.local.db.LocalMediaDao
 import tf.monochrome.desktop.data.local.db.LocalTrackEntity
 import tf.monochrome.desktop.data.local.db.ScanStateEntity
+import tf.monochrome.desktop.data.local.db.folderRangeEnd
 import tf.monochrome.desktop.data.local.scanner.MediaScanner
 import tf.monochrome.desktop.data.local.scanner.ScanProgress
 import tf.monochrome.desktop.domain.model.AudioCodec
@@ -236,6 +237,25 @@ class LocalMediaRepository @Inject constructor(
     fun getSubfolders(parentPath: String): Flow<List<LocalFolderEntity>> =
         localMediaDao.getSubfolders(parentPath)
 
+    /** Every song anywhere under [folderPath], for playing the whole folder. */
+    suspend fun getTracksUnder(folderPath: String): List<UnifiedTrack> = withContext(Dispatchers.Default) {
+        val prefix = folderPath.trimEnd('/') + "/"
+        localMediaDao.getTracksUnder(prefix, folderRangeEnd(prefix)).map { it.toUnifiedTrack() }
+    }
+
+    /** Folder path → newest file under it, for each folder directly inside [folderPath]. */
+    fun observeNewestInSubfolders(folderPath: String): Flow<Map<String, Long>> {
+        val prefix = folderPath.trimEnd('/') + "/"
+        return localMediaDao.observeNewestInSubfolders(prefix, folderRangeEnd(prefix))
+            .map { rows -> rows.associate { it.path to it.newest } }
+    }
+
+    /** The newest file anywhere under [folderPath], or null when there is none. */
+    suspend fun newestUnder(folderPath: String): Long? {
+        val prefix = folderPath.trimEnd('/') + "/"
+        return localMediaDao.newestUnder(prefix, folderRangeEnd(prefix))
+    }
+
     // ── Scan State ──────────────────────────────────────────────────
 
     suspend fun getScanState(): ScanStateEntity? = localMediaDao.getScanState()
@@ -271,7 +291,13 @@ class LocalMediaRepository @Inject constructor(
                 durationSeconds = durationSeconds,
                 trackNumber = trackNumber,
                 discNumber = discNumber,
-                artistName = albumArtist ?: artist ?: "Unknown Artist",
+                // The track's own artist, and the album artist only when it has
+                // none. This name is what Last.fm and ListenBrainz scrobble and
+                // what the session and the row show; album artist first made a
+                // compilation's every track "Various Artists", and a borrowed
+                // folder album artist ("Daft Punk") replaced the credit
+                // ("Daft Punk feat. Pharrell").
+                artistName = artist ?: albumArtist ?: "Unknown Artist",
                 artistNames = listOfNotNull(artist, albumArtist).distinct(),
                 albumArtistName = albumArtist,
                 // Local artist id (local_artists table) so song rows can link to
@@ -295,6 +321,9 @@ class LocalMediaRepository @Inject constructor(
                 bitRate = bitRate,
                 channelCount = channels,
                 isThxSpatialAudio = isThxSpatialAudio,
+                // The scanner's Atmos detection (TagReader), which never
+                // reached a row until now.
+                isDolbyAtmos = isDolbyAtmos,
                 replayGainTrack = rgTrackGain,
                 replayGainAlbum = rgAlbumGain,
                 r128TrackGain = r128TrackGain,
@@ -309,7 +338,8 @@ class LocalMediaRepository @Inject constructor(
                     bitDepth = bitDepth
                 ),
                 sourceType = SourceType.LOCAL,
-                dateModified = lastModified
+                dateModified = lastModified,
+                fileSizeBytes = fileSizeBytes,
             )
         }
 

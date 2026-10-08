@@ -115,5 +115,38 @@ class RenderEffect private constructor(val imageFilter: ImageFilter) {
 
         fun createShaderEffect(shader: Shader): RenderEffect =
             RenderEffect(ImageFilter.makeShader(shader.skiaShader, false, null))
+
+        /** [src] over [dst] by [blendMode]: Android's is Skia's Blend(mode, dst, src). */
+        fun createBlendModeEffect(dst: RenderEffect, src: RenderEffect, blendMode: BlendMode): RenderEffect =
+            RenderEffect(ImageFilter.makeBlend(blendMode.skia, dst.imageFilter, src.imageFilter, null))
+
+        /** The content moved by ([offsetX], [offsetY]); with no input, the layer itself. */
+        fun createOffsetEffect(offsetX: Float, offsetY: Float): RenderEffect =
+            RenderEffect(ImageFilter.makeOffset(offsetX, offsetY, null, null))
+
+        fun createOffsetEffect(offsetX: Float, offsetY: Float, input: RenderEffect): RenderEffect =
+            RenderEffect(ImageFilter.makeOffset(offsetX, offsetY, input.imageFilter, null))
+
+        fun createColorFilterEffect(colorFilter: ColorFilter): RenderEffect =
+            RenderEffect(ImageFilter.makeColorFilter(colorFilter.skiaColorFilter, null, null))
+
+        fun createColorFilterEffect(colorFilter: ColorFilter, renderEffect: RenderEffect): RenderEffect =
+            RenderEffect(ImageFilter.makeColorFilter(colorFilter.skiaColorFilter, renderEffect.imageFilter, null))
     }
 }
+
+/** Android's BlendMode. Its names are Skia's, which is where Android took them from. */
+enum class BlendMode {
+    CLEAR, SRC, DST, SRC_OVER, DST_OVER, SRC_IN, DST_IN, SRC_OUT, DST_OUT, SRC_ATOP, DST_ATOP, XOR, PLUS,
+    MODULATE, SCREEN, OVERLAY, DARKEN, LIGHTEN, COLOR_DODGE, COLOR_BURN, HARD_LIGHT, SOFT_LIGHT, DIFFERENCE,
+    EXCLUSION, MULTIPLY, HUE, SATURATION, COLOR, LUMINOSITY;
+
+    internal val skia: org.jetbrains.skia.BlendMode get() = org.jetbrains.skia.BlendMode.valueOf(name)
+}
+
+/** Android's ColorFilter; [skiaColorFilter] is what an effect applies. */
+abstract class ColorFilter internal constructor(internal val skiaColorFilter: org.jetbrains.skia.ColorFilter)
+
+/** [color] (ARGB) combined with what is drawn by [mode], as Android's. */
+class BlendModeColorFilter(color: Int, mode: BlendMode) :
+    ColorFilter(org.jetbrains.skia.ColorFilter.makeBlend(color, mode.skia))

@@ -1,5 +1,6 @@
 package tf.monochrome.desktop.ui.mixer
 
+import tf.monochrome.desktop.ui.navigation.Screen
 import tf.monochrome.desktop.ui.navigation.popBackStackSafe
 import android.net.Uri
 import android.widget.Toast
@@ -44,6 +45,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.SettingsBackupRestore
@@ -208,6 +211,7 @@ fun MixerScreen(
     androidx.activity.compose.BackHandler(enabled = showInsertRack) { showInsertRack = false }
     androidx.activity.compose.BackHandler(enabled = showSpatialMap) { showSpatialMap = false }
     var showResetConfirm by remember { mutableStateOf(false) }
+    var showConsoleConfirm by remember { mutableStateOf(false) }
 
     // ── The backdrop the console's glass stands on ──────────────────────
     // The same blurred, stretched album art the player shows, behind the same
@@ -513,6 +517,18 @@ fun MixerScreen(
                             contentDescription = stringResource(R.string.mixer_fx_chain),
                             onClick = { animateProgressTo(1f, 0f) }
                         )
+                        // Desktop: the DJ console's routing back in one step, after a custom one.
+                        NavIconButton(
+                            icon = Icons.Default.Album,
+                            contentDescription = stringResource(R.string.mixer_console_layout),
+                            onClick = { showConsoleConfirm = true }
+                        )
+                        // Desktop: the DJ decks, which drive this console.
+                        NavIconButton(
+                            icon = Icons.Default.Headphones,
+                            contentDescription = stringResource(R.string.dj_open),
+                            onClick = { navController.navigate(Screen.Dj.route) }
+                        )
                         NavIconButton(
                             icon = Icons.Default.SettingsBackupRestore,
                             contentDescription = stringResource(R.string.mixer_reset_to_defaults),
@@ -632,6 +648,7 @@ fun MixerScreen(
                                 onBusInputToggle = { busIdx, enabled ->
                                     viewModel.setBusInputEnabled(busIdx, enabled)
                                 },
+                                onBusInputSource = { busIdx, source -> viewModel.setBusInputSource(busIdx, source) },
                                 onSendLevel = { src, dst, level -> viewModel.setSendLevel(src, dst, level) },
                                 spreadChannels = spreadChannels,
                                 onSpreadChannelsChange = { viewModel.setSpreadChannels(it) },
@@ -708,6 +725,24 @@ fun MixerScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showResetConfirm = false }) { Text(stringResource(R.string.action_cancel)) }
+            }
+        )
+    }
+
+    // Confirmed too: it replaces whatever routing the user built on buses 1–4.
+    if (showConsoleConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConsoleConfirm = false },
+            title = { Text(stringResource(R.string.mixer_console_layout_title)) },
+            text = { Text(stringResource(R.string.mixer_console_layout_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.applyConsoleLayout()
+                    showConsoleConfirm = false
+                }) { Text(stringResource(R.string.action_apply)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConsoleConfirm = false }) { Text(stringResource(R.string.action_cancel)) }
             }
         )
     }

@@ -42,6 +42,11 @@ echo "== dsp_routing_test"
 $cxx $flags "$here/dsp_routing_test.cpp" "$dsp/dsp_engine.cpp" -o "$out/dsp_routing_test"
 "$out/dsp_routing_test"
 
+# Desktop: the DJ console's second deck, mixed beside the player's signal.
+echo "== dj_side_input_test"
+$cxx $flags "$here/dj_side_input_test.cpp" "$dsp/dsp_engine.cpp" -o "$out/dj_side_input_test"
+"$out/dj_side_input_test"
+
 # The mix as Kotlin writes it before the engine exists, read by the engine.
 echo "== state_fixture_test"
 $cxx $flags "$here/state_fixture_test.cpp" "$dsp/dsp_engine.cpp" -o "$out/state_fixture_test"

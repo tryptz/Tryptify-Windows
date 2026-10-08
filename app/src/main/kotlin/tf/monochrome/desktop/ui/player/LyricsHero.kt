@@ -15,12 +15,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
@@ -40,11 +41,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -59,6 +63,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.LocalPlatformContext
@@ -390,9 +395,10 @@ internal fun SyncedLyricsView(
     // the index at line boundaries — the highlight looked stuck and the
     // constant re-scroll ate taps. The polled position is stable and accurate.)
     // Keyed on the delay too so retuning it re-selects the active line at once.
-    val currentLineIndex by remember(lines, syncDelayMs) {
+    val currentLineState = remember(lines, syncDelayMs) {
         derivedStateOf { lines.indexOfLast { it.timeMs <= position - syncDelayMs } }
     }
+    val currentLineIndex by currentLineState
 
     // Debug log: what's playing (once per song load) and each active-line change.
     LaunchedEffect(lines) {
@@ -411,10 +417,44 @@ internal fun SyncedLyricsView(
     // disabled (and the analyzer never acquired) at intensity 0.
     val fx = LocalLyricsFx.current
     val beatIntensity = fx.bassReact
+    // God rays: what is being sung, in root px — the sung word when they
+    // follow it (word-timed lyrics), else the line. Read in the draw phase of
+    // whichever layer draws the light, so the shafts follow the scroll glide
+    // and hop from word to word without recomposing anything.
+    val followWord = fx.godRays && fx.godRaysFollowWord
+    val sungWord = remember { SungWordAnchor() }
+    val listBox = remember { androidx.compose.runtime.mutableStateOf(Rect.Zero) }
+    val bandInRoot: () -> Rect? = remember(listState, currentLineState, followWord) {
+        {
+            val line = currentLineState.value
+            (if (followWord) sungWord.rectFor(line) else null)
+                ?: activeLineBand(listState, line)?.translate(listBox.value.topLeft)
+        }
+    }
     // Prefer the player-provided shared pulse (one analyzer stake; the pump
     // and the full-screen glow breathe together).
     val bassPulse = LocalBeatPulse.current
         ?: if (beatIntensity > 0.01f) rememberBassPulse() else remember { mutableFloatStateOf(0f) }
+    // The player's backdrop, when it draws one under the lyrics (see
+    // LyricBackdropFx): the shadow and the shafts are drawn there, full screen
+    // and under the glass UI, from a copy of these letters, and the light is
+    // the player's, shared with the glass here. Without one this view draws
+    // them itself, inside its own surface.
+    val backdrop = LocalLyricBackdrop.current
+    val rayLight = if (backdrop != null) {
+        backdrop.light
+    } else {
+        rememberLyricRayLight(
+            accent = accent,
+            pulse = bassPulse,
+            band = bandInRoot,
+            lettersBox = remember { { listBox.value.takeUnless { it.isEmpty } } },
+            debugName = "lyric view",
+        )
+    }
+    if (backdrop != null) {
+        androidx.compose.runtime.SideEffect { backdrop.capture.bandInRoot = bandInRoot }
+    }
     // Shared line registry — the active line reports its screen bounds here and
     // the full-screen LyricsFxLayer (in the player, no clipping ancestor) blooms
     // the album-accent glow there, so the light can never be cut.
@@ -511,13 +551,36 @@ internal fun SyncedLyricsView(
             state = listState,
             modifier = Modifier
                 .fillMaxSize()
+                // God rays wrap everything below, so they gather the finished
+                // glass letters, and sit OUTSIDE the side inset, so the shafts
+                // run to the screen edge instead of stopping in a hard line at
+                // the inset. A layer cannot draw past its own bounds.
+                .onGloballyPositioned {
+                    listBox.value = Rect(it.positionInRoot(), it.size.toSize())
+                }
+                // Here only when nothing under the lyrics draws them.
+                .lyricGodRays(if (backdrop == null) rayLight else null)
+                // Over a backdrop, "On top" adds the light that falls on the
+                // letters to them here; the shafts around them are the
+                // backdrop's.
+                .lyricRaysOnLetters(backdrop)
+                // The shadow under the letters, on the background: outside the
+                // glass so it is never bevelled into a block, inside the rays so
+                // the shafts pass over it, and outside the inset so its blur is
+                // not cut off at the edge. The backdrop draws it when there is one.
+                .then(if (backdrop == null) Modifier.lyricShadow(rayLight) else Modifier)
                 // User edge margin + a fixed bevel-safe inset, so the outermost
                 // glyphs (and their glass bevels) never sit flush against the
                 // clip edge where they'd be corner-cut.
                 .padding(horizontal = sideInset)
                 .onPointerEvent(PointerEventType.Scroll) { lastWheelMs[0] = System.currentTimeMillis() }
                 .fxaa()
-                .liquidGlass(tint = accent),
+                // The same light, so the glass letters catch what the shafts
+                // stream from.
+                .liquidGlass(tint = accent, rayLight = rayLight)
+                // Innermost, so the copy the backdrop lights from is the plain
+                // letters and the glass is not run twice.
+                .captureLetters(backdrop?.capture, edgeFade = true),
             contentPadding = PaddingValues(top = halfViewport, bottom = tailPadding),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -578,6 +641,11 @@ internal fun SyncedLyricsView(
                     beatModifier = beatModifier,
                     availableWidth = fitWidth,
                     measureStyle = measureStyle,
+                    onSungWordPositioned = if (isActive && followWord) {
+                        { rect -> sungWord.report(index, rect) }
+                    } else {
+                        null
+                    },
                 )
             } else {
                 // Line-level sources (LRCLib / Qobuz): illuminate the whole
@@ -667,6 +735,8 @@ internal fun KaraokeLyricLine(
     beatModifier: Modifier = Modifier,
     availableWidth: Dp,
     measureStyle: TextStyle,
+    /** Set on the active line when the god rays follow the sung word: told where that word is, in root coordinates. */
+    onSungWordPositioned: ((Rect) -> Unit)? = null,
 ) {
     // Render letters individually while active whenever the 3D wave is on.
     // One frame clock per line.
@@ -678,6 +748,9 @@ internal fun KaraokeLyricLine(
     // so a given word always sits on the same row whether the line is active
     // or not — activation can never turn 2 rows into 3.
     val wordTexts = remember(line.words) { line.words.map { it.text } }
+    // The word the rays shine from: the one lighting up, or between words the
+    // one that just did, so the light rests on it instead of blinking off.
+    val sungIndex = if (onSungWordPositioned != null) line.words.indexOfLast { it.startMs <= position } else -1
     val layout = rememberWrappedLyricLayout(
         words = wordTexts,
         availableWidth = availableWidth,
@@ -693,7 +766,6 @@ internal fun KaraokeLyricLine(
         letterSpacing = fx.letterSpacingSp.sp,
         fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
     ).withLyricFont(lyricFont)
-    val shadowed = wordStyle.copy(shadow = letter3DShadow(fx.shadowDepth))
     Column(
         modifier = beatModifier
             .fillMaxWidth()
@@ -716,9 +788,14 @@ internal fun KaraokeLyricLine(
                     }
                     val color by animateColorAsState(targetValue = target, label = "wordColor")
                     val display = if (i == rowWords.last()) word.text else word.text + " "
+                    val reportSung = if (i == sungIndex && onSungWordPositioned != null) {
+                        Modifier.onGloballyPositioned { onSungWordPositioned(it.boundsInRoot()) }
+                    } else {
+                        Modifier
+                    }
                     if (time != null) {
                         val phaseBase = letterBase
-                        Row {
+                        Row(modifier = reportSung) {
                             display.forEachIndexed { j, ch ->
                                 Letter3DText(
                                     text = ch.toString(),
@@ -726,7 +803,7 @@ internal fun KaraokeLyricLine(
                                     // nearly in phase, so the line reads as one long
                                     // smooth ribbon; the step is a Studio setting.
                                     phase = (phaseBase + j) * fx.wavePhaseStep,
-                                    style = shadowed,
+                                    style = wordStyle,
                                     color = color,
                                     time = time,
                                 )
@@ -739,6 +816,7 @@ internal fun KaraokeLyricLine(
                             color = color,
                             maxLines = 1,
                             softWrap = false,
+                            modifier = reportSung,
                         )
                     }
                     letterBase += word.text.length + 1
@@ -746,6 +824,21 @@ internal fun KaraokeLyricLine(
             }
         }
     }
+}
+
+/**
+ * The sung line's box in the lazy list's own pixels, or null when it is off
+ * screen. Item offsets are measured from the end of the top content padding,
+ * which [LazyListLayoutInfo.viewportStartOffset] carries as a negative number,
+ * so subtracting it lands the item where the list actually draws it.
+ */
+private fun activeLineBand(state: LazyListState, index: Int): Rect? {
+    if (index < 0) return null
+    val info = state.layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return null
+    val top = (item.offset - info.viewportStartOffset).toFloat()
+    // A line runs the full width, so its sides are left open.
+    return Rect(-GodRayGeometry.UNBOUNDED, top, GodRayGeometry.UNBOUNDED, top + item.size)
 }
 
 val LocalLyricsFx = compositionLocalOf { LyricsFxSettings() }
@@ -902,19 +995,11 @@ internal fun rememberWrappedLyricLayout(
     }
 }
 
-// Crisp contact shadow: a tight, dark edge right under the glyph so the
-// letterform reads as solid and sharp. (The previous wide blur — up to ~17px —
-// hazed the glyph edges and made the whole line look soft; block depth now
-// comes from the extruded backing glyph in Letter3DText instead.)
-private fun letter3DShadow(depth: Float) = Shadow(
-    color = Color.Black.copy(alpha = (0.5f + 0.4f * depth).coerceIn(0f, 1f)),
-    offset = Offset(0f, 2f + 5f * depth),
-    blurRadius = 1f + 4f * depth,
-)
-
 /**
  * One precomputed lyric row rendered as per-letter 3D glyphs — a ripple of
- * rotation travelling along the row, with a baked-in drop shadow for depth.
+ * rotation travelling along the row. The letters carry no shadow of their own:
+ * it is cast on the background under them by [lyricShadow], outside the glass,
+ * because anything drawn here is turned into glass with them.
  * Every letter sits at its NATURAL text advance (no inter-letter gaps), so
  * the row occupies the same width as the identical row drawn as one Text and
  * activating a line never shifts or re-wraps it; the swell/tilt/extrusion are
@@ -933,7 +1018,6 @@ internal fun Letters3DRow(
     phaseBase: Int = 0,
 ) {
     val fx = LocalLyricsFx.current
-    val shadowed = style.copy(shadow = letter3DShadow(fx.shadowDepth))
     Row(modifier = modifier) {
         text.forEachIndexed { j, ch ->
             Letter3DText(
@@ -941,7 +1025,7 @@ internal fun Letters3DRow(
                 // Low spatial frequency: neighbouring letters stay nearly in
                 // phase, so the row reads as one long smooth ribbon.
                 phase = (phaseBase + j) * fx.wavePhaseStep,
-                style = shadowed,
+                style = style,
                 color = color,
                 time = time,
             )
@@ -981,18 +1065,10 @@ private fun Letter3DText(
             cameraDistance = 4f * density
         },
     ) {
-        // Extruded backing: the same glyph stamped in near-black a couple of
-        // pixels down-right, inside the same transform layer so it tilts with
-        // the letter. The pair reads as one solid letterform with block
-        // depth — not a glyph plus a detached shadow. Layout offset, NOT a
-        // second graphicsLayer: an extra render node per letter doubled the
-        // per-frame layer updates on long lines and cost visible frames.
-        Text(
-            text = text,
-            style = style.copy(shadow = null),
-            color = Color.Black.copy(alpha = (0.45f + 0.4f * fx.shadowDepth).coerceIn(0f, 0.9f)),
-            modifier = Modifier.offset(x = 1.2.dp, y = 2.2.dp),
-        )
+        // No extruded backing glyph any more. It sat inside the glass layer,
+        // so the glass bevelled and relit it as more glass, and every letter
+        // came out as a block with a dark slab stuck to it. Depth is the soft
+        // shadow [lyricShadow] casts on the background instead.
         Text(text = text, style = style, color = color)
     }
 }

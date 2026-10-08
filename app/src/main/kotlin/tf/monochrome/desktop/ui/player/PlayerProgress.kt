@@ -157,7 +157,12 @@ internal fun GlassProgressTube(
     onSeekFinished: (Float) -> Unit,
     modifier: Modifier = Modifier,
     durationMs: Long = 0L,
+    /** What a screen reader calls the control; the seek bar's name unless it is something else. */
+    semanticsLabel: String? = null,
+    /** How a screen reader reads a position; a percentage unless given. */
+    stateText: ((Float) -> String)? = null,
 ) {
+    val label = semanticsLabel ?: stringResource(R.string.action_seek)
     var dragging by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -191,10 +196,10 @@ internal fun GlassProgressTube(
                 .height(34.dp)
                 .trackHover { x, width -> hoverX = x; hoverWidth = width }
                 .adjustableSemantics(
-                    label = stringResource(R.string.action_seek),
+                    label = label,
                     value = frac,
                     range = 0f..1f,
-                    stateText = { java.text.NumberFormat.getPercentInstance().format(it) },
+                    stateText = stateText ?: { java.text.NumberFormat.getPercentInstance().format(it) },
                     onValueChange = { onSeek(it); onSeekFinished(it) },
                 )
                 .pointerHoverIcon(PointerIcon.Hand)
@@ -361,7 +366,7 @@ private const val WHEEL_COMMIT_MS = 350L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PlainSlider(
+internal fun PlainSlider(
     fraction: Float,
     tint: Color,
     onSeek: (Float) -> Unit,

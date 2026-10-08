@@ -17,7 +17,8 @@ import tf.monochrome.desktop.ui.mixer.getParamDefs
  * two together from both sides (DspStateJsonTest, and the host test
  * state_fixture_test that loads it into the engine).
  *
- * Buses are written in index order, the master fifth. A bus routed anywhere
+ * Buses are written in index order, the master fifth. A bus on deck B's input
+ * carries `"inputSource":1` after `"inputEnabled"`. A bus routed anywhere
  * but the master alone carries `"sends":[dst,level,…]` before its plugins.
  * Every plugin carries its full parameter array: indices the mirror has no value for take the
  * parameter's default, which ParamDefs holds pinned to the engine's
@@ -35,6 +36,10 @@ object DspStateJson {
                 .append(",\"muted\":").append(bus.muted)
                 .append(",\"soloed\":").append(bus.soloed)
                 .append(",\"inputEnabled\":").append(bus.inputEnabled)
+            // Desktop: the side input only when chosen, as the engine writes it.
+            if (bus.inputSource == BusConfig.INPUT_SIDE) {
+                sb.append(",\"inputSource\":").append(BusConfig.INPUT_SIDE)
+            }
             // Routes only when not the default (master alone), as the engine
             // writes them: [dst, level, ...] in destination order.
             if (bus.hasCustomSends) {

@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import tf.monochrome.desktop.audio.usb.GainRamp
 import tf.monochrome.desktop.audio.usb.LibusbUacDriver
 import tf.monochrome.desktop.audio.usb.LibusbUacNative
 import tf.monochrome.desktop.audio.usb.StartError
@@ -42,9 +43,10 @@ import tf.monochrome.desktop.audio.usb.UacPcm
  * path and its `SpeedTimeline` mapping (the engine owns one chain and one
  * clock), the processor chain itself (the engine runs it before any sink),
  * playback-parameter plumbing (speed lives in the chain), lazy engage (the
- * controller re-routes when a DAC opens), `BypassVolumeController` gain (the
- * engine applies the same volume in its packer; applying both would square
- * it), the crossfade tail mix and its idle pump (the engine mixes a crossfade
+ * controller re-routes when a DAC opens), the player's half of
+ * `BypassVolumeController` (the engine applies the player volume in its
+ * packer; applying both would square it, so this applies only the DAC level,
+ * [dacGain]), the crossfade tail mix and its idle pump (the engine mixes a crossfade
  * before the chain), and pause-by-flush: [pause] now holds the stream with
  * its queue intact (see [LibusbUacNative]).
  */
@@ -62,6 +64,11 @@ class LibusbUacSink(
      * collector of that flow could see the failure vanish before it ran.
      */
     private val onRefused: (failure: StartFailure?) -> Unit = {},
+    /**
+     * The DAC level as linear gain (BypassVolumeController.getDacGain), read
+     * every write. The engine's packer has already applied the player volume.
+     */
+    private val dacGain: () -> Float = { 1f },
 ) : AudioSink {
 
     private var format: AudioFormat? = null
@@ -71,6 +78,11 @@ class LibusbUacSink(
     private var subslotBytes = 0
     private var playing = false
     private var scratch: ByteBuffer = ByteBuffer.allocateDirect(0)
+
+    // The gain the DAC is getting now, moved a frame at a time toward the
+    // level (see GainRamp). Zero whenever the DAC starts from silence, so
+    // every fresh stream fades in instead of arriving at level. Render thread.
+    private var appliedGain = 0f
 
     private var lostReported = false
     private var framesWritten = 0L
@@ -110,6 +122,9 @@ class LibusbUacSink(
             }
             // Whatever the previous track left queued is not this one's.
             if (reused) driver.flushRing()
+            // A stream the DAC starts from silence fades in from silence; one
+            // it carries on with (same format) keeps its level.
+            if (!reused) appliedGain = 0f
             // The subslot the driver negotiated, from the device's descriptor.
             // The guard keeps a snapshot of an earlier stream out of it.
             val slot = driver.diagnostics.value
@@ -159,9 +174,24 @@ class LibusbUacSink(
             scratch = ByteBuffer.allocateDirect(maxOf(outBytes, scratch.capacity() * 2)).order(ByteOrder.nativeOrder())
         }
         scratch.clear()
-        UacPcm.pack(buffer, format!!.encoding, n * channels, validBits, subslotBytes, scratch)
+        // The DAC level, reached a frame at a time (GainRamp): a slider move is
+        // a slope, not a step, and a fresh stream fades in.
+        val target = dacGain().coerceIn(0f, 1f)
+        val start = appliedGain
+        val rate = format!!.sampleRate
+        val rise = GainRamp.risePerFrame(target, rate)
+        val fall = GainRamp.fallPerFrame(rate)
+        if (target >= 1f && start >= 1f) {
+            // Unity and settled: the samples go out untouched, bit-perfect.
+            UacPcm.pack(buffer, format!!.encoding, n * channels, validBits, subslotBytes, scratch)
+        } else {
+            UacPcm.packWithGain(buffer, format!!.encoding, n, channels, validBits, subslotBytes, scratch, start, target, rise, fall)
+        }
         scratch.limit(outBytes)
         val written = driver.write(scratch, n)
+        // Where the ramp got to in the frames the DAC took; a partial write
+        // resumes from there.
+        if (written > 0) appliedGain = GainRamp.after(start, target, written, rise, fall)
         if (written > 0) {
             buffer.position(buffer.position() + written * sourceBytesPerFrame)
             framesWritten += written

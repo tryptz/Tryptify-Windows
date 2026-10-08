@@ -24,7 +24,10 @@ class MixBusProcessor @Inject constructor(
     private val crossfeed: CrossfeedEffect,
 ) : AudioProcessor {
 
-    private var enginePtr: Long = 0L
+    // Created on the playback thread the first time a format arrives, and read
+    // from any thread through getEnginePtr(): the mixer UI, DspEngineManager's
+    // collectors. Once set, the app's own processor keeps it for good; see reset().
+    @Volatile private var enginePtr: Long = 0L
     private var pendingFormat = AudioFormat.NOT_SET
     private var inputFormat = AudioFormat.NOT_SET
     private var outputBuffer: ByteBuffer = AudioProcessor.EMPTY_BUFFER
@@ -88,6 +91,26 @@ class MixBusProcessor @Inject constructor(
     // TPDF dither state for PCM16 output (triangular probability density function)
     private var ditherState: Long = 1L
 
+    /**
+     * A second stereo signal, read on the audio thread in step with the
+     * player's: [read] fills [l] and [r] with the next [frames] frames.
+     */
+    fun interface SideInput {
+        fun read(l: FloatArray, r: FloatArray, frames: Int)
+    }
+
+    /**
+     * Desktop: deck B of the DJ console. While set, every block also pulls
+     * this many frames from it, and the buses whose input source is
+     * [INPUT_SIDE] hear it in place of the player. Null is the ordinary mixer.
+     */
+    @Volatile var sideInput: SideInput? = null
+
+    private var scratchSideL = FloatArray(0)
+    private var scratchSideR = FloatArray(0)
+    private var chunkScratchSideL = FloatArray(0)
+    private var chunkScratchSideR = FloatArray(0)
+
     // JNI native methods
     private external fun nativeCreate(sampleRate: Int, maxBlockSize: Int): Long
     private external fun nativeDestroy(enginePtr: Long)
@@ -110,6 +133,15 @@ class MixBusProcessor @Inject constructor(
         outputL: FloatArray, outputR: FloatArray,
         numFrames: Int
     )
+    // Desktop: the DJ console's second deck, mixed into the buses set to the
+    // side input (see [sideInput]) beside the player's signal.
+    private external fun nativeProcessDual(
+        enginePtr: Long,
+        inputL: FloatArray, inputR: FloatArray,
+        sideL: FloatArray, sideR: FloatArray,
+        outputL: FloatArray, outputR: FloatArray,
+        numFrames: Int
+    )
 
     external fun nativeSetBusGain(enginePtr: Long, busIndex: Int, gainDb: Float)
     external fun nativeSetBusPan(enginePtr: Long, busIndex: Int, pan: Float)
@@ -126,6 +158,8 @@ class MixBusProcessor @Inject constructor(
     /** Routes bus [srcBus] to [dstBus] at linear [level] (0 removes); false if refused (would loop). */
     external fun nativeSetSend(enginePtr: Long, srcBus: Int, dstBus: Int, level: Float): Boolean
     external fun nativeSetBusInputEnabled(enginePtr: Long, busIndex: Int, enabled: Boolean)
+    /** Which input bus [busIndex] hears: [INPUT_PLAYER] or [INPUT_SIDE]. */
+    external fun nativeSetBusInputSource(enginePtr: Long, busIndex: Int, source: Int)
     external fun nativeGetBusLevels(enginePtr: Long, outLevels: FloatArray)
     // Per-plugin tap meters for one bus: [slot0_inDb, slot0_outDb, ...] (dB, floor -60)
     external fun nativeGetPluginMeters(enginePtr: Long, busIndex: Int, outMeters: FloatArray)
@@ -154,6 +188,10 @@ class MixBusProcessor @Inject constructor(
 
     companion object {
         init { DspNativeLoader.ensureLoaded() }
+        /** A bus hears the player (the default). */
+        const val INPUT_PLAYER = 0
+        /** A bus hears [sideInput]: the DJ console's deck B. */
+        const val INPUT_SIDE = 1
         // Upper bound on the native engine's scratch allocation (sumL/R,
         // busL/R, dryBufL/R) and the chunk-scratch float arrays on the
         // Kotlin side. Sized to the largest entry in
@@ -283,6 +321,8 @@ class MixBusProcessor @Inject constructor(
             }
             outputBuffer.put(inputBuffer)
             outputBuffer.flip()
+            // With no mixer the decks still both play: deck B summed straight in.
+            sideInput?.let { mixSideInto(outputBuffer, it) }
             return
         }
 
@@ -304,6 +344,14 @@ class MixBusProcessor @Inject constructor(
             scratchInR = FloatArray(numFrames)
             scratchOutL = FloatArray(numFrames)
             scratchOutR = FloatArray(numFrames)
+        }
+        val side = sideInput
+        if (side != null) {
+            if (scratchSideL.size < numFrames) {
+                scratchSideL = FloatArray(numFrames)
+                scratchSideR = FloatArray(numFrames)
+            }
+            side.read(scratchSideL, scratchSideR, numFrames)
         }
 
         // Deinterleave input to L/R float arrays. Using index-based getShort /
@@ -362,6 +410,10 @@ class MixBusProcessor @Inject constructor(
             chunkScratchOutL = FloatArray(chunk)
             chunkScratchOutR = FloatArray(chunk)
         }
+        if (side != null && needChunkScratch && chunkScratchSideL.size < chunk) {
+            chunkScratchSideL = FloatArray(chunk)
+            chunkScratchSideR = FloatArray(chunk)
+        }
 
         var processed = 0
         while (processed < numFrames) {
@@ -369,7 +421,16 @@ class MixBusProcessor @Inject constructor(
             if (needChunkScratch) {
                 System.arraycopy(scratchInL, processed, chunkScratchInL, 0, n)
                 System.arraycopy(scratchInR, processed, chunkScratchInR, 0, n)
-                nativeProcess(enginePtr, chunkScratchInL, chunkScratchInR, chunkScratchOutL, chunkScratchOutR, n)
+                if (side != null) {
+                    System.arraycopy(scratchSideL, processed, chunkScratchSideL, 0, n)
+                    System.arraycopy(scratchSideR, processed, chunkScratchSideR, 0, n)
+                    nativeProcessDual(
+                        enginePtr, chunkScratchInL, chunkScratchInR, chunkScratchSideL, chunkScratchSideR,
+                        chunkScratchOutL, chunkScratchOutR, n,
+                    )
+                } else {
+                    nativeProcess(enginePtr, chunkScratchInL, chunkScratchInR, chunkScratchOutL, chunkScratchOutR, n)
+                }
                 inflator.processArrays(chunkScratchOutL, chunkScratchOutR, n)
                 compressor.processArrays(chunkScratchOutL, chunkScratchOutR, n)
                 crossfeed.processArrays(chunkScratchOutL, chunkScratchOutR, n)
@@ -377,7 +438,13 @@ class MixBusProcessor @Inject constructor(
                 System.arraycopy(chunkScratchOutR, 0, scratchOutR, processed, n)
             } else {
                 // Single-shot fast path: ExoPlayer's buffer fits in one chunk.
-                nativeProcess(enginePtr, scratchInL, scratchInR, scratchOutL, scratchOutR, n)
+                if (side != null) {
+                    nativeProcessDual(
+                        enginePtr, scratchInL, scratchInR, scratchSideL, scratchSideR, scratchOutL, scratchOutR, n,
+                    )
+                } else {
+                    nativeProcess(enginePtr, scratchInL, scratchInR, scratchOutL, scratchOutR, n)
+                }
                 inflator.processArrays(scratchOutL, scratchOutR, n)
                 compressor.processArrays(scratchOutL, scratchOutR, n)
                 crossfeed.processArrays(scratchOutL, scratchOutR, n)
@@ -431,6 +498,19 @@ class MixBusProcessor @Inject constructor(
         val numFrames = wideBlock.read(inputBuffer, channels, encoding)
         if (numFrames <= 0) return
         val data = wideBlock.channels
+        // Desktop: the lanes carry one stream's channel groups, so there is no
+        // bus for a second deck here; deck B joins the front pair instead.
+        sideInput?.let { side ->
+            if (scratchSideL.size < numFrames) {
+                scratchSideL = FloatArray(numFrames)
+                scratchSideR = FloatArray(numFrames)
+            }
+            side.read(scratchSideL, scratchSideR, numFrames)
+            for (i in 0 until numFrames) {
+                data[0][i] += scratchSideL[i]
+                data[1][i] += scratchSideR[i]
+            }
+        }
 
         val chunk = blockSize
         val need = minOf(chunk, numFrames) * channels * 4
@@ -486,6 +566,34 @@ class MixBusProcessor @Inject constructor(
         outputBuffer.limit(outBytes)
     }
 
+    /** Adds [side]'s next block into [buf] (the bypass path), in place. */
+    private fun mixSideInto(buf: ByteBuffer, side: SideInput) {
+        val channels = inputFormat.channelCount.coerceAtLeast(1)
+        val float = inputFormat.encoding == C.ENCODING_PCM_FLOAT
+        val bytesPerSample = if (float) 4 else 2
+        val frames = buf.remaining() / (bytesPerSample * channels)
+        if (frames <= 0) return
+        if (scratchSideL.size < frames) {
+            scratchSideL = FloatArray(frames)
+            scratchSideR = FloatArray(frames)
+        }
+        side.read(scratchSideL, scratchSideR, frames)
+        val base = buf.position()
+        for (i in 0 until frames) {
+            for (c in 0 until minOf(channels, 2)) {
+                val v = if (channels == 1) (scratchSideL[i] + scratchSideR[i]) * 0.5f
+                else if (c == 0) scratchSideL[i] else scratchSideR[i]
+                val off = base + (i * channels + c) * bytesPerSample
+                if (float) {
+                    buf.putFloat(off, buf.getFloat(off) + v)
+                } else {
+                    val sum = buf.getShort(off) + (v * 32768f).toInt()
+                    buf.putShort(off, sum.coerceIn(-32768, 32767).toShort())
+                }
+            }
+        }
+    }
+
     override fun getOutput(): ByteBuffer {
         val buf = outputBuffer
         outputBuffer = AudioProcessor.EMPTY_BUFFER
@@ -514,6 +622,14 @@ class MixBusProcessor @Inject constructor(
 
         if (formatChanged) {
             inputFormat = pendingFormat
+            // Desktop: without monochrome_dsp (Windows can block the DLL) there
+            // is no engine and queueInput passes audio through; the crossfeed,
+            // plain Kotlin that DownmixProcessor runs, still needs the rate.
+            if (!DspNativeLoader.isAvailable) {
+                crossfeed.prepare(inputFormat.sampleRate.toDouble())
+                pendingFormat = AudioFormat.NOT_SET
+                return
+            }
             if (enginePtr == 0L) {
                 // Cold start — no existing engine, full construct + state restore.
                 enginePtr = nativeCreate(inputFormat.sampleRate, MAX_BLOCK_SIZE)
@@ -560,14 +676,36 @@ class MixBusProcessor @Inject constructor(
         pendingFormat = AudioFormat.NOT_SET
     }
 
+    /**
+     * Whether [reset] also destroys the native engine. Off for the app's own
+     * processor: its pointer is shared with other threads through
+     * [getEnginePtr], and it lives as long as the process. On for a
+     * crossfade's own [DspChain] copy, which nobody else can reach: its engine
+     * goes when the tail player resets it, on the thread that was using it.
+     */
+    @Volatile internal var destroyEngineOnReset = false
+
+    /**
+     * Back to unconfigured. The app's own processor keeps its native engine.
+     *
+     * Media3 calls this whenever it rebuilds the audio pipeline, which a track
+     * change can do (from an Atmos track to a stereo one, say). The engine used
+     * to be destroyed here while other threads still held its pointer:
+     * publishChannelGroups() below wakes DspEngineManager's collector, which
+     * called into the engine just as it was freed, and the app died in
+     * DspEngine::getStateJson locking a mutex that was gone. Kept, the pointer
+     * can never dangle; the next format goes through the same nativeReconfigure
+     * as any format change, with the bus graph and plugins kept.
+     */
     override fun reset() {
         _engineReady.value = false
         laneChannels = 2
         publishChannelGroups()
         flush()
-        if (enginePtr != 0L) {
-            nativeDestroy(enginePtr)
+        if (destroyEngineOnReset) {
+            val ptr = enginePtr
             enginePtr = 0L
+            if (ptr != 0L) nativeDestroy(ptr)
         }
         pendingFormat = AudioFormat.NOT_SET
         inputFormat = AudioFormat.NOT_SET

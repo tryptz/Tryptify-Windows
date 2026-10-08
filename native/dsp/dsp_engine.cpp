@@ -126,6 +126,8 @@ DspEngine::DspEngine(int sampleRate, int maxBlockSize)
     dryBufR_.resize(maxBlockSize, 0.0f);
     inRingL_.assign(PDC_SIZE, 0.0f);
     inRingR_.assign(PDC_SIZE, 0.0f);
+    sideRingL_.assign(PDC_SIZE, 0.0f);
+    sideRingR_.assign(PDC_SIZE, 0.0f);
     for (auto& bus : buses_) {
         bus.pdcL.assign(PDC_SIZE, 0.0f);
         bus.pdcR.assign(PDC_SIZE, 0.0f);
@@ -247,6 +249,10 @@ static inline void writeWaveSilence(Bus& bus, int numFrames) {
 }
 
 void DspEngine::process(float* left, float* right, int numFrames) {
+    process(left, right, nullptr, nullptr, numFrames);
+}
+
+void DspEngine::process(float* left, float* right, const float* sideL, const float* sideR, int numFrames) {
     if (numFrames <= 0) return;
     // Lock for reading plugin chains (brief lock — plugins don't allocate during process)
     std::lock_guard<std::mutex> lock(chainMutex_);
@@ -254,8 +260,12 @@ void DspEngine::process(float* left, float* right, int numFrames) {
     // pieces instead of writing past them.
     for (int done = 0; done < numFrames; done += maxBlockSize_) {
         const int n = std::min(maxBlockSize_, numFrames - done);
+        sideL_ = sideL && sideR ? sideL + done : nullptr;
+        sideR_ = sideL && sideR ? sideR + done : nullptr;
         processBlockLocked(left + done, right + done, n);
     }
+    // Only ever this block's: a lane stepped by MultiLaneEngine has none.
+    sideL_ = sideR_ = nullptr;
 }
 
 void DspEngine::processBlockLocked(float* left, float* right, int numFrames) {
@@ -356,6 +366,13 @@ static inline void tapAdd(float* dst, const float* cur, const std::vector<float>
 static inline void ringAppend(std::vector<float>& ring, int& pos, const float* x, int n) {
     for (int i = 0; i < n; i++) {
         ring[static_cast<size_t>(pos)] = x[i];
+        pos = (pos + 1) & (PDC_SIZE - 1);
+    }
+}
+
+static inline void ringAppendSilence(std::vector<float>& ring, int& pos, int n) {
+    for (int i = 0; i < n; i++) {
+        ring[static_cast<size_t>(pos)] = 0.0f;
         pos = (pos + 1) & (PDC_SIZE - 1);
     }
 }
@@ -517,6 +534,8 @@ void DspEngine::processMixPieceLocked(const float* left, const float* right, int
                                       bool first) {
     const float* inPL = left + offset;
     const float* inPR = right + offset;
+    const float* inSL = sideL_ ? sideL_ + offset : nullptr;
+    const float* inSR = sideR_ ? sideR_ + offset : nullptr;
     const bool mixBypass = mixBypassed_.load(std::memory_order_relaxed);
     const int active = activeBusCount();
 
@@ -560,10 +579,16 @@ void DspEngine::processMixPieceLocked(const float* left, const float* right, int
         float* l = bus.inL.data();
         float* r = bus.inR.data();
         // The player's signal, delayed to arrive with the sends into this bus.
+        // Or the side input's, for a bus set to it: silence when there is none.
         if (takesInput_[b]) {
             const int delay = std::min(PDC_SIZE - 1, inDelay_[b]);
-            tapAdd(l, inPL, inRingL_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
-            tapAdd(r, inPR, inRingR_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
+            if (bus.inputSource.load(std::memory_order_relaxed) != INPUT_SIDE) {
+                tapAdd(l, inPL, inRingL_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
+                tapAdd(r, inPR, inRingR_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
+            } else if (inSL) {
+                tapAdd(l, inSL, sideRingL_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
+                tapAdd(r, inSR, sideRingR_, inRingPos_, numFrames, delay, 1.0f, 1.0f);
+            }
         }
 
         // Run plugin chain with dry/wet blending (skip when mixer DSP is
@@ -658,6 +683,14 @@ void DspEngine::processMixPieceLocked(const float* left, const float* right, int
     ringAppend(inRingL_, pos, inPL, numFrames);
     pos = inRingPos_;
     ringAppend(inRingR_, pos, inPR, numFrames);
+    // The side history advances with the player's, silent when it is absent,
+    // so a delay read across the boundary never picks up an old block.
+    pos = inRingPos_;
+    if (inSL) ringAppend(sideRingL_, pos, inSL, numFrames);
+    else ringAppendSilence(sideRingL_, pos, numFrames);
+    pos = inRingPos_;
+    if (inSR) ringAppend(sideRingR_, pos, inSR, numFrames);
+    else ringAppendSilence(sideRingR_, pos, numFrames);
     inRingPos_ = pos;
 }
 
@@ -887,6 +920,17 @@ void DspEngine::setBusInputEnabled(int busIndex, bool enabled) {
     buses_[busIndex].inputEnabled.store(enabled, std::memory_order_relaxed);
 }
 
+void DspEngine::setBusInputSource(int busIndex, int source) {
+    if (!isMixBus(busIndex)) return;
+    buses_[busIndex].inputSource.store(source == INPUT_SIDE ? INPUT_SIDE : INPUT_PLAYER,
+                                       std::memory_order_relaxed);
+}
+
+int DspEngine::getBusInputSource(int busIndex) const {
+    if (busIndex < 0 || busIndex >= TOTAL_BUSES) return INPUT_PLAYER;
+    return buses_[busIndex].inputSource.load(std::memory_order_relaxed);
+}
+
 void DspEngine::setMixBypassed(bool bypassed) {
     mixBypassed_.store(bypassed, std::memory_order_relaxed);
 }
@@ -973,6 +1017,7 @@ void DspEngine::resetBusLocked(Bus& bus) {
     bus.muted.store(false, std::memory_order_relaxed);
     bus.soloed.store(false, std::memory_order_relaxed);
     bus.inputEnabled.store(false, std::memory_order_relaxed);
+    bus.inputSource.store(INPUT_PLAYER, std::memory_order_relaxed);
     bus.smoothGainL = bus.smoothGainR = bus.targetGainL = bus.targetGainR = 1.0f;
     bus.peakL.store(0.0f, std::memory_order_relaxed);
     bus.peakR.store(0.0f, std::memory_order_relaxed);
@@ -998,6 +1043,7 @@ void DspEngine::moveBusLocked(Bus& dst, Bus& src) {
     dst.muted.store(src.muted.load(std::memory_order_relaxed), std::memory_order_relaxed);
     dst.soloed.store(src.soloed.load(std::memory_order_relaxed), std::memory_order_relaxed);
     dst.inputEnabled.store(src.inputEnabled.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    dst.inputSource.store(src.inputSource.load(std::memory_order_relaxed), std::memory_order_relaxed);
     dst.smoothGainL = src.smoothGainL;
     dst.smoothGainR = src.smoothGainR;
     dst.targetGainL = src.targetGainL;
@@ -1121,7 +1167,8 @@ bool DspEngine::pristineLocked(int busIndex) const {
            bus.pan.load(std::memory_order_relaxed) == 0.0f &&
            !bus.muted.load(std::memory_order_relaxed) &&
            !bus.soloed.load(std::memory_order_relaxed) &&
-           !bus.inputEnabled.load(std::memory_order_relaxed);
+           !bus.inputEnabled.load(std::memory_order_relaxed) &&
+           bus.inputSource.load(std::memory_order_relaxed) == INPUT_PLAYER;
 }
 
 bool DspEngine::busPristine(int busIndex) {
@@ -1263,6 +1310,10 @@ std::string DspEngine::getStateJson(bool full) const {
            << ",\"muted\":" << (bus.muted.load(std::memory_order_relaxed) ? "true" : "false")
            << ",\"soloed\":" << (bus.soloed.load(std::memory_order_relaxed) ? "true" : "false")
            << ",\"inputEnabled\":" << (bus.inputEnabled.load(std::memory_order_relaxed) ? "true" : "false");
+        // The side input only when chosen, so every other mix saves as before.
+        if (bus.inputSource.load(std::memory_order_relaxed) == INPUT_SIDE) {
+            ss << ",\"inputSource\":" << INPUT_SIDE;
+        }
         // Routes, as [dst, level, ...] by engine index, only when they differ
         // from the default (the master alone): a mix that routes nothing
         // saves exactly as it did before routing existed.
@@ -1336,6 +1387,8 @@ void DspEngine::loadStateJson(const std::string& json) {
         bool muted = false;
         bool soloed = false;
         bool inputEnabled = false;
+        // Absent (every save before the side input) = the player's.
+        int inputSource = INPUT_PLAYER;
         // Routes as saved; absent (every save before routing) = master alone.
         bool hasSends = false;
         int sendCount = 0;
@@ -1413,6 +1466,12 @@ void DspEngine::loadStateJson(const std::string& json) {
         if (inputEnabledPos != std::string::npos && inputEnabledPos < json.find("\"plugins\":", pos)) {
             stagedBus[busIdx].inputEnabled = readBool(inputEnabledPos + 15);
             pos = inputEnabledPos + 15;
+        }
+
+        size_t inputSourcePos = json.find("\"inputSource\":", pos);
+        if (inputSourcePos != std::string::npos && inputSourcePos < json.find("\"plugins\":", pos)) {
+            pos = inputSourcePos + 14;
+            stagedBus[busIdx].inputSource = readInt(pos) == INPUT_SIDE ? INPUT_SIDE : INPUT_PLAYER;
         }
 
         size_t sendsPos = json.find("\"sends\":[", pos);
@@ -1535,6 +1594,7 @@ void DspEngine::loadStateJson(const std::string& json) {
             buses_[b].muted.store(stagedBus[b].muted, std::memory_order_relaxed);
             buses_[b].soloed.store(stagedBus[b].soloed, std::memory_order_relaxed);
             buses_[b].inputEnabled.store(stagedBus[b].inputEnabled, std::memory_order_relaxed);
+            buses_[b].inputSource.store(stagedBus[b].inputSource, std::memory_order_relaxed);
             defaultSendsLocked(buses_[b]);
         }
         // Routes last, once every bus is in place: to an active bus only, one

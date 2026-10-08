@@ -8,6 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.isActive
+import tf.monochrome.desktop.audio.dsp.DspNativeLoader
 import tf.monochrome.desktop.audio.eq.WaveScopeNative
 
 /**
@@ -26,7 +27,8 @@ fun rememberKickPulse(enabled: Boolean, onsetRatio: Float = 1.45f): FloatState {
     val ratio = rememberUpdatedState(onsetRatio)
     LaunchedEffect(enabled) {
         pulse.floatValue = 0f
-        if (!enabled) return@LaunchedEffect
+        // Desktop: the scope is in monochrome_dsp, which Windows can block; the pulse then holds at 0.
+        if (!enabled || !DspNativeLoader.isAvailable) return@LaunchedEffect
         var average = 0f
         var cooldown = 0
         while (isActive) {

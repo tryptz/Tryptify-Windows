@@ -11,6 +11,11 @@ import tf.monochrome.desktop.ui.input.LocalShowShortcutHelp
 import tf.monochrome.desktop.ui.input.ShortcutHelpDialog
 import tf.monochrome.desktop.ui.input.StackMove
 import tf.monochrome.desktop.ui.input.fillRoutePattern
+import tf.monochrome.desktop.performance.LocalLowPerformance
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Text
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -102,6 +107,7 @@ import tf.monochrome.desktop.ui.discover.DiscoverShelfScreen
 import tf.monochrome.desktop.ui.discover.GenreChartScreen
 import tf.monochrome.desktop.ui.discover.GenreMapScreen
 import tf.monochrome.desktop.ui.home.HomeScreen
+import tf.monochrome.desktop.ui.dj.DjScreen
 import tf.monochrome.desktop.ui.mixer.MixerScreen
 import tf.monochrome.desktop.ui.library.LibraryScreen
 import tf.monochrome.desktop.ui.library.DownloadsScreen
@@ -193,6 +199,8 @@ sealed class Screen(val route: String) {
             "local_facet/${facet.key}/${android.net.Uri.encode(value)}"
     }
     data object Mixer : Screen("mixer")
+    // Desktop: the DJ decks, which drive the Mixer's A and B buses.
+    data object Dj : Screen("dj")
     data object CarMode : Screen("car_mode")
     data object Oxford : Screen("oxford?tab={tab}") {
         /** tab: 0 = Compressor, 1 = Inflator. */
@@ -226,6 +234,7 @@ private val pagerRoutes =
 internal val chromeHiddenRoutes = setOf(
     Screen.NowPlaying.route,
     Screen.Mixer.route,
+    Screen.Dj.route,
     Screen.Oxford.route,
     Screen.CarMode.route,
 )
@@ -425,6 +434,11 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     // so the keyboard comes up for a tap and not for coming back to results.
     var focusSearch by remember { mutableStateOf(false) }
     val onTab: (AppTab) -> Unit = { tab ->
+        if (tab == AppTab.DJ) {
+            // Desktop: straight to the decks, over whatever is open, so Back
+            // returns to it. A DJ visit already on the stack is reused.
+            navController.navigateTool(Screen.Dj)
+        } else {
         // A tab tapped from a pushed screen closes it, as in Apple Music: the
         // pager is only drawn while the NavHost is on "home".
         if (!isOnMainTab && !navController.popBackStack(Screen.Home.route, inclusive = false)) {
@@ -435,6 +449,7 @@ fun MonochromeNavHost(initialRoute: String? = null) {
         if (!isOnMainTab) forwardHistory.clear()
         if (tab == AppTab.SEARCH) focusSearch = true
         selectPageWith(pageForTab(tab, pages, lastLibrarySection, navBarSlots), false)
+        }
     }
 
     val goForward: () -> Unit = {
@@ -481,11 +496,21 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             previous = playerViewModel::skipToPrevious,
             seekBy = playerViewModel::seekBy,
             volumeBy = { by ->
-                playerViewModel.setVolume((playerViewModel.volume.value + by).coerceIn(0f, 1f))
+                // A claimed DAC takes the keys, as on Android: its level is the
+                // one that matters there, and the pop-up shows it moving.
+                if (playerViewModel.dacExclusive.value) {
+                    playerViewModel.stepDacLevel(if (by > 0f) 1 else -1)
+                } else {
+                    playerViewModel.setVolume((playerViewModel.volume.value + by).coerceIn(0f, 1f))
+                }
             },
             toggleMute = {
                 val now = playerViewModel.volume.value
-                if (now > 0f) {
+                if (playerViewModel.dacExclusive.value) {
+                    // The DAC's own mute; the controller remembers the level it came from.
+                    val muted = playerViewModel.dacLevelDb.value <= tf.monochrome.desktop.audio.usb.BypassVolumeController.MIN_DB
+                    playerViewModel.setDacMuted(!muted)
+                } else if (now > 0f) {
                     volumeBeforeMute = now
                     playerViewModel.setVolume(0f)
                 } else {
@@ -496,7 +521,7 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             cycleRepeat = playerViewModel::cycleRepeatMode,
             toggleLike = playerViewModel::toggleLikeCurrentTrack,
             openSearch = { onTab(AppTab.SEARCH) },
-            tabs = (pillTabs(pages, navBarSlots) + AppTab.SEARCH).map { tab -> { onTab(tab) } },
+            tabs = (pillTabs(pages, navBarSlots) + AppTab.SEARCH + AppTab.DJ).map { tab -> { onTab(tab) } },
             openSettings = {
                 // Settings is a nested graph: on any of its screens, stay put.
                 val inSettings = currentDestination?.hierarchy?.any { it.route == Screen.Settings.route } == true
@@ -614,8 +639,15 @@ fun MonochromeNavHost(initialRoute: String? = null) {
     // tab bar, and the mini player stacked over it. Lists pad by the expanded
     // height even while the bar is folded — following the fold would jolt them.
     // Taking turns, nothing is ever stacked: both states are one row high.
+    // "Remove liquid glass" swaps the floating glass chrome for a flat Material 3
+    // navigation bar docked at the bottom, with the mini player on it: see
+    // FlatTabChrome. That one stands on the system bar rather than floating
+    // above it, so it has its own height.
+    val flatChrome = LocalLowPerformance.current.disableLiquidGlass
     val chromeHeight = when {
         !showChrome -> 0.dp
+        flatChrome && showMiniPlayer -> FLAT_NAV_BAR_HEIGHT + CHROME_GAP + MINI_PLAYER_HEIGHT
+        flatChrome -> FLAT_NAV_BAR_HEIGHT
         showMiniPlayer && !miniPlayerHideWithTabs -> CHROME_GAP + TabBarHeight + CHROME_GAP + MINI_PLAYER_HEIGHT
         else -> CHROME_GAP + TabBarHeight
     }
@@ -893,6 +925,14 @@ fun MonochromeNavHost(initialRoute: String? = null) {
                         )
                     }
                 }
+                composable(Screen.Dj.route) {
+                    tf.monochrome.desktop.devedit.DevEditScreen("dj") {
+                        DjScreen(
+                            navController = navController,
+                            viewModel = hiltViewModel(),
+                        )
+                    }
+                }
                 composable(Screen.CarMode.route) {
                     tf.monochrome.desktop.devedit.DevEditScreen("car_mode") {
                         CarModeScreen(navController = navController)
@@ -1112,7 +1152,15 @@ fun MonochromeNavHost(initialRoute: String? = null) {
                 }
             } else null
 
-            CompositionLocalProvider(
+            if (flatChrome) {
+                FlatTabChrome(
+                    tabs = pillTabs(pages, navBarSlots),
+                    selected = tabFor(currentPageId, navBarSlots),
+                    onTab = onTab,
+                    miniPlayer = miniPlayer,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            } else CompositionLocalProvider(
                 // The bar is the app's chrome, so it is the mini player's
                 // material — see LocalMiniPlayerGlass.
                 tf.monochrome.desktop.ui.player.LocalPlayerGlass provides miniPlayerGlass,
@@ -1195,6 +1243,24 @@ fun MonochromeNavHost(initialRoute: String? = null) {
             hazeState = hazeState,
             glass = miniPlayerGlass,
         )
+
+        // The USB DAC's volume, shown by the volume keys while one plays in
+        // exclusive mode: Android's own panel has nothing to show then. Chrome,
+        // so the mini player's material, and a sibling of the haze source for
+        // the reason above. Above the modal layer, as the system's panel is.
+        // Desktop: the "volume keys" are Ctrl+Up / Ctrl+Down (volumeBy above).
+        tf.monochrome.desktop.ui.player.DacVolumePopup(
+            exclusive = playerViewModel.dacExclusive,
+            levelDb = playerViewModel.dacLevelDb,
+            keyPresses = playerViewModel.dacVolumeKeyPresses,
+            onLevelDb = playerViewModel::setDacLevelDb,
+            onMute = playerViewModel::setDacMuted,
+            hazeState = hazeState,
+            glass = miniPlayerGlass,
+            // The full player carries the bar itself.
+            suppressed = currentDestination?.route == Screen.NowPlaying.route,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
     }
 }
 
@@ -1203,6 +1269,62 @@ private val CHROME_GAP = 8.dp
 
 /** The mini player's height with its progress line — see MiniPlayer's metrics. */
 private val MINI_PLAYER_HEIGHT = 66.dp
+
+/** A Material 3 navigation bar's height above the system bar (its spec's 80dp container). */
+private val FLAT_NAV_BAR_HEIGHT = 80.dp
+
+/**
+ * The bottom chrome with liquid glass removed (Settings › System ›
+ * Performance): a Material 3 navigation bar across the bottom, with every tab
+ * in it, Search included, and the mini player docked over it. Both flat.
+ *
+ * The floating chrome without its glass is not a lighter version of itself:
+ * a pill and a round button with nothing under them, the page reading straight
+ * through (seen on device). This is the ordinary Android bar instead, which
+ * draws in one flat fill and stands on the system bar's inset itself. It does
+ * not fold on scroll; a flat bar folding to a glyph has nothing to show for it,
+ * and the mini player is always one row up.
+ */
+@Composable
+private fun FlatTabChrome(
+    tabs: List<AppTab>,
+    selected: AppTab,
+    onTab: (AppTab) -> Unit,
+    miniPlayer: (@Composable (Modifier) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        miniPlayer?.invoke(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .padding(bottom = CHROME_GAP),
+        )
+        NavigationBar {
+            (tabs + AppTab.DJ + AppTab.SEARCH).forEach { tab ->
+                val label = androidx.compose.ui.res.stringResource(tab.label)
+                NavigationBarItem(
+                    selected = tab == selected,
+                    onClick = { onTab(tab) },
+                    icon = {
+                        androidx.compose.material3.Icon(
+                            painter = androidx.compose.ui.res.painterResource(tab.glyph),
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = label,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    },
+                )
+            }
+        }
+    }
+}
 
 /**
  * The floating bottom chrome: the mini player over the tab pill, with Search
@@ -1282,6 +1404,15 @@ private fun TabChrome(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                // Desktop: the DJ decks, one tap from anywhere the bar is.
+                GlassTabBar(
+                    tabs = listOf(AppTab.DJ),
+                    selected = selected,
+                    onSelect = onTab,
+                    accent = accent,
+                    hazeState = hazeState,
+                    modifier = Modifier.width(TabBarHeight),
+                )
                 GlassTabBar(
                     tabs = listOf(AppTab.SEARCH),
                     selected = selected,

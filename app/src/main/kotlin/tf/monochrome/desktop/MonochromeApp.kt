@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.eq.OutputEqSwitcher
 import tf.monochrome.desktop.audio.usb.UsbExclusiveController
 import tf.monochrome.desktop.data.auth.SupabaseAuthManager
 import tf.monochrome.desktop.data.device.DeviceRegistry
@@ -27,13 +28,17 @@ import tf.monochrome.desktop.data.sync.LibraryRestoreCoordinator
 import tf.monochrome.desktop.data.sync.SettingsSyncCoordinator
 import tf.monochrome.desktop.debug.CrashLogger
 import tf.monochrome.desktop.debug.DebugLogCollector
+import tf.monochrome.desktop.dj.controller.ControllerManager
 import tf.monochrome.desktop.performance.DeviceCapabilities
 import tf.monochrome.desktop.performance.PerformanceProfile
+import tf.monochrome.desktop.platform.AppPaths
 import tf.monochrome.desktop.platform.AppScope
 import tf.monochrome.desktop.platform.NativeLibraries
+import tf.monochrome.desktop.platform.Toasts
 import tf.monochrome.desktop.player.PlaybackStateRepository
 import tf.monochrome.desktop.player.engine.AudioOutputController
 import tf.monochrome.desktop.player.engine.EngineController
+import tf.monochrome.desktop.res.Strings
 import tf.monochrome.desktop.visualizer.ProjectMAssetInstaller
 
 /**
@@ -92,6 +97,8 @@ class AppLifecycle @Inject constructor(
     private val audioOutput: AudioOutputController,
     private val scanRunner: ScanRunner,
     private val usbExclusiveController: UsbExclusiveController,
+    private val outputEqSwitcher: OutputEqSwitcher,
+    private val controllerManager: ControllerManager,
     // Providers: these are only warmed on a background coroutine, so building
     // them here would move their cost onto the startup path the warm-up clears.
     private val genreGraph: Provider<GenreGraphRepository>,
@@ -111,7 +118,16 @@ class AppLifecycle @Inject constructor(
         // Link the native libraries off the UI thread. Every loader goes
         // through NativeLibraries.load, so whichever class touches a library
         // first simply finds it already loaded.
-        appScope.launch { NativeLibraries.preload() }
+        appScope.launch {
+            NativeLibraries.preload()
+            // Desktop: Smart App Control or an antivirus can refuse an unsigned
+            // DLL; say which, rather than leave its features silently missing.
+            val failed = NativeLibraries.failures().keys
+            if (AppPaths.isWindows && failed.isNotEmpty()) {
+                val files = failed.joinToString { NativeLibraries.fileName(it) }
+                Toasts.post(Strings.get(R.string.desktop_native_library_blocked, files), BLOCKED_TOAST_MS)
+            }
+        }
         // Restore auth, then register this device against whoever is signed
         // in. The collector re-fires on sign-in and sign-out.
         appScope.launch {
@@ -136,6 +152,11 @@ class AppLifecycle @Inject constructor(
         // The Exclusive USB DAC toggle: claims a WinUSB-bound DAC and routes
         // the engine to it while on; without this the toggle does nothing.
         usbExclusiveController.start()
+        // Per-device AutoEQ: switch to the preset assigned to an output when it
+        // connects, with the app in the background too.
+        outputEqSwitcher.start()
+        // Desktop: DJ controllers, found as they are plugged in, from any screen.
+        controllerManager.start()
         appScope.launch {
             runCatching { preferencesProvider.get().retireRemovedKeys() }
         }
@@ -193,3 +214,6 @@ class AppLifecycle @Inject constructor(
         }
     }
 }
+
+/** Long enough to read: the message names the files and where to look. */
+private const val BLOCKED_TOAST_MS = 10_000L

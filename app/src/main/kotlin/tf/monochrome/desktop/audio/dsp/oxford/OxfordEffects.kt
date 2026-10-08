@@ -226,7 +226,8 @@ data class StereoPeak(val left: Float, val right: Float) {
 
 @Singleton
 class InflatorEffect @Inject constructor() {
-    private val handle = AtomicLong(InflatorNative.nativeCreate())
+    // Desktop: 0 when Windows blocked monochrome_dsp; every call below checks.
+    private val handle = AtomicLong(if (DspNativeLoader.isAvailable) InflatorNative.nativeCreate() else 0L)
 
     private val _state = MutableStateFlow(InflatorState())
     val state: StateFlow<InflatorState> = _state.asStateFlow()
@@ -316,7 +317,8 @@ class InflatorEffect @Inject constructor() {
 
 @Singleton
 class CompressorEffect @Inject constructor() {
-    private val handle = AtomicLong(CompressorNative.nativeCreate())
+    // Desktop: 0 when Windows blocked monochrome_dsp; every call below checks.
+    private val handle = AtomicLong(if (DspNativeLoader.isAvailable) CompressorNative.nativeCreate() else 0L)
 
     private val _state = MutableStateFlow(CompressorState())
     val state: StateFlow<CompressorState> = _state.asStateFlow()

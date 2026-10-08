@@ -135,6 +135,7 @@ fun MainPlayerRoute(
     playerViewModel: PlayerViewModel,
 ) {
     val currentTrack by playerViewModel.currentTrack.collectAsStateWithLifecycle()
+    val decodingEac3 by playerViewModel.decodingEac3.collectAsStateWithLifecycle()
     val miniGlass by playerViewModel.miniPlayerGlass.collectAsStateWithLifecycle()
     val currentUnified by playerViewModel.currentUnifiedTrack.collectAsStateWithLifecycle()
     val queue by playerViewModel.queue.collectAsStateWithLifecycle()
@@ -259,6 +260,7 @@ fun MainPlayerRoute(
 
     val lyricsFx by playerViewModel.lyricsFx.collectAsStateWithLifecycle()
     val playerGlass by playerViewModel.playerGlass.collectAsStateWithLifecycle()
+    val dacExclusive by playerViewModel.dacExclusive.collectAsStateWithLifecycle()
     val playerDynamicColor by playerViewModel.playerDynamicColor.collectAsStateWithLifecycle()
     val dynamicColors by playerViewModel.dynamicColors.collectAsStateWithLifecycle()
 
@@ -598,7 +600,30 @@ fun MainPlayerRoute(
     // is actually behind them.
     val backdropArt = rememberBackdropArt(currentTrack?.coverUrl, blurredBackground)
 
+    // The lyrics' light and shadow belong to the background, under the glass
+    // UI (LyricBackdropFx, in fxUnderlay below). The lyric view sends a copy
+    // of its letters here; the light is made here so the backdrop, the lyric
+    // glass and the shadow share one. The legacy layout has no fxUnderlay to
+    // draw it in, so it gets no backdrop and its lyric view draws both itself.
+    val lyricLetters = remember { LyricLetterCapture() }
+    val lyricsRayLight = if (!legacyPlayer && lyricsSlotWide) {
+        rememberLyricRayLight(
+            accent = blendedColors.vibrant,
+            pulse = beatPulse,
+            band = { lyricLetters.bandInRoot() },
+            lettersBox = { lyricLetters.boxInRoot },
+            fx = lyricsFx,
+            debugName = "player",
+        )
+    } else {
+        null
+    }
+    val lyricBackdrop = if (legacyPlayer) null else remember(lyricLetters, lyricsRayLight) {
+        LyricBackdrop(lyricLetters, lyricsRayLight)
+    }
+
     CompositionLocalProvider(
+        LocalLyricBackdrop provides lyricBackdrop,
         LocalLyricsFx provides lyricsFx,
         LocalLyricsSpectrum provides playerViewModel.spectrumAnalyzer,
         LocalLyricGlyphAnchors provides glyphAnchors.takeIf { lyricsBeatOn },
@@ -618,6 +643,26 @@ fun MainPlayerRoute(
     // visualizer are the same whichever layout is drawing around them. Hoisted
     // into slots so both the current and the legacy screen are handed one copy
     // instead of the hero being forked along with the chrome.
+    // The DAC's volume, only while one is claimed for exclusive output: Android's
+    // own volume never reaches it then. The level is collected inside the slot,
+    // so a drag recomposes the bar and not the player around it.
+    val dacVolumeSlot: (@Composable () -> Unit)? = if (dacExclusive) {
+        {
+            val level by playerViewModel.dacLevelDb.collectAsStateWithLifecycle()
+            val glass = LocalPlayerGlass.current
+            DacVolumeBar(
+                levelDb = level,
+                onLevelDb = playerViewModel::setDacLevelDb,
+                onMute = playerViewModel::setDacMuted,
+                // The seek bar's tint, so the two tubes are one material.
+                tint = if (glass.tintColor != 0) Color(glass.tintColor) else state.albumColors.vibrant,
+                contentColor = Color.White,
+                glassTube = !legacyPlayer,
+            )
+        }
+    } else {
+        null
+    }
     val topBarSlot: @Composable () -> Unit = {
         PlayerTopBar(
             speedLabel = state.speedLabel,
@@ -835,6 +880,9 @@ fun MainPlayerRoute(
                     style = effectiveStyle,
                     isFullscreen = isFullscreenActive,
                     track = currentTrack,
+                    // Atmos only when the track has an Atmos mix and that mix
+                    // is what is decoding: a failed Atmos lookup plays stereo.
+                    dolbyAtmos = currentTrack?.isDolbyAtmos == true && decodingEac3,
                     isPlaying = isPlaying,
                     progress = {
                         val d = durationState.value
@@ -1077,6 +1125,8 @@ fun MainPlayerRoute(
                 },
                 topBar = topBarSlot,
                 hero = heroSlot,
+                dacVolume = dacVolumeSlot,
+                lyricsMode = lyricsSlotWide,
             )
         } else {
             MainPlayerScreen(
@@ -1138,6 +1188,16 @@ fun MainPlayerRoute(
                             edgeHug = albumGlowOn,
                         )
                     }
+                    // The lyrics' shadow and god rays, over the glow: full
+                    // screen, so the shafts run on under the title, the
+                    // progress tube and the glass, which frost and bend them.
+                    // Faded with the lyrics.
+                    if (lyricBackdrop != null && lyricsSlotWide) {
+                        LyricBackdropFx(
+                            backdrop = lyricBackdrop,
+                            modifier = Modifier.graphicsLayer { alpha = lyricsProgress },
+                        )
+                    }
                 },
                 lyricsExpanded = lyricsExpanded,
                 // Slot stays the full-width rectangle for the whole dissolve, not just
@@ -1158,6 +1218,7 @@ fun MainPlayerRoute(
                     null
                 },
                 overlay = playerPanels,
+                dacVolume = dacVolumeSlot,
             )
         }
     }

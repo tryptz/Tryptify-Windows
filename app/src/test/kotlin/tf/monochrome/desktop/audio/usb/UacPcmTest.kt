@@ -119,6 +119,38 @@ class UacPcmTest {
         assertFalse(UacPcm.isLossless(C.ENCODING_PCM_FLOAT, 16))
     }
 
+    @Test
+    fun `the DAC level at unity and settled changes no sample`() {
+        // The sink takes pack() then, but the gain path must agree with it.
+        val cases = listOf(
+            Triple(shorts(edge16), C.ENCODING_PCM_16BIT, edge16.size) to (24 to 3),
+            Triple(floats(edge24.map { it / 8_388_608f }), C.ENCODING_PCM_FLOAT, edge24.size) to (24 to 4),
+        )
+        for ((src, dac) in cases) {
+            val (buffer, encoding, samples) = src
+            val (bits, subslot) = dac
+            val plain = pack(buffer, encoding, samples, bits, subslot)
+            val gained = packWithGain(buffer, encoding, samples, channels = 1, bits, subslot, 1f, 1f, 1f, 1f)
+            assertArrayEquals(readSigned(plain, subslot), readSigned(gained, subslot))
+        }
+    }
+
+    @Test
+    fun `a settled DAC level scales every sample, rounded`() {
+        val out = packWithGain(shorts(edge16), C.ENCODING_PCM_16BIT, edge16.size, channels = 1, 16, 2, 0.5f, 0.5f, 1f, 1f)
+        val expected = edge16.map { Math.round(it * 0.5).toInt() }.toIntArray()
+        assertArrayEquals(expected, readSigned(out, 2))
+    }
+
+    @Test
+    fun `a fade-in moves the gain once a frame, every channel together`() {
+        // Stereo, four frames of 1000 / 1000, from silence at a quarter per frame.
+        val src = shorts(intArrayOf(1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000))
+        val out = packWithGain(src, C.ENCODING_PCM_16BIT, 8, channels = 2, 16, 2, 0f, 1f, 0.25f, 1f)
+        assertArrayEquals(intArrayOf(0, 0, 250, 250, 500, 500, 750, 750), readSigned(out, 2))
+        assertEquals(1f, GainRamp.after(0f, 1f, 4, 0.25f, 1f), 0f)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `a subslot too narrow for the resolution is refused`() {
         pack(shorts(intArrayOf(1)), C.ENCODING_PCM_16BIT, 1, 24, 2)
@@ -127,6 +159,15 @@ class UacPcmTest {
     private fun pack(src: ByteBuffer, encoding: Int, samples: Int, validBits: Int, subslot: Int): ByteBuffer {
         val dst = ByteBuffer.allocateDirect(samples * subslot)
         UacPcm.pack(src, encoding, samples, validBits, subslot, dst)
+        return dst
+    }
+
+    private fun packWithGain(
+        src: ByteBuffer, encoding: Int, samples: Int, channels: Int, validBits: Int, subslot: Int,
+        start: Float, target: Float, rise: Float, fall: Float,
+    ): ByteBuffer {
+        val dst = ByteBuffer.allocateDirect(samples * subslot)
+        UacPcm.packWithGain(src, encoding, samples / channels, channels, validBits, subslot, dst, start, target, rise, fall)
         return dst
     }
 

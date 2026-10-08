@@ -12,6 +12,10 @@ import tf.monochrome.desktop.res.StringKey
  * between them are the listener's choice (see [NAV_BAR_CHOICES]). A tab is not
  * a page: Library is one tab over every Library section not pinned beside it,
  * and which section it opens is remembered (see [pageForTab]).
+ *
+ * Desktop: [DJ] is a round button of its own beside Search. It opens the DJ
+ * decks, a screen rather than a page, so it is never lit: the DJ screen hides
+ * the bar.
  */
 internal enum class AppTab(val label: StringKey, val glyph: DrawableResource, val pageId: String?) {
     HOME(R.string.tab_home, R.drawable.ic_glass_tab_home, null),
@@ -23,6 +27,7 @@ internal enum class AppTab(val label: StringKey, val glyph: DrawableResource, va
     DOWNLOADS(R.string.page_downloads, R.drawable.ic_glass_tab_downloads, "downloads"),
     LIBRARY(R.string.tab_library, R.drawable.ic_glass_tab_library, null),
     SEARCH(R.string.tab_search, R.drawable.ic_glass_tab_search, null),
+    DJ(R.string.dj_title, R.drawable.ic_glass_tab_dj, null),
 }
 
 /** The pages that can take one of the nav bar's two middle buttons. */

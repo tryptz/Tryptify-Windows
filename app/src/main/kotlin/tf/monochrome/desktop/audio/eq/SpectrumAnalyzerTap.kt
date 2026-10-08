@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.dsp.DspNativeLoader
 import tf.monochrome.desktop.performance.PerformanceProfile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -390,12 +391,15 @@ class SpectrumAnalyzerTap @Inject constructor(
             val ringLen = ringLocal.size
             var w = ringWrite
             var cn = 0
+            // Desktop: Wave Candy's scope lives in monochrome_dsp, which Windows
+            // can block; the spectrum's ring below is Kotlin and still fills.
+            val scope = DspNativeLoader.isAvailable
             if (encoding == C.ENCODING_PCM_FLOAT) {
                 if (channels == 1) {
                     for (i in 0 until numFrames) {
                         val m = inputBuffer.getFloat(startPos + i * 4)
                         scopeChunk[cn * 2] = m; scopeChunk[cn * 2 + 1] = m
-                        if (++cn == SCOPE_CHUNK) { WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
+                        if (++cn == SCOPE_CHUNK) { if (scope) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
                         ringLocal[w] = m
                         w++
                         if (w >= ringLen) w = 0
@@ -408,7 +412,7 @@ class SpectrumAnalyzerTap @Inject constructor(
                         val l = inputBuffer.getFloat(off)
                         val r = inputBuffer.getFloat(off + 4)
                         scopeChunk[cn * 2] = l; scopeChunk[cn * 2 + 1] = r
-                        if (++cn == SCOPE_CHUNK) { WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
+                        if (++cn == SCOPE_CHUNK) { if (scope) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
                         ringLocal[w] = (l + r) * 0.5f
                         w++
                         if (w >= ringLen) w = 0
@@ -419,7 +423,7 @@ class SpectrumAnalyzerTap @Inject constructor(
                     for (i in 0 until numFrames) {
                         val m = inputBuffer.getShort(startPos + i * 2).toFloat() / 32768f
                         scopeChunk[cn * 2] = m; scopeChunk[cn * 2 + 1] = m
-                        if (++cn == SCOPE_CHUNK) { WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
+                        if (++cn == SCOPE_CHUNK) { if (scope) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
                         ringLocal[w] = m
                         w++
                         if (w >= ringLen) w = 0
@@ -430,7 +434,7 @@ class SpectrumAnalyzerTap @Inject constructor(
                         val l = inputBuffer.getShort(off).toFloat() / 32768f
                         val r = inputBuffer.getShort(off + 2).toFloat() / 32768f
                         scopeChunk[cn * 2] = l; scopeChunk[cn * 2 + 1] = r
-                        if (++cn == SCOPE_CHUNK) { WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
+                        if (++cn == SCOPE_CHUNK) { if (scope) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate); cn = 0 }
                         ringLocal[w] = (l + r) * 0.5f
                         w++
                         if (w >= ringLen) w = 0
@@ -438,7 +442,7 @@ class SpectrumAnalyzerTap @Inject constructor(
                 }
             }
             ringWrite = w
-            if (cn > 0) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate)
+            if (cn > 0 && scope) WaveScopeNative.nativePush(scopeChunk, cn, sampleRate)
         }
 
         if (LoudnessNative.active) {

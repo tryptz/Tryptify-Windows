@@ -15,7 +15,7 @@ package tf.monochrome.desktop.player
  *  - `http` / `https` — a signed or time-limited stream URL (TIDAL, Apple).
  *    Queuing one ahead is exactly the staleness the one-track-at-a-time design
  *    was built to avoid, so these are refused.
- *  - `data` — an inline DASH manifest (StreamResolver.inlineDashUri), whose
+ *  - `data` — an inline DASH manifest (StreamResolver.kt's dashManifestUri), whose
  *    segment URLs expire like any TIDAL stream; meaningless to pre-queue.
  *
  * Refusing a scheme costs nothing but the gap: playback falls back to the

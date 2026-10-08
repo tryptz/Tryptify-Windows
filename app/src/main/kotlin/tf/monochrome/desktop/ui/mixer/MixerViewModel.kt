@@ -184,6 +184,11 @@ class MixerViewModel @Inject constructor(
     fun setBusGain(busIndex: Int, gainDb: Float) = dspManager.setBusGain(busIndex, gainDb)
     fun setBusPan(busIndex: Int, pan: Float) = dspManager.setBusPan(busIndex, pan)
     fun setBusInputEnabled(busIndex: Int, enabled: Boolean) = dspManager.setBusInputEnabled(busIndex, enabled)
+    /** Desktop: the player or deck B as the bus's input. */
+    fun setBusInputSource(busIndex: Int, source: Int) = dspManager.setBusInputSource(busIndex, source)
+
+    /** Desktop: buses 1–4 routed back to the DJ console; see [DspEngineManager.applyConsoleLayout]. */
+    fun applyConsoleLayout() = dspManager.applyConsoleLayout()
 
     fun toggleMute(busIndex: Int) {
         val bus = buses.value.getOrNull(busIndex) ?: return

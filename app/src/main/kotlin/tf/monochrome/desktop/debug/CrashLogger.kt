@@ -3,6 +3,9 @@ package tf.monochrome.desktop.debug
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import tf.monochrome.desktop.BuildConfig
 import java.io.File
 import java.io.PrintWriter
@@ -38,6 +41,17 @@ import javax.inject.Singleton
  * secondary exception and still forward the original throwable to the prior
  * handler — losing the original report because of a logging side effect would
  * be worse than losing the log.
+ *
+ * Reports can be switched off in Settings › System › Diagnostics
+ * ([saveReports]). The switch is a marker file rather than DataStore: the
+ * handler reads it while a thread is dying, synchronously, and DataStore can
+ * only be read by suspending. (Android keeps it in SharedPreferences for the
+ * same reason.)
+ *
+ * Desktop: no report of the previous process's native crash or ANR. Android
+ * asks ActivityManager why the last process ended (ApplicationExitInfo);
+ * Windows keeps no such record for an app, and a JVM killed by a native
+ * crash leaves an hs_err_pid file in its working folder instead.
  */
 @Singleton
 class CrashLogger @Inject constructor(
@@ -46,6 +60,27 @@ class CrashLogger @Inject constructor(
 ) {
     @Volatile private var installed = false
     private val dumpsThisRun = AtomicInteger()
+
+    // Present means off. Read on first use, off the startup path: the
+    // handler or the Settings screen, whichever comes first.
+    private val reportsOffMarker: File get() = File(context.filesDir, REPORTS_OFF_MARKER)
+
+    private val _saveReports by lazy { MutableStateFlow(!reportsOffMarker.exists()) }
+
+    /** Whether crash reports are written to the logs folder. On unless switched off. */
+    val saveReports: StateFlow<Boolean> get() = _saveReports.asStateFlow()
+
+    fun setSaveReports(enabled: Boolean) {
+        _saveReports.value = enabled
+        runCatching {
+            if (enabled) {
+                reportsOffMarker.delete()
+            } else {
+                reportsOffMarker.parentFile?.mkdirs()
+                reportsOffMarker.createNewFile()
+            }
+        }.onFailure { Log.w(TAG, "Could not store the crash report switch", it) }
+    }
 
     /** Where the dumps go; a settings screen can reveal it in Explorer. */
     val logsDir: File get() = context.paths.logsDir
@@ -58,7 +93,9 @@ class CrashLogger @Inject constructor(
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
-                if (dumpsThisRun.incrementAndGet() <= MAX_DUMPS_PER_RUN) writeCrashDump(thread, throwable)
+                if (_saveReports.value && dumpsThisRun.incrementAndGet() <= MAX_DUMPS_PER_RUN) {
+                    writeCrashDump(thread, throwable)
+                }
             } catch (t: Throwable) {
                 Log.w(TAG, "Crash dump failed", t)
             }
@@ -136,5 +173,6 @@ class CrashLogger @Inject constructor(
         private const val FILE_PREFIX = "tryptify-crash-"
         private const val MAX_DUMPS_PER_RUN = 20
         private const val KEEP_DUMPS = 50
+        private const val REPORTS_OFF_MARKER = "crash_reports_off"
     }
 }

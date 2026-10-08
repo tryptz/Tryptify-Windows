@@ -156,6 +156,7 @@ val SettingsSearchIndex: List<SettingsEntry> = listOf(
     // ── Audio ───────────────────────────────────────────────────────────
     entry("Gapless playback", R.string.settings_gapless_playback, "Audio", listOf("gap", "continuous", "album")),
     entry("Crossfade", R.string.search_crossfade, "Audio", listOf("fade", "transition", "blend")),
+    // Desktop: no "Play alongside other apps"; see SettingsScreen.
     entry("Playback speed", R.string.settings_playback_speed, "Audio", listOf("tempo", "faster", "slower", "pitch")),
     entry("Multichannel downmix", R.string.settings_downmix_multichannel_to_stereo, "Audio", listOf("surround", "5.1", "atmos", "stereo")),
     entry("Spatial renderer", R.string.settings_atmos_renderer_configuration, "Audio", listOf("atmos", "hrtf", "binaural", "spatial"))
@@ -166,7 +167,10 @@ val SettingsSearchIndex: List<SettingsEntry> = listOf(
         .at(SettingsDestination.Route("crossfeed")),
     entry("Mixer", R.string.status_mixer, "Audio", listOf("dsp", "bus", "plugin", "insert", "channel"))
         .at(SettingsDestination.Route("mixer")),
-    entry("Streaming quality", R.string.settings_streaming_quality, "Audio", listOf("bitrate", "wifi", "cellular", "data")),
+    entry("Streaming quality", R.string.settings_streaming_quality, "Audio", listOf("bitrate", "wifi", "cellular", "data", "tidal", "qobuz", "deezer", "aac", "mp3", "flac", "hi-res", "dolby", "atmos")),
+    // The switch itself, so "atmos" lands on it rather than on the header,
+    // whose text reads "Download quality" while the tab shows downloads.
+    entry("TIDAL Dolby Atmos", R.string.atmos_tidal_dolby_atmos, "Audio", listOf("atmos", "dolby", "spatial", "e-ac-3", "joc", "surround")),
     // Desktop: where the sound goes. The mode and the device are separate rows,
     // and "usb", "dac" and "bit perfect" belong to both of the bit-perfect
     // paths, so they are keywords of the output rows and of the libusb one.
@@ -217,7 +221,7 @@ val SettingsSearchIndex: List<SettingsEntry> = listOf(
     entry("Titles from file names", R.string.settings_titles_from_file_names, "Library", listOf("filename", "file name", "title", "tags", "rename", "local")),
 
     // ── Downloads ───────────────────────────────────────────────────────
-    entry("Download quality", R.string.settings_download_quality, "Downloads", listOf("bitrate", "flac", "offline")),
+    entry("Download quality", R.string.settings_download_quality, "Downloads", listOf("bitrate", "flac", "offline", "tidal", "qobuz", "deezer", "aac", "mp3", "hi-res")),
     entry("Download lyrics", R.string.settings_download_lyrics, "Downloads", listOf("offline", "synced")),
     entry("Auto-download liked", R.string.settings_auto_download_liked_songs, "Downloads", listOf("offline", "favourites", "hearted")),
     entry("Download centre", R.string.search_download_centre, "Downloads", listOf("queue", "progress", "offline"))
@@ -248,6 +252,7 @@ val SettingsSearchIndex: List<SettingsEntry> = listOf(
     ),
     entry("Debug log", R.string.settings_view_debug_log, "System", listOf("logs", "diagnostics", "report", "crash"))
         .at(SettingsDestination.Route("debug_log")),
+    entry("Save crash reports", R.string.settings_save_crash_reports, "System", listOf("crash", "anr", "freeze", "diagnostics", "report", "privacy", "downloads", "log")),
     entry("Backup and restore", R.string.settings_backup_restore, "System", listOf("export", "import", "settings", "transfer")),
     entry("Clear cache", R.string.settings_clear_cache, "System", listOf("storage", "space", "images")),
     entry("Check for updates", R.string.settings_check_for_updates, "System", listOf("update", "version", "github", "release", "newer")),
