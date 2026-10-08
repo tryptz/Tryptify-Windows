@@ -23,6 +23,9 @@ class LocalTrackArtistTest {
         bitRate = 900,
         channels = 2,
         durationSeconds = 200,
+        // A cached cover, so the mapping never builds a file Uri: on Android
+        // that is a framework stub, which throws in a plain JVM test.
+        artworkCacheKey = "cover",
     )
 
     @Test
