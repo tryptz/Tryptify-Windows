@@ -126,6 +126,70 @@ internal object UacPcm {
         }
     }
 
+    /**
+     * [pack] with the DAC level applied: the gain moves from [startGain]
+     * toward [targetGain] a frame at a time ([GainRamp]), one gain for every
+     * channel of a frame. Integers are scaled at the DAC's own resolution and
+     * rounded, not truncated, which would bias every sample toward zero; in
+     * double, which holds a 24-bit sample exactly. At unity, settled, use
+     * [pack]: that path is bit-perfect.
+     */
+    fun packWithGain(
+        src: ByteBuffer,
+        encoding: Int,
+        frames: Int,
+        channels: Int,
+        validBits: Int,
+        subslotBytes: Int,
+        dst: ByteBuffer,
+        startGain: Float,
+        targetGain: Float,
+        rise: Float,
+        fall: Float,
+    ) {
+        require(subslotBytes in 1..4 && subslotBytes * 8 >= validBits) {
+            "a $subslotBytes-byte subslot cannot carry $validBits bits"
+        }
+        src.order(ByteOrder.nativeOrder())
+        val base = src.position()
+        val bits = validBits.coerceIn(8, 32)
+        val down = 32 - bits
+        val max = (1L shl (bits - 1)) - 1
+        val min = -(1L shl (bits - 1))
+        val shift = 32 - 8 * subslotBytes
+        var gain = startGain
+        var channel = 0
+        var frame = 0
+        var o = 0
+        for (i in 0 until frames * channels) {
+            val container = when (encoding) {
+                C.ENCODING_PCM_FLOAT -> floatToContainer(src.getFloat(base + 4 * i) * gain, validBits)
+                else -> {
+                    val full = when (encoding) {
+                        C.ENCODING_PCM_16BIT -> src.getShort(base + 2 * i).toInt() shl 16
+                        C.ENCODING_PCM_24BIT -> {
+                            val p = base + 3 * i
+                            ((src.get(p).toInt() and 0xFF) or
+                                ((src.get(p + 1).toInt() and 0xFF) shl 8) or
+                                (src.get(p + 2).toInt() shl 16)) shl 8
+                        }
+                        C.ENCODING_PCM_32BIT -> src.getInt(base + 4 * i)
+                        else -> throw IllegalArgumentException("unsupported encoding $encoding")
+                    }
+                    // The sample at the DAC's resolution, scaled there.
+                    val q = (full shr down).toLong()
+                    (Math.round(q * gain.toDouble()).coerceIn(min, max) shl down).toInt()
+                }
+            }
+            o = putSubslot(dst, o, container, shift, subslotBytes)
+            if (++channel == channels) {
+                channel = 0
+                frame++
+                gain = GainRamp.after(startGain, targetGain, frame, rise, fall)
+            }
+        }
+    }
+
     /** Writes the top [bytes] bytes of [container] at [at], little-endian; returns the next index. */
     private fun putSubslot(dst: ByteBuffer, at: Int, container: Int, shift: Int, bytes: Int): Int {
         val v = container shr shift

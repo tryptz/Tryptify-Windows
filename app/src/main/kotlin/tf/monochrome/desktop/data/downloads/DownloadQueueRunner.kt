@@ -192,8 +192,9 @@ class DownloadQueueRunner @Inject constructor(
     }
 
     private suspend fun run(item: DownloadItem) {
+        var reason: String? = null
         val outcome = try {
-            downloader.download(item) { progress ->
+            downloader.download(item, onFailure = { reason = it }) { progress ->
                 queue.setProgress(item.trackId, progress)
                 // Refreshing the notification per progress callback would post
                 // hundreds of updates a second; the batch boundary is enough.
@@ -213,15 +214,14 @@ class DownloadQueueRunner @Inject constructor(
             TrackDownloader.Outcome.RETRYABLE
         }
         running.remove(item.trackId)
-        // TrackDownloader's catch-all also sees a CancellationException and
-        // answers RETRYABLE. A transfer that was cancelled has no verdict to
-        // record — the user dropped it, stop() emptied the queue, or the app
-        // is closing — and charging it an attempt would be wrong.
+        // A transfer that was cancelled has no verdict to record — the user
+        // dropped it, stop() emptied the queue, or the app is closing — and
+        // charging it an attempt would be wrong.
         if (!currentCoroutineContext().isActive) return
         when (outcome) {
             TrackDownloader.Outcome.SUCCESS -> queue.complete(item.trackId)
             TrackDownloader.Outcome.RETRYABLE -> queue.fail(item.trackId, retryable = true)
-            TrackDownloader.Outcome.PERMANENT -> queue.fail(item.trackId, retryable = false)
+            TrackDownloader.Outcome.PERMANENT -> queue.fail(item.trackId, retryable = false, reason = reason)
         }
     }
 

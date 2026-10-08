@@ -22,6 +22,8 @@ import kotlinx.serialization.json.Json
 import tf.monochrome.desktop.BuildConfig
 import tf.monochrome.desktop.audio.stretch.PitchEngine
 import tf.monochrome.desktop.audio.stretch.PitchQuality
+import tf.monochrome.desktop.data.api.ApiService
+import tf.monochrome.desktop.data.api.ServiceQuality
 import tf.monochrome.desktop.domain.model.AudioQuality
 import tf.monochrome.desktop.domain.model.LyricsFxSettings
 import tf.monochrome.desktop.domain.model.NowPlayingViewMode
@@ -177,6 +179,7 @@ class PreferencesManager @Inject constructor(
         private val APPLE_WRAPPER_SECRET = stringPreferencesKey("apple_wrapper_secret")
         private val APPLE_ATMOS_PREFERRED = booleanPreferencesKey("apple_atmos_preferred")
         private val TIDAL_ATMOS_PREFERRED = booleanPreferencesKey("tidal_atmos_preferred")
+        private val TIDAL_DOWNLOAD_ATMOS = booleanPreferencesKey("tidal_download_atmos")
         private val APPLE_QUALITY = stringPreferencesKey("apple_quality")
         private val DEV_MODE_ENABLED = booleanPreferencesKey("dev_mode_enabled")
         private val API_SERVERS = stringPreferencesKey("api_servers")
@@ -356,6 +359,9 @@ class PreferencesManager @Inject constructor(
         // list persists even while the switch is off, so toggling stereo off
         // and back on is non-destructive.
         private val EQ_BANDS_R_JSON = stringPreferencesKey("eq_bands_r_json")
+        // Per-device AutoEQ: output key -> preset id, and the named devices seen.
+        private val EQ_OUTPUT_ASSIGNMENTS_JSON = stringPreferencesKey("eq_output_assignments_json")
+        private val EQ_KNOWN_OUTPUTS_JSON = stringPreferencesKey("eq_known_outputs_json")
         private val EQ_STEREO_MODE = booleanPreferencesKey("eq_stereo_mode")
         private val EQ_MEASUREMENT_R_JSON = stringPreferencesKey("eq_measurement_r_json")
         private val EQ_CUSTOM_TARGETS_JSON = stringPreferencesKey("eq_custom_targets_json")
@@ -408,6 +414,7 @@ class PreferencesManager @Inject constructor(
         private val MULTICHANNEL_DOWNMIX_ENABLED =
             booleanPreferencesKey("multichannel_downmix_enabled")
         private val HIRES_HAL_OUTPUT_ENABLED = booleanPreferencesKey("hires_hal_output_enabled")
+        private val IGNORE_AUDIO_FOCUS = booleanPreferencesKey("ignore_audio_focus")
         // Powers of two mirroring the user-facing chip row in Settings.
         // Native engine's static MAX_BLOCK_SIZE caps the largest entry; bump
         // both together if you add another step.
@@ -434,6 +441,8 @@ class PreferencesManager @Inject constructor(
         private val SONG_SORT = stringPreferencesKey("library_song_sort")
         private val ALBUM_SORT = stringPreferencesKey("library_album_sort")
         private val ARTIST_SORT = stringPreferencesKey("library_artist_sort")
+        private val FOLDER_SORT = stringPreferencesKey("library_folder_sort")
+        private val LEGACY_BYPASS_VOLUME_RESET = booleanPreferencesKey("legacy_bypass_volume_reset")
 
         // Car mode
         private val CAR_MODE_BAND_COUNT = intPreferencesKey("car_mode_band_count")
@@ -462,6 +471,15 @@ class PreferencesManager @Inject constructor(
         // the legacy lyrics keys superseded by LYRICS_FX_JSON) never leaves the
         // device — and a newly added key defaults to "not synced" until it's
         // deliberately added here.
+        // Quality, one key per service and setting: quality_tidal_wifi,
+        // quality_qobuz_download, ... (see ServiceQuality).
+        private fun serviceQualityKey(service: ApiService, setting: ServiceQuality.Setting) =
+            stringPreferencesKey("quality_${service.name.lowercase()}_${setting.name.lowercase()}")
+        private val SERVICE_QUALITY_KEYS: List<Preferences.Key<String>> =
+            ServiceQuality.services.flatMap { service ->
+                ServiceQuality.Setting.entries.map { serviceQualityKey(service, it) }
+            }
+
         val SETTINGS_SYNC_KEYS: Set<Preferences.Key<*>> = setOf(
             WIFI_QUALITY, CELLULAR_QUALITY,
             THEME, THEME_PAPER, DYNAMIC_COLORS,
@@ -502,7 +520,7 @@ class PreferencesManager @Inject constructor(
             RADIO_WEIGHT_AVOID_RECENTLY_PLAYED, RADIO_WEIGHT_DISCOVERY_DISTANCE,
             DISCOVERY_HEARTED_GENRES,
             DISCOVERY_SORT,
-        ) +
+        ) + SERVICE_QUALITY_KEYS +
             // Folded in from the registry rather than restated here, so the two
             // lists cannot disagree: a flag is on the allow-list because it
             // declares FlagSync.ACCOUNT, and a device-local one cannot arrive by
@@ -513,21 +531,25 @@ class PreferencesManager @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    // Audio Quality
-    val wifiQuality: Flow<AudioQuality> = dataStore.data.map { prefs ->
-        prefs[WIFI_QUALITY]?.let { AudioQuality.valueOf(it) } ?: AudioQuality.HI_RES
-    }
+    // Audio Quality — per service. Each catalogue streams and downloads in its
+    // own setting, in its own terms (see ServiceQuality). A setting never
+    // chosen falls back to the old single one for that slot (wifi_quality,
+    // cellular_quality, download_quality), so an upgrade starts every service
+    // where the one global choice was, snapped to the nearest tier it offers.
+    fun quality(service: ApiService, setting: ServiceQuality.Setting): Flow<AudioQuality> =
+        dataStore.data.map { prefs ->
+            val legacy = when (setting) {
+                ServiceQuality.Setting.WIFI -> WIFI_QUALITY
+                ServiceQuality.Setting.CELLULAR -> CELLULAR_QUALITY
+                ServiceQuality.Setting.DOWNLOAD -> DOWNLOAD_QUALITY
+            }
+            val stored = (prefs[serviceQualityKey(service, setting)] ?: prefs[legacy])
+                ?.let { runCatching { AudioQuality.valueOf(it) }.getOrNull() }
+            ServiceQuality.coerce(service, setting, stored ?: ServiceQuality.default(setting))
+        }.distinctUntilChanged()
 
-    val cellularQuality: Flow<AudioQuality> = dataStore.data.map { prefs ->
-        prefs[CELLULAR_QUALITY]?.let { AudioQuality.valueOf(it) } ?: AudioQuality.HIGH
-    }
-
-    suspend fun setWifiQuality(quality: AudioQuality) {
-        dataStore.edit { it[WIFI_QUALITY] = quality.name }
-    }
-
-    suspend fun setCellularQuality(quality: AudioQuality) {
-        dataStore.edit { it[CELLULAR_QUALITY] = quality.name }
+    suspend fun setQuality(service: ApiService, setting: ServiceQuality.Setting, quality: AudioQuality) {
+        dataStore.edit { it[serviceQualityKey(service, setting)] = ServiceQuality.coerce(service, setting, quality).name }
     }
 
     // Player state
@@ -553,6 +575,21 @@ class PreferencesManager @Inject constructor(
 
     suspend fun setVolume(volume: Double) {
         dataStore.edit { it[VOLUME] = volume }
+    }
+
+    /**
+     * Once per install: the player volume back to full. Until the exclusive
+     * USB path got a volume of its own, its volume keys wrote into this
+     * preference, which the normal output also plays at, and nothing in the
+     * app can raise it again — so a session on a DAC left everything quiet.
+     */
+    suspend fun resetLegacyBypassVolumeOnce() {
+        dataStore.edit {
+            if (it[LEGACY_BYPASS_VOLUME_RESET] != true) {
+                it[VOLUME] = 1.0
+                it[LEGACY_BYPASS_VOLUME_RESET] = true
+            }
+        }
     }
 
     // Theme
@@ -856,6 +893,23 @@ class PreferencesManager @Inject constructor(
     }
 
     /**
+     * TIDAL's download quality is "Dolby Atmos": a track with an Atmos mix
+     * downloads that mix (the E-AC-3 JOC .m4a), the rest in TIDAL's stereo
+     * download tier. Off until chosen. It does not follow the TIDAL Dolby
+     * Atmos playback switch: downloads never asked for Atmos before this
+     * setting existed, and inheriting the switch turned Atmos downloads on
+     * by themselves on upgrade, where a server without the Atmos route then
+     * failed every track TIDAL lists as Atmos.
+     */
+    val tidalDownloadAtmos: Flow<Boolean> = dataStore.data
+        .map { it[TIDAL_DOWNLOAD_ATMOS] ?: false }
+        .distinctUntilChanged()
+
+    suspend fun setTidalDownloadAtmos(enabled: Boolean) {
+        dataStore.edit { it[TIDAL_DOWNLOAD_ATMOS] = enabled }
+    }
+
+    /**
      * Format requested from the Apple wrapper, independent of the Qobuz/TIDAL
      * [downloadQuality] tier — Apple's ladder is its own (`hires-lossless`,
      * `alac`, `aac`) and doesn't map cleanly onto HI_RES/LOSSLESS/HIGH.
@@ -1092,12 +1146,9 @@ class PreferencesManager @Inject constructor(
     }
 
     // --- Downloads ---
-    val downloadQuality: Flow<AudioQuality> = dataStore.data.map { prefs ->
-        prefs[DOWNLOAD_QUALITY]?.let { AudioQuality.valueOf(it) } ?: AudioQuality.HI_RES
-    }
-    suspend fun setDownloadQuality(quality: AudioQuality) {
-        dataStore.edit { it[DOWNLOAD_QUALITY] = quality.name }
-    }
+    /** The quality [service]'s tracks download in (see [quality]). */
+    fun downloadQuality(service: ApiService): Flow<AudioQuality> =
+        quality(service, ServiceQuality.Setting.DOWNLOAD)
 
     val downloadFolderUri: Flow<String?> = dataStore.data.map { it[DOWNLOAD_FOLDER_URI] }
     suspend fun setDownloadFolderUri(uri: String?) {
@@ -1666,6 +1717,79 @@ class PreferencesManager @Inject constructor(
         dataStore.edit { it[EQ_STEREO_MODE] = enabled }
     }
 
+    // --- Per-device AutoEQ (see OutputEq) ---
+
+    /** Which preset each output plays through, by OutputId.key. */
+    val eqOutputAssignments: Flow<Map<String, String>> = dataStore.data
+        .map { it[EQ_OUTPUT_ASSIGNMENTS_JSON] }
+        .distinctUntilChanged()
+        .map(::decodeAssignments)
+
+    /** Changes the assignments in one edit, so two quick changes cannot drop one. */
+    suspend fun updateEqOutputAssignments(transform: (Map<String, String>) -> Map<String, String>) {
+        dataStore.edit {
+            val now = decodeAssignments(it[EQ_OUTPUT_ASSIGNMENTS_JSON])
+            val next = transform(now)
+            if (next != now) it[EQ_OUTPUT_ASSIGNMENTS_JSON] = json.encodeToString(next)
+        }
+    }
+
+    /** The named devices seen, most recent first, for the assign sheet. */
+    val eqKnownOutputs: Flow<List<tf.monochrome.desktop.audio.eq.OutputId>> = dataStore.data
+        .map { it[EQ_KNOWN_OUTPUTS_JSON] }
+        .distinctUntilChanged()
+        .map(::decodeKnownOutputs)
+
+    suspend fun rememberEqOutput(seen: tf.monochrome.desktop.audio.eq.OutputId) {
+        dataStore.edit {
+            val known = decodeKnownOutputs(it[EQ_KNOWN_OUTPUTS_JSON])
+            val next = tf.monochrome.desktop.audio.eq.OutputEq.remember(known, seen)
+            if (next != known) it[EQ_KNOWN_OUTPUTS_JSON] = json.encodeToString(next)
+        }
+    }
+
+    private fun decodeAssignments(raw: String?): Map<String, String> =
+        raw?.let { runCatching { json.decodeFromString<Map<String, String>>(it) }.getOrNull() } ?: emptyMap()
+
+    private fun decodeKnownOutputs(raw: String?): List<tf.monochrome.desktop.audio.eq.OutputId> =
+        raw?.let {
+            runCatching { json.decodeFromString<List<tf.monochrome.desktop.audio.eq.OutputId>>(it) }.getOrNull()
+        } ?: emptyList()
+
+    /**
+     * Makes [preset] the AutoEQ and switches the EQ on, in one write: the keys
+     * EqViewModel.loadPreset writes, for the per-device switch, which runs with
+     * no EQ screen open. One edit, so the service never rebuilds its filters
+     * from half a preset.
+     *
+     * The right ear as loadPreset does it: a stereo preset brings its own and
+     * turns 2-channel mode on; a mono one drives both ears only while 2-channel
+     * mode is on and has a right ear to replace. With it off, the stored right
+     * ear is a calibration kept for later, not to be overwritten.
+     */
+    suspend fun applyEqPreset(preset: tf.monochrome.desktop.domain.model.EqPreset) {
+        val bandsSerializer = kotlinx.serialization.builtins.ListSerializer(
+            tf.monochrome.desktop.domain.model.EqBand.serializer(),
+        )
+        val bands = json.encodeToString(bandsSerializer, preset.bands)
+        val presetR = preset.bandsR
+        dataStore.edit {
+            if (presetR != null) {
+                it[EQ_BANDS_R_JSON] = json.encodeToString(bandsSerializer, presetR)
+                it[EQ_STEREO_MODE] = true
+            } else if (it[EQ_STEREO_MODE] == true) {
+                val storedR = it[EQ_BANDS_R_JSON]
+                    ?.let { raw -> runCatching { json.decodeFromString(bandsSerializer, raw) }.getOrNull() }
+                if (!storedR.isNullOrEmpty()) it[EQ_BANDS_R_JSON] = bands
+            }
+            it[EQ_ACTIVE_PRESET_ID] = preset.id
+            it[EQ_PREAMP] = preset.preamp.toDouble()
+            it[EQ_TARGET_ID] = preset.targetId
+            it[EQ_BANDS_JSON] = bands
+            it[EQ_ENABLED] = true
+        }
+    }
+
     val eqCustomTargetsJson: Flow<String> = dataStore.data.map { it[EQ_CUSTOM_TARGETS_JSON] ?: "[]" }
     suspend fun setEqCustomTargets(json: String) {
         dataStore.edit { it[EQ_CUSTOM_TARGETS_JSON] = json }
@@ -1835,6 +1959,22 @@ class PreferencesManager @Inject constructor(
     }
 
     /**
+     * Play without asking Android for audio focus, so another app's sound —
+     * a game, a video — plays alongside instead of pausing this one. Default
+     * off: then focus is requested as usual and another app taking it pauses
+     * or ducks playback.
+     */
+    // distinctUntilChanged: DataStore emits on every write to any key (the
+    // download queue rewrites itself per track), and the service applies each
+    // emission to the player. Re-applied during a call, focus was asked for
+    // again, refused, and playback stayed paused once the call ended.
+    val ignoreAudioFocus: Flow<Boolean> =
+        dataStore.data.map { it[IGNORE_AUDIO_FOCUS] ?: false }.distinctUntilChanged()
+    suspend fun setIgnoreAudioFocus(enabled: Boolean) {
+        dataStore.edit { it[IGNORE_AUDIO_FOCUS] = enabled }
+    }
+
+    /**
      * Fold multichannel (5.1/7.1/16 ch) tracks down to stereo (fixed gain
      * matrix) at the head of the AudioProcessor chain. Default true — the DSP/EQ
      * stages are stereo-only. When false, multichannel PCM passes through
@@ -1994,6 +2134,10 @@ class PreferencesManager @Inject constructor(
     suspend fun setSongSort(value: String) { dataStore.edit { it[SONG_SORT] = value } }
     suspend fun setAlbumSort(value: String) { dataStore.edit { it[ALBUM_SORT] = value } }
     suspend fun setArtistSort(value: String) { dataStore.edit { it[ARTIST_SORT] = value } }
+
+    /** The one song-and-folder sort every folder screen uses (FolderSort.encode). */
+    val folderSort: Flow<String?> = dataStore.data.map { it[FOLDER_SORT] }.distinctUntilChanged()
+    suspend fun setFolderSort(value: String) { dataStore.edit { it[FOLDER_SORT] = value } }
 
     // --- Car mode ---
     val carModeBandCount: Flow<Int> = dataStore.data.map { it[CAR_MODE_BAND_COUNT] ?: 10 }

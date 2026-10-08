@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import tf.monochrome.desktop.audio.eq.OutputEqSwitcher
 import tf.monochrome.desktop.audio.usb.UsbExclusiveController
 import tf.monochrome.desktop.data.auth.SupabaseAuthManager
 import tf.monochrome.desktop.data.device.DeviceRegistry
@@ -96,6 +97,7 @@ class AppLifecycle @Inject constructor(
     private val audioOutput: AudioOutputController,
     private val scanRunner: ScanRunner,
     private val usbExclusiveController: UsbExclusiveController,
+    private val outputEqSwitcher: OutputEqSwitcher,
     private val controllerManager: ControllerManager,
     // Providers: these are only warmed on a background coroutine, so building
     // them here would move their cost onto the startup path the warm-up clears.
@@ -150,6 +152,9 @@ class AppLifecycle @Inject constructor(
         // The Exclusive USB DAC toggle: claims a WinUSB-bound DAC and routes
         // the engine to it while on; without this the toggle does nothing.
         usbExclusiveController.start()
+        // Per-device AutoEQ: switch to the preset assigned to an output when it
+        // connects, with the app in the background too.
+        outputEqSwitcher.start()
         // Desktop: DJ controllers, found as they are plugged in, from any screen.
         controllerManager.start()
         appScope.launch {

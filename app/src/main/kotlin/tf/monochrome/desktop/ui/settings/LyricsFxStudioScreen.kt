@@ -73,6 +73,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import tf.monochrome.desktop.ui.components.GlassPanel
+import tf.monochrome.desktop.ui.components.GlassSearchBar
+import tf.monochrome.desktop.ui.navigation.AppTab
+import tf.monochrome.desktop.ui.navigation.GlassTabBar
+import tf.monochrome.desktop.ui.navigation.TabBarHeight
+import tf.monochrome.desktop.ui.theme.DynamicColorScope
+import tf.monochrome.desktop.ui.theme.glassTint
+import dev.chrisbanes.haze.HazeState
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.style.TextOverflow
 import dev.chrisbanes.haze.hazeSource
 import tf.monochrome.desktop.ui.player.VisualizerPresetPanel
 import dev.chrisbanes.haze.rememberHazeState
@@ -128,6 +139,7 @@ import tf.monochrome.desktop.ui.player.PlayerDesignTokens
 import tf.monochrome.desktop.ui.player.TransportIcon
 import tf.monochrome.desktop.ui.player.drawGlassPlayPauseDisc
 import tf.monochrome.desktop.ui.player.playerGlass
+import tf.monochrome.desktop.ui.player.rememberPlayerLiveLens
 import tf.monochrome.desktop.ui.player.Letters3DRow
 import tf.monochrome.desktop.ui.player.LocalBeatPulse
 import tf.monochrome.desktop.ui.player.rememberFrameSeconds
@@ -139,7 +151,21 @@ import tf.monochrome.desktop.ui.player.SyncedLyricsView
 import tf.monochrome.desktop.ui.player.bassBeat
 import tf.monochrome.desktop.ui.player.fxaa
 import tf.monochrome.desktop.ui.player.liquidGlass
+import tf.monochrome.desktop.ui.player.lyricRaysOnLetters
+import tf.monochrome.desktop.ui.player.lyricsEdgeFade
+import tf.monochrome.desktop.ui.player.rememberBassPulse
+import tf.monochrome.desktop.ui.player.LocalLyricBackdrop
+import tf.monochrome.desktop.ui.player.LyricBackdrop
+import tf.monochrome.desktop.ui.player.LyricBackdropFx
+import tf.monochrome.desktop.ui.player.LyricLetterCapture
+import tf.monochrome.desktop.ui.player.captureLetters
+import tf.monochrome.desktop.ui.player.rememberLyricRayLight
 import tf.monochrome.desktop.ui.player.rememberLyricFontFamily
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.layout.onGloballyPositioned
 import tf.monochrome.desktop.ui.player.withLyricFont
 import java.util.Locale
 import javax.inject.Inject
@@ -154,10 +180,19 @@ class LyricsFxStudioViewModel @Inject constructor(
     private val preferences: PreferencesManager,
     @ApplicationContext private val context: Context,
     nowPlayingLyrics: tf.monochrome.desktop.player.NowPlayingLyricsHolder,
+    queueManager: tf.monochrome.desktop.player.QueueManager,
+    /** The player's own beat analyzer, so the preview of the playing song pulses with it. */
+    val spectrumAnalyzer: tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap,
 ) : ViewModel() {
     /** The currently-playing lyrics + position, so the preview can show them live. */
     val currentLyrics: StateFlow<tf.monochrome.desktop.domain.model.Lyrics?> = nowPlayingLyrics.lyrics
     val currentPositionMs: StateFlow<Long> = nowPlayingLyrics.positionMs
+    /**
+     * The track playing now, for the UI panels preview's mini player. Its cover
+     * is what the real bar fits into its glass, so the preview shows the bar
+     * the listener actually has rather than a placeholder note.
+     */
+    val currentTrack: StateFlow<Track?> = queueManager.currentTrack
     // An in-memory working copy is the source of truth for the Studio UI and the
     // live preview, so every slider frame updates instantly with no I/O. A slider
     // drag fires dozens of times a second; persisting each frame — JSON-encode +
@@ -346,6 +381,15 @@ class LyricsFxStudioViewModel @Inject constructor(
             val current = customPlayerGlassPresets.value.filterNot { it.name.equals(clean, ignoreCase = true) }
             preferences.setCustomPlayerGlassPresets(current + preset)
         }
+    }
+
+    /**
+     * Make the lyric letters from the player's own glass ("Match player glass").
+     * The player blob is the one the transport is drawn in, so this is the
+     * material the listener sees right under the lyrics.
+     */
+    fun matchPlayerGlass() {
+        update { it.withGlassOpticsFrom(_playerGlass.value) }
     }
 
     fun applyPreset(preset: LyricsFxSettings) {
@@ -664,6 +708,7 @@ fun LyricsFxStudioScreen(
                     onImportPreset = { viewModel.importPlayerGlassPresetCode(it) },
                 )
             } else {
+                val previewTrack by viewModel.currentTrack.collectAsStateWithLifecycle()
                 PlayerGlassTab(
                     glass = miniPlayerGlass,
                     customPresets = customGlassPresets,
@@ -674,6 +719,7 @@ fun LyricsFxStudioScreen(
                     onExportPreset = { viewModel.exportPlayerGlassPreset(it) },
                     onImportPreset = { viewModel.importPlayerGlassPresetCode(it) },
                     previewMini = true,
+                    previewTrack = previewTrack,
                 )
             }
             return@Column
@@ -682,7 +728,7 @@ fun LyricsFxStudioScreen(
         // Preview + presets are pinned above the scrolling sliders, so the
         // live example stays locked in view while you tune every parameter.
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            StudioPreview(fx, currentLyrics, viewModel.currentPositionMs)
+            StudioPreview(fx, currentLyrics, viewModel.currentPositionMs, viewModel.spectrumAnalyzer)
             Spacer(Modifier.height(12.dp))
 
             // Preset bar header: a Save button (store the current look) and an
@@ -947,9 +993,10 @@ fun LyricsFxStudioScreen(
                 FxSlider(stringResource(R.string.fx_wave_travel), "%.1f dp".format(fx.waveTravelDp), fx.waveTravelDp, 0f..8f) {
                     viewModel.update { s -> s.copy(waveTravelDp = it) }
                 }
-                FxSlider(stringResource(R.string.fx_shadow_depth), "${(fx.shadowDepth * 100).toInt()}%", fx.shadowDepth, 0f..1f) {
-                    viewModel.update { s -> s.copy(shadowDepth = it) }
-                }
+                FxSlider(
+                    stringResource(R.string.fx_shadow_depth), "${(fx.shadowDepth * 100).toInt()}%", fx.shadowDepth, 0f..1f,
+                    description = stringResource(R.string.fx_lyric_shadow_desc),
+                ) { viewModel.update { s -> s.copy(shadowDepth = it) } }
             }
 
             item {
@@ -1019,6 +1066,64 @@ fun LyricsFxStudioScreen(
                     fx.glassSampleRings.toFloat(), 1f..3f, steps = 1,
                     description = stringResource(R.string.fx_shader_taps_per_pixel_higher_smoother_glass),
                 ) { viewModel.update { s -> s.copy(glassSampleRings = it.toInt()) } }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.matchPlayerGlass() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.fx_match_player_glass)) }
+                Text(
+                    text = stringResource(R.string.fx_match_player_glass_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // The Player Glass optics, on the letters. Same labels and ranges
+            // as that tab, so a value means the same thing on both.
+            item {
+                StudioSection(stringResource(R.string.fx_shape_bevel))
+                FxSlider(
+                    stringResource(R.string.fx_roundness), "%.2f".format(fx.glassRoundness), fx.glassRoundness, 0.5f..2f,
+                    description = stringResource(R.string.fx_rolls_the_glass_edge_from_a_sharp_bevel_to_a),
+                ) { viewModel.update { s -> s.copy(glassRoundness = it) } }
+                FxSlider(
+                    stringResource(R.string.fx_depth_profondeur), "%.2f".format(fx.glassDepth), fx.glassDepth, 0.5f..2f,
+                    description = stringResource(R.string.fx_lyric_depth_desc),
+                ) { viewModel.update { s -> s.copy(glassDepth = it) } }
+                FxSlider(
+                    stringResource(R.string.fx_frosted_blur), "${(fx.glassFrost * 100).toInt()}%", fx.glassFrost, 0f..1f,
+                    description = stringResource(R.string.fx_frosts_the_glass_from_clear_to_misted),
+                ) { viewModel.update { s -> s.copy(glassFrost = it) } }
+            }
+
+            item {
+                StudioSection(stringResource(R.string.fx_light_reflections))
+                FxSlider(
+                    stringResource(R.string.fx_light_angle), "${fx.glassLightAngleDeg.toInt()}°", fx.glassLightAngleDeg, 0f..360f,
+                    description = stringResource(R.string.fx_direction_the_key_light_comes_from_and_where_the),
+                ) { viewModel.update { s -> s.copy(glassLightAngleDeg = it) } }
+                // Desktop: no tilt sensor, so the light stays at rest and "Tilt reactivity" has nothing to scale.
+                FxSlider(
+                    stringResource(R.string.fx_edge_width), "${(fx.glassEdgeWidth * 100).toInt()}%", fx.glassEdgeWidth, 0f..1f,
+                    description = stringResource(R.string.fx_reflective_rim_thin_crisp_edge_to_a_broad_glassy),
+                ) { viewModel.update { s -> s.copy(glassEdgeWidth = it) } }
+                FxSlider(
+                    stringResource(R.string.fx_reflection), "${(fx.glassReflection * 100).toInt()}%", fx.glassReflection, 0f..2f,
+                    description = stringResource(R.string.fx_how_much_of_the_room_environment_reflection),
+                ) { viewModel.update { s -> s.copy(glassReflection = it) } }
+                FxSlider(
+                    stringResource(R.string.fx_gloss), "${(fx.glassGloss * 100).toInt()}%", fx.glassGloss, 0f..1f,
+                    description = stringResource(R.string.fx_highlight_polish_soft_frosted_wide_glint_to_a),
+                ) { viewModel.update { s -> s.copy(glassGloss = it) } }
+                FxSlider(
+                    stringResource(R.string.fx_surface_motion), "${(fx.glassSurfaceMotion * 100).toInt()}%",
+                    fx.glassSurfaceMotion, 0f..1f,
+                    description = stringResource(R.string.fx_swell_edge_ripple_and_glint_on_the_glass_surface),
+                ) { viewModel.update { s -> s.copy(glassSurfaceMotion = it) } }
+            }
+
+            item {
+                GodRaysControls(fx = fx, onUpdate = { viewModel.update(it) })
             }
 
             item {
@@ -1063,6 +1168,8 @@ private fun PlayerGlassTab(
     onExportPreset: (PlayerGlassPreset) -> String,
     onImportPreset: (String) -> String?,
     previewMini: Boolean = false,
+    /** The playing track, for the UI panels preview's mini player; null shows a sample. */
+    previewTrack: Track? = null,
 ) {
     val context = LocalContext.current
     val accent = MaterialTheme.colorScheme.primary
@@ -1076,6 +1183,11 @@ private fun PlayerGlassTab(
     // midpoint stands for it.
     val previewGround = if (glass.previewBg != 0) Color(glass.previewBg)
         else lerp(Color.Black, accent, 0.22f)
+    // The page under the UI panels preview. Those panes float over the app's
+    // own pages, not the player, so unless the listener picked a colour it is
+    // the theme's page colour rather than the player's accent wash.
+    val panelsPage = if (glass.previewBg != 0) Color(glass.previewBg)
+        else MaterialTheme.colorScheme.background
     var showBgPicker by remember { mutableStateOf(false) }
     var showTintPicker by remember { mutableStateOf(false) }
     // Theme save / import / share dialog state (mirrors the Lyrics preset system).
@@ -1087,20 +1199,34 @@ private fun PlayerGlassTab(
         // just like the Lyrics editor.
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(12.dp))
-        // Live preview: the real transport buttons AND the action dock under the
-        // current button glass — the dock is the same hollowed-slab glass, so it
-        // tunes with these sliders exactly like the play button.
-        // The backdrop is a sibling of the pane above it, not its parent, so the
-        // pane can actually blur it — a haze effect cannot sample a layer it is
-        // drawn inside, and one that tries paints the source's flat colour.
         val previewHaze = rememberHazeState()
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(288.dp)
+                .height(if (previewMini) UiPanelsPreviewHeight else 288.dp)
                 .clip(RoundedCornerShape(16.dp)),
             contentAlignment = Alignment.Center,
         ) {
+            if (previewMini) {
+                // This tab's material has two faces and the preview shows both:
+                // the floating pane (search bars, sheets, the map panels) and the
+                // bottom chrome (the mini player and the tab bar). The pane used
+                // to be previewed on the Player tab, wrapped around the transport,
+                // which put the one thing those sliders do NOT control behind
+                // everything they do. UiPanelsPreview says how it is built now.
+                UiPanelsPreview(
+                    glass = glass,
+                    hazeState = previewHaze,
+                    page = panelsPage,
+                    track = previewTrack,
+                )
+            } else {
+            // Live preview: the real transport buttons AND the action dock under the
+            // current button glass — the dock is the same hollowed-slab glass, so it
+            // tunes with these sliders exactly like the play button.
+            // The backdrop is a sibling of the pane above it, not its parent, so the
+            // pane can actually blur it — a haze effect cannot sample a layer it is
+            // drawn inside, and one that tries paints the source's flat colour.
             Box(
                 Modifier
                     .matchParentSize()
@@ -1123,62 +1249,6 @@ private fun PlayerGlassTab(
                 // gets it too.
                 LocalPlayerGlassGround provides previewGround,
             ) {
-                if (previewMini) {
-                    // Both faces of this material, because this tab owns both:
-                    // the floating PANE (the audio-tools sheet, the speed panel,
-                    // the search bars, the map panels) and the mini player bar.
-                    //
-                    // The pane used to be previewed on the Player tab instead,
-                    // wrapped around the transport — which put the one thing on
-                    // that preview those sliders do NOT control behind
-                    // everything they do, and left the tab that does control it
-                    // showing only the bar.
-                    val sampleTrack = remember {
-                        Track(
-                            id = 0L,
-                            title = "The Business",
-                            artist = Artist(id = 0L, name = "Tiësto"),
-                        )
-                    }
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        GlassPanel(
-                            hazeState = previewHaze,
-                            glass = glass,
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                            avoidNavigationBar = false,
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Text(
-                                    stringResource(R.string.fx_audio_tools),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White,
-                                )
-                                Text(
-                                    stringResource(R.string.fx_sheets_panels_and_search_bars_all_wear_this_pane),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.White.copy(alpha = 0.62f),
-                                )
-                            }
-                        }
-                        MiniPlayer(
-                            track = sampleTrack,
-                            isPlaying = false,
-                            progressProvider = { 0.4f },
-                            onPlayPauseClick = {},
-                            onSkipNextClick = {},
-                            onSkipPreviousClick = {},
-                            onClick = {},
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
-                    }
-                } else {
                 // The transport as it actually sits on the player screen: straight
                 // over the backdrop, with nothing between. There was a GlassPanel
                 // here, on the argument that glass should be previewed over
@@ -1213,11 +1283,14 @@ private fun PlayerGlassTab(
                                 softness = glass.shadowSoftness,
                                 depth = glass.shadowDepth,
                             )
-                            // The same frost the real disc gets, so Backdrop
-                            // blur and tint move something here too.
+                            // The same frost and live lens the real disc gets
+                            // (PlayerTransportControls), so Backdrop blur, tint
+                            // and the lens move something here too, and the
+                            // disc reads the same as the dock beside it.
                             PlayerGlassHaze(
                                 modifier = Modifier.matchParentSize(),
                                 shape = CircleShape,
+                                lensCorner = Dp.Infinity,
                             )
                             Box(
                                 Modifier.fillMaxSize().clip(CircleShape),
@@ -1226,7 +1299,11 @@ private fun PlayerGlassTab(
                                 Canvas(
                                     Modifier
                                         .fillMaxSize()
-                                        .playerGlass(previewTint, lensCorner = Dp.Infinity)
+                                        .playerGlass(
+                                            previewTint,
+                                            lensCorner = Dp.Infinity,
+                                            liveUnder = rememberPlayerLiveLens(),
+                                        )
                                         .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
                                 ) {
                                     drawGlassPlayPauseDisc(morph = 0f, fill = previewTint)
@@ -1257,7 +1334,6 @@ private fun PlayerGlassTab(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                }
             }
             Text(
                 text = stringResource(R.string.fx_preview),
@@ -1265,6 +1341,7 @@ private fun PlayerGlassTab(
                 color = Color.White.copy(alpha = 0.35f),
                 modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
             )
+            }
         }
         }
 
@@ -1356,7 +1433,11 @@ private fun PlayerGlassTab(
         Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
             ColorSwatch(
                 label = stringResource(R.string.fx_background),
-                color = if (glass.previewBg != 0) Color(glass.previewBg) else lerp(Color.Black, accent, 0.34f),
+                color = when {
+                    previewMini -> panelsPage
+                    glass.previewBg != 0 -> Color(glass.previewBg)
+                    else -> lerp(Color.Black, accent, 0.34f)
+                },
                 isCustom = glass.previewBg != 0,
                 onClick = { showBgPicker = true },
             )
@@ -1738,18 +1819,296 @@ private fun previewBackground(accent: Color): Brush =
         ),
     )
 
+/** Room for the search bar, a strip of open page, and the bottom chrome. */
+private val UiPanelsPreviewHeight = 312.dp
+
+/** The nav bar as it ships: Home, the two default middle pages, Library. */
+private val PreviewTabs = listOf(AppTab.HOME, AppTab.DISCOVER, AppTab.RADIO, AppTab.LIBRARY)
+
+/**
+ * The UI panels preview: a small screen of the app, put together the way the
+ * real one is.
+ *
+ * A page at the back, marked as the haze source, and the chrome floating over
+ * it as siblings of that source: the search bar at the top — a [GlassPanel],
+ * so it stands for every sheet and panel as well — and at the bottom the mini
+ * player stacked over the tab pill and the round Search button, as the nav
+ * host stacks them. Every pane is handed the source, so each one frosts and
+ * lenses the page under it exactly as it does on a real screen.
+ *
+ * Each part of this used to be missing something. The backdrop was a smooth
+ * gradient, which gives a lens nothing to bend and a blur nothing to soften,
+ * so Backdrop blur, Refraction and Chromatic aberration moved nothing anyone
+ * could see. The mini player was handed no backdrop, so it drew neither its
+ * live lens nor its shadow and came out a flat pill beside the real bar at the
+ * bottom of the same screen. And the pane was a caption card with no vertical
+ * padding, whose text ran into its own rim.
+ *
+ * The page scrolls both ways, so it can be dragged under the glass to watch
+ * the rim bend it.
+ */
+@Composable
+private fun UiPanelsPreview(
+    glass: PlayerGlassSettings,
+    hazeState: HazeState,
+    /** The page colour: the theme's, or the Background swatch's. */
+    page: Color,
+    /** The playing track; null shows a sample one. */
+    track: Track?,
+) {
+    // The page's own ink, picked against the page: the swatch can make it any
+    // colour, and theme text on a page it was not chosen for can vanish.
+    val ink = if (page.luminance() > 0.5f) Color.Black else Color.White
+    val accent = MaterialTheme.colorScheme.primary
+    val sampleTrack = remember {
+        Track(
+            id = 0L,
+            title = "The Business",
+            artist = Artist(id = 0L, name = "Tiësto"),
+        )
+    }
+    var selectedTab by remember { mutableStateOf(AppTab.HOME) }
+
+    Box(Modifier.fillMaxSize()) {
+        PreviewPage(
+            ink = ink,
+            modifier = Modifier
+                .matchParentSize()
+                .hazeSource(hazeState)
+                .background(page),
+        )
+
+        // Everything below is a sibling of the page, never inside it: a pane
+        // drawn inside its own haze source samples a picture it is part of and
+        // paints a flat slab.
+        //
+        // The mini player and the tab bar read their glass from LocalPlayerGlass;
+        // the nav host provides the mini player's settings there the same way.
+        CompositionLocalProvider(LocalPlayerGlass provides glass) {
+            Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                Text(
+                    text = stringResource(R.string.fx_preview_drag_hint),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.45f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 14.dp, top = 10.dp, end = 14.dp),
+                )
+                GlassSearchBar(
+                    query = "",
+                    onQueryChange = {},
+                    placeholder = stringResource(R.string.search_hint),
+                    hazeState = hazeState,
+                    glass = glass,
+                    enabled = false,
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // Taken out here, outside the album's colours, as the nav host
+                // takes them: inside DynamicColorScope `primary` is the cover's,
+                // and the bar would come out a different hue from the tab bar
+                // under it.
+                val chromeTint = glassTint(glass.tintColor)
+                val chromeGround = MaterialTheme.colorScheme.background
+                DynamicColorScope {
+                    MiniPlayer(
+                        track = track ?: sampleTrack,
+                        isPlaying = false,
+                        progressProvider = { 0.4f },
+                        onPlayPauseClick = {},
+                        onSkipNextClick = {},
+                        onSkipPreviousClick = {},
+                        onClick = {},
+                        hazeState = hazeState,
+                        glassTintColor = chromeTint,
+                        glassGround = chromeGround,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Live, so a tap lights the tab and swells the glass under
+                    // the finger as the real bar does.
+                    GlassTabBar(
+                        tabs = PreviewTabs,
+                        selected = selectedTab,
+                        onSelect = { selectedTab = it },
+                        accent = accent,
+                        hazeState = hazeState,
+                        modifier = Modifier.weight(1f),
+                    )
+                    GlassTabBar(
+                        tabs = listOf(AppTab.SEARCH),
+                        selected = selectedTab,
+                        onSelect = { selectedTab = it },
+                        accent = accent,
+                        hazeState = hazeState,
+                        modifier = Modifier.width(TabBarHeight),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// The sample page's songs. Made up, so nobody mistakes them for their library.
+private val PreviewMixes = listOf("Low Orbit", "Glass Harbour", "Paper Satellites", "Velvet Signal", "Night Ferry")
+private val PreviewSongs = listOf(
+    "Midnight Static" to "Aurora Lane",
+    "Neon Driftwood" to "The Halyards",
+    "Slow Lightning" to "Kasimir",
+    "Coastal Frequencies" to "Mira Sol",
+    "After the Rain" to "Northbound",
+    "Echo Valley" to "Juno & the Tides",
+    "Silver Hours" to "Odessa Park",
+    "Hollow Moon" to "Static Bloom",
+)
+
+/**
+ * What the UI panels preview's glass sits over: a page shaped like Home, a rail
+ * of covers over a list of songs.
+ *
+ * The covers are loud on purpose. Hard colour edges are what refraction bends
+ * and chromatic aberration splits, and text is what a blur visibly softens. They
+ * are drawn rather than loaded, so the preview looks the same with an empty
+ * library and costs no I/O.
+ */
+@Composable
+private fun PreviewPage(ink: Color, modifier: Modifier = Modifier) {
+    Column(modifier.verticalScroll(rememberScrollState())) {
+        // Starts under the search bar, so its glass has covers behind it at rest.
+        Spacer(Modifier.height(30.dp))
+        PreviewHeading(stringResource(R.string.for_you), ink)
+        Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PreviewMixes.forEachIndexed { i, title ->
+                Column(Modifier.width(104.dp)) {
+                    PreviewCover(i, Modifier.size(104.dp), corner = 12.dp)
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        PreviewHeading(stringResource(R.string.recently_played), ink)
+        PreviewSongs.forEachIndexed { i, (title, artist) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PreviewCover(PreviewMixes.size + i, Modifier.size(40.dp), corner = 6.dp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ink.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        // Room to drag the last songs up clear of the bottom chrome.
+        Spacer(Modifier.height(160.dp))
+    }
+}
+
+@Composable
+private fun PreviewHeading(text: String, ink: Color) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = ink,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+}
+
+/** A drawn stand-in for a cover: a two-tone gradient with a disc on it. */
+@Composable
+private fun PreviewCover(index: Int, modifier: Modifier, corner: Dp) {
+    Spacer(
+        modifier
+            .clip(RoundedCornerShape(corner))
+            .drawWithCache {
+                // Golden-angle steps, so no two neighbours land on similar hues.
+                val hue = (index * 137.5f + 12f) % 360f
+                val wash = Brush.linearGradient(
+                    listOf(
+                        Color.hsv(hue, 0.72f, 0.92f),
+                        Color.hsv((hue + 48f) % 360f, 0.85f, 0.42f),
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height),
+                )
+                val disc = Color.hsv((hue + 180f) % 360f, 0.5f, 0.98f)
+                onDrawBehind {
+                    drawRect(wash)
+                    drawCircle(
+                        color = disc,
+                        radius = size.minDimension * 0.28f,
+                        center = Offset(size.width * 0.66f, size.height * 0.36f),
+                    )
+                }
+            },
+    )
+}
+
 @Composable
 private fun StudioPreview(
     fx: LyricsFxSettings,
     lyrics: Lyrics?,
     positionMs: kotlinx.coroutines.flow.StateFlow<Long>,
+    analyzer: tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap,
 ) {
-    val pulse = rememberSyntheticKickPulse(fx)
     val anchors = remember { LyricGlyphAnchors() }
     val accent = MaterialTheme.colorScheme.primary
     // Show the real currently-playing lyrics when there are synced lines; else a
     // synthetic sample so the preview is never empty.
     val playing = lyrics?.takeIf { it.isSynced && it.lines.isNotEmpty() }
+    // The playing song's lyrics beat with the song, from the player's own
+    // analyzer, exactly as they do in the player: still while it is paused.
+    // The synthetic kick kept pumping under them, and every kick pushed the
+    // rays brighter and longer, so the preview of a paused song showed longer
+    // shafts than the player beside it. The sample has no song, so it keeps
+    // the kick, which is how the beat settings can be seen at all.
+    val pulse = when {
+        playing == null -> rememberSyntheticKickPulse(fx)
+        fx.bassReact > 0.01f -> rememberBassPulse(analyzer, fx)
+        else -> remember { mutableFloatStateOf(0f) }
+    }
 
     Box(
         modifier = Modifier
@@ -1762,36 +2121,87 @@ private fun StudioPreview(
         CompositionLocalProvider(
             LocalLyricsFx provides fx,
             LocalLyricGlyphAnchors provides anchors,
-            // Drive the beat FX from the synthetic kick even for real lyrics
-            // (there's no live audio analyzer on this screen).
+            // The song's own beat for its lyrics, the synthetic kick for the
+            // sample (see `pulse`).
             LocalBeatPulse provides pulse,
         ) {
             // The glow FX layer blooms behind the active line's reported bounds.
             LyricsFxLayer(anchors = anchors, pulse = pulse, accent = accent, fx = fx)
+            // Built as the player is: the shadow and the god rays on a layer
+            // of their own under the lyrics, from a copy of the letters, with
+            // one light shared with the glass (see LyricBackdropFx).
+            val letters = remember { LyricLetterCapture() }
+            val rayLight = rememberLyricRayLight(
+                accent = accent,
+                pulse = pulse,
+                band = { letters.bandInRoot() },
+                lettersBox = { letters.boxInRoot },
+                fx = fx,
+                debugName = "studio",
+            )
+            val backdrop = remember(letters, rayLight) { LyricBackdrop(letters, rayLight) }
+            LyricBackdropFx(backdrop)
+            CompositionLocalProvider(LocalLyricBackdrop provides backdrop) {
             if (playing != null) {
-                // Exactly the production renderer, on the real lyric lines.
-                SyncedLyricsView(
-                    lines = playing.lines,
-                    positionMs = positionMs,
-                    accent = accent,
-                    onSeekTo = {},
-                )
+                // Exactly the production renderer, on the real lyric lines,
+                // in the box the player gives it (LyricsHeroBox).
+                Box(Modifier.fillMaxSize().lyricsEdgeFade()) {
+                    SyncedLyricsView(
+                        lines = playing.lines,
+                        positionMs = positionMs,
+                        accent = accent,
+                        onSeekTo = {},
+                    )
+                }
             } else {
-                Letters3DRow(
-                    text = stringResource(R.string.fx_feel_the_beat_tonight),
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontSize = fx.fontSizeSp.sp,
-                        lineHeight = (fx.fontSizeSp * 1.26f).sp,
-                        letterSpacing = fx.letterSpacingSp.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                    ).withLyricFont(rememberLyricFontFamily(fx)),
-                    color = accent,
-                    time = rememberFrameSeconds(),
-                    modifier = Modifier
-                        .fxaa()
-                        .liquidGlass(tint = accent)
-                        .bassBeat(pulse, fx, anchors),
-                )
+                // The shafts are the backdrop's, which is told where the row
+                // is (and, following the word, which word); "On top" adds the
+                // light on the letters over them, as the player does.
+                val sample = stringResource(R.string.fx_feel_the_beat_tonight)
+                val sampleStyle = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = fx.fontSizeSp.sp,
+                    lineHeight = (fx.fontSizeSp * 1.26f).sp,
+                    letterSpacing = fx.letterSpacingSp.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                ).withLyricFont(rememberLyricFontFamily(fx))
+                val clock = rememberFrameSeconds()
+                // The sample has no word timings, so "Follow the sung word" is
+                // shown by singing it one word per beat of the synthetic kick.
+                val measurer = rememberTextMeasurer()
+                val wordSpans = remember(sample, sampleStyle) { sampleWordSpans(measurer, sample, sampleStyle) }
+                val followWord = fx.godRaysFollowWord
+                var rowBand by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+                androidx.compose.runtime.SideEffect {
+                    letters.bandInRoot = {
+                        val row = rowBand
+                        if (row == null || !followWord || wordSpans.isEmpty()) {
+                            row
+                        } else {
+                            val (from, to) = wordSpans[(clock.value * 2f).toInt().mod(wordSpans.size)]
+                            androidx.compose.ui.geometry.Rect(row.left + from, row.top, row.left + to, row.bottom)
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Letters3DRow(
+                        text = sample,
+                        style = sampleStyle,
+                        color = accent,
+                        time = clock,
+                        modifier = Modifier
+                            .onGloballyPositioned { rowBand = it.boundsInRoot() }
+                            .lyricRaysOnLetters(backdrop)
+                            .fxaa()
+                            .liquidGlass(tint = accent, rayLight = rayLight)
+                            // Before the pump, so the copy pumps with the letters.
+                            .captureLetters(letters)
+                            .bassBeat(pulse, fx, anchors),
+                    )
+                }
+            }
             }
         }
         Text(
@@ -1808,6 +2218,29 @@ private fun StudioPreview(
                 .padding(10.dp),
         )
     }
+}
+
+/**
+ * Where each word of [text] runs along a [Letters3DRow], in px from its start.
+ * Measured one letter at a time, because that is how the row lays them out:
+ * each glyph is its own Text at its natural advance, so a space measures the
+ * same here as it draws there, trimmed or not.
+ */
+private fun sampleWordSpans(measurer: TextMeasurer, text: String, style: TextStyle): List<Pair<Float, Float>> {
+    val spans = mutableListOf<Pair<Float, Float>>()
+    var x = 0f
+    var start = -1f
+    text.forEach { ch ->
+        if (ch == ' ') {
+            if (start >= 0f) spans += start to x
+            start = -1f
+        } else if (start < 0f) {
+            start = x
+        }
+        x += measurer.measure(ch.toString(), style = style).size.width.toFloat()
+    }
+    if (start >= 0f) spans += start to x
+    return spans
 }
 
 /**
@@ -1852,7 +2285,7 @@ private fun rememberSyntheticKickPulse(fx: LyricsFxSettings): State<Float> {
 }
 
 @Composable
-private fun StudioSection(title: String) {
+internal fun StudioSection(title: String) {
     Spacer(Modifier.height(20.dp))
     Text(
         text = title,
@@ -1864,7 +2297,7 @@ private fun StudioSection(title: String) {
 }
 
 @Composable
-private fun FxToggle(
+internal fun FxToggle(
     label: String,
     checked: Boolean,
     description: String? = null,
@@ -1956,7 +2389,7 @@ private fun FontPicker(
 }
 
 @Composable
-private fun FxSlider(
+internal fun FxSlider(
     label: String,
     valueLabel: String,
     value: Float,

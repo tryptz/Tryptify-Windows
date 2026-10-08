@@ -2,6 +2,7 @@ package tf.monochrome.desktop.ui.navigation
 
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavController
+import androidx.savedstate.read
 import tf.monochrome.desktop.domain.model.SourceType
 
 /**
@@ -106,6 +107,32 @@ private fun NavController.leavePlayerFor(targetRoute: String): Boolean {
 fun NavController.popBackStackSafe(): Boolean {
     if (!isSettled() || previousBackStackEntry == null) return false
     return popBackStack()
+}
+
+/**
+ * Goes up to [path], a folder above the one on screen, from its path crumbs.
+ *
+ * Each folder screen walked down through is still on the back stack, so this
+ * pops back to it, which keeps every level's scroll position. Navigating
+ * instead would stack a second copy of the ancestor above its descendants.
+ * A folder that was never on the stack — opened straight from the Folders
+ * list, below where its crumbs start — replaces the folder on screen, so
+ * Back still leads where it did.
+ */
+fun NavController.openAncestorFolder(path: String) {
+    if (!isSettled()) return
+    while (true) {
+        val previous = previousBackStackEntry
+            ?.takeIf { it.destination.route == Screen.FolderBrowser.route }
+            // Desktop: Navigation 2.9 keeps arguments as SavedState, not a Bundle.
+            ?.arguments?.read { getStringOrNull("folderPath") }
+        if (previous == null || !(previous == path || previous.startsWith("$path/"))) break
+        popBackStack()
+        if (previous == path) return
+    }
+    navigate(Screen.FolderBrowser.createRoute(path)) {
+        popUpTo(Screen.FolderBrowser.route) { inclusive = true }
+    }
 }
 
 internal fun NavController.isSettled(): Boolean =

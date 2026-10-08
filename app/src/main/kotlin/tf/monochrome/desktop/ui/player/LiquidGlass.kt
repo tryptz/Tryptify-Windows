@@ -56,12 +56,14 @@ import tf.monochrome.desktop.performance.LocalLowPerformance
 internal fun Modifier.liquidGlass(
     enabled: Boolean = true,
     tint: Color = Color(0xFF8FB4FF),
+    /** The god rays over these letters, if any: the glass catches their light. */
+    rayLight: LyricRayLight? = null,
 ): Modifier {
     val fx = LocalLyricsFx.current
     val backdrop = LocalPlayerBackdrop.current
     if (LocalLowPerformance.current.disableLiquidGlass) return this
     if (!enabled || !fx.liquidGlass || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return this
-    return this.then(liquidGlassModifier(tint, fx, backdrop))
+    return this.then(liquidGlassModifier(tint, fx, backdrop, rayLight))
 }
 
 /**
@@ -213,6 +215,7 @@ private fun liquidGlassModifier(
     tint: Color,
     fx: tf.monochrome.desktop.domain.model.LyricsFxSettings,
     backdrop: PlayerBackdrop,
+    rayLight: LyricRayLight?,
 ): Modifier {
     val shader = remember {
         runCatching { RuntimeShader(LIQUID_GLASS_SRC) }
@@ -221,8 +224,12 @@ private fun liquidGlassModifier(
             .getOrNull()
     } ?: return Modifier
 
-    val timeSec = rememberFrameSeconds()
-    val tilt = rememberGravityTilt()
+    // The same two gates the player glass has. Every uTime term is scaled by
+    // uLiquid and every uTilt term by uTiltAmount, so still letters need no
+    // frame clock and tilt-blind ones no gravity sensor. (The per-letter wave
+    // keeps its own clock; this one is the glass's.)
+    val timeSec = rememberFrameSeconds(animated = fx.glassSurfaceMotion > 0f)
+    val tilt = if (fx.glassTiltReactivity > 0f) rememberGravityTilt() else NoTilt
     val anchor = rememberBackdropAnchor()
     val scrim = remember(backdrop.dominant) { backdropScrimTone(backdrop.dominant) }
 
@@ -252,16 +259,19 @@ private fun liquidGlassModifier(
             shader.setFloatUniform("uRimGain", fx.glassRimBrightness)
             shader.setFloatUniform("uDispersion", fx.glassDispersion)
             shader.setFloatUniform("uSampleRings", fx.glassSampleRings.toFloat())
-            shader.setFloatUniform("uRoundness", 1f)
-            shader.setFloatUniform("uDepth", 1f)
-            shader.setFloatUniform("uLiquid", 1f)
-            // Lyrics keep the neutral (non-player-tunable) relight parameters.
-            shader.setFloatUniform("uReflection", 1f)
-            shader.setFloatUniform("uGloss", 90f)
-            shader.setFloatUniform("uTiltAmount", 0.7f)
-            shader.setFloatUniform("uLightAngle", 2.3561945f)   // 135°
-            shader.setFloatUniform("uFresnelPower", 5f)
-            shader.setFloatUniform("uFrost", 0f)
+            // The Player Glass optics, mapped exactly as playerGlassModifier
+            // maps them. These were pinned (1, 1, 1, 1, 90, 0.7, 135°, 5, 0)
+            // before the lyrics had knobs for them, and each LyricsFxSettings
+            // default reproduces its pin: gloss 0.29167 → 90, edge 0.5 → 5.
+            shader.setFloatUniform("uRoundness", fx.glassRoundness)
+            shader.setFloatUniform("uDepth", fx.glassDepth)
+            shader.setFloatUniform("uLiquid", fx.glassSurfaceMotion)
+            shader.setFloatUniform("uReflection", fx.glassReflection)
+            shader.setFloatUniform("uGloss", 20f + 240f * fx.glassGloss)
+            shader.setFloatUniform("uTiltAmount", fx.glassTiltReactivity)
+            shader.setFloatUniform("uLightAngle", fx.glassLightAngleDeg * 0.017453292f)
+            shader.setFloatUniform("uFresnelPower", 8f - 6f * fx.glassEdgeWidth)
+            shader.setFloatUniform("uFrost", fx.glassFrost)
             shader.setFloatUniform("uBulge", 0.5f, 0.5f)
             shader.setFloatUniform("uBulgeAmt", 0f)
             shader.setFloatUniform("uBulgeR", 0f)
@@ -270,6 +280,27 @@ private fun liquidGlassModifier(
             shader.setFloatUniform("uLensR", 0f)
             shader.setFloatUniform("uLensW", 0f)
             shader.setFloatUniform("uLiveUnder", 0f)
+            // The god rays' light, in root px, moved into these
+            // letters' own pixels through their root position.
+            val light = rayLight
+            val ray = if (light != null && fx.glassRayCatch > 0f) {
+                light.frameFor(Offset(anchor.rect.left, anchor.rect.top))
+            } else {
+                null
+            }
+            if (light != null && ray != null) {
+                shader.setFloatUniform("uRayLight", ray.light.x, ray.light.y, GodRayGeometry.glassLightLift(ray.elevationDeg))
+                shader.setFloatUniform("uRayAmount", GodRayGeometry.glassRayAmount(fx.glassRayCatch, ray.exposure))
+                shader.setFloatUniform("uRayColor", light.color.red, light.color.green, light.color.blue)
+                shader.setFloatUniform("uRayReach", ray.density * ray.scale)
+                shader.setFloatUniform("uRayDecay", fx.godRayDecay)
+                shader.setFloatUniform(
+                    "uRayBack",
+                    if (fx.godRaySource == tf.monochrome.desktop.domain.model.LyricsFxSettings.GOD_RAYS_BACKLIGHT) 1f else 0f,
+                )
+            } else {
+                setNoRayLight(shader)
+            }
             renderEffect = RenderEffect
                 .createRuntimeShaderEffect(shader, "content")
                 .asComposeRenderEffect()
@@ -653,6 +684,7 @@ private fun playerGlassModifier(
             shader.setFloatUniform("uLensR", lensR)
             shader.setFloatUniform("uLensW", lensW)
             shader.setFloatUniform("uLiveUnder", if (liveUnder) 1f else 0f)
+            setNoRayLight(shader)
             renderEffect = RenderEffect
                 .createRuntimeShaderEffect(shader, "content")
                 .asComposeRenderEffect()
@@ -660,11 +692,22 @@ private fun playerGlassModifier(
     }
 }
 
+/** Glass with no god rays to catch: every pane, and lyrics without rays. Bit-identical to before they existed. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun setNoRayLight(shader: RuntimeShader) {
+    shader.setFloatUniform("uRayLight", 0f, 0f, 1f)
+    shader.setFloatUniform("uRayAmount", 0f)
+    shader.setFloatUniform("uRayColor", 0f, 0f, 0f)
+    shader.setFloatUniform("uRayReach", 1f)
+    shader.setFloatUniform("uRayDecay", 1f)
+    shader.setFloatUniform("uRayBack", 0f)
+}
+
 /** The widest a lens rim gets, however large the corner it sits in. */
 internal val LensRimMax = 24.dp
 
 /** A tilt that never changes, for a surface whose shader would ignore it anyway. */
-private val NoTilt: State<Offset> = mutableStateOf(Offset.Zero)
+internal val NoTilt: State<Offset> = mutableStateOf(Offset.Zero)
 
 /**
  * Low-pass-filtered gravity in [-1, 1] per axis; Offset.Zero if no sensor.
@@ -673,7 +716,7 @@ private val NoTilt: State<Offset> = mutableStateOf(Offset.Zero)
  * the same tilt, so they all share one value.
  */
 @Composable
-private fun rememberGravityTilt(): State<Offset> {
+internal fun rememberGravityTilt(): State<Offset> {
     // Desktop: there is no gravity sensor, so the tilt stays at rest (0, 0) —
     // what Android drew on a device without one. GravityTiltSource, the shared
     // sensor listener, went with it.
@@ -847,6 +890,17 @@ uniform float uBulgeR;        // press-bulge dome radius in px; <=0 falls back t
 uniform float uLensR;         // lens rim: the slab's corner radius in px (rounded rect filling uSize)
 uniform float uLensW;         // lens rim: bevel band width in px, <= uLensR; 0 = alpha-only bevel
 uniform float uLiveUnder;     // 1 = a LiveGlassLens draws the real backdrop under this slab
+
+// The lyric god rays' light, for glass letters to catch (LyricRayLight). A
+// point light at the rays' own position, so a glint sits on the bevels that
+// face the shafts' source and moves with it. uRayAmount = 0 — every pane, and
+// lyrics without rays — leaves every pixel bit-identical.
+uniform float3 uRayLight;     // xy = the light's point on this layer, px; z = how far it stands off the glass
+uniform float uRayAmount;     // how much of it the glass catches
+uniform float3 uRayColor;     // the light's colour
+uniform float uRayReach;      // px over which it fades: the shafts' length
+uniform float uRayDecay;      // the shafts' decay per 1/50 of uRayReach
+uniform float uRayBack;       // 1 = the light is behind the glass, and glows through its rims
 
 // The real backdrop, when there is one to lens. uArt is ALWAYS bound (SkSL
 // requires every child shader to be set); uArtMix is what decides whether it
@@ -1154,6 +1208,38 @@ half4 main(float2 p) {
     float twinkle = pow(0.5 + 0.5 * sin(uTime * (1.5 + 3.0 * twHash) + twHash * 6.2831), 4.0);
     float glintGain = 1.0 + (0.6 * twinkle - 0.15) * uLiquid;
 
+    // The god rays' light on the glass. In front of the letters it lights the
+    // bevels that face it — brighter than the flat face by however much more
+    // they turn toward it — and throws a glint off them. Behind them (the
+    // backlight) it shines through instead: the rims facing it glow, the way
+    // the edge of a glass catches a light behind it. It only ever ADDS light:
+    // darkening the bevels turned away, and the whole letter under a
+    // backlight, read on device as shadows on the letters, and the lyrics'
+    // shadow belongs on the background (lyricShadow).
+    float3 rayAdd = float3(0.0);
+    if (uRayAmount > 0.001) {
+        float2 toRay = uRayLight.xy - p;
+        float rd = length(toRay);
+        float3 Lr = normalize(float3(toRay / max(uRayReach, 1.0), uRayLight.z));
+        // Fades with distance from the light as the shafts do, never quite out.
+        float k = uRayAmount * mix(0.35, 1.0, pow(uRayDecay, 50.0 * rd / max(uRayReach, 1.0)));
+        float3 Hr = normalize(Lr + float3(0.0, 0.0, 1.0));
+        float rayGlint = pow(max(dot(NL, Hr), 0.0), uGloss);
+        if (uRayBack > 0.5) {
+            float edgeness = length(N.xy);
+            float2 out2 = (edgeness > 1e-4) ? N.xy / edgeness : float2(0.0);
+            float toward = (rd > 0.5) ? max(dot(out2, toRay / rd), 0.0) : 1.0;
+            rayAdd = uRayColor * k * (edgeness * (0.2 + toward) * 0.9 + rayGlint * 0.5);
+        } else {
+            // The bevels are 2-4px wide, so on its own their light reads as a
+            // faint emboss; the face takes a share of it too (more the more
+            // squarely the light falls on it), so the whole letter is seen
+            // to be lit by the shafts' source.
+            float facing = dot(N, Lr) - Lr.z;
+            rayAdd = uRayColor * k * (max(facing, 0.0) * 2.4 + rayGlint * fres * 2.5 + Lr.z * 0.3);
+        }
+    }
+
     // Body: the glyph's own colour (kept legible) with a hint of the lensed
     // backdrop; leans more see-through over real blurred art.
     float3 glyphTint = float3(src.rgb) / a;
@@ -1178,6 +1264,7 @@ half4 main(float2 p) {
     // otherwise fire the specular uniformly).
     float3 col3 = mix(bodyCol, refl * uReflection, clamp(fres * 1.1, 0.0, 1.0));
     col3 += float3(specR, spec, specB) * uRimGain * fres * glintGain;
+    col3 += rayAdd;
 
     // There is deliberately no traveling light sheet here. A soft diagonal band
     // used to glide across every pane every ~7s — the classic "shine" pass — and
@@ -1205,7 +1292,9 @@ half4 main(float2 p) {
     // rim highlight reads as a crisp glass edge rather than being clamped away.
     // Same shoulder as the colour: the outline saturates to opaque gradually
     // instead of snapping, so the rim doesn't etch a hard 1px contour.
-    float rimSum = fres * 1.2 + spec;
+    // A lit edge carries alpha too, or the premultiply clamp below would cut
+    // the rays' light off wherever the body is see-through.
+    float rimSum = fres * 1.2 + spec + dot(rayAdd, float3(0.3333));
     float rim = min(rimSum, 0.82) + 0.18 * (1.0 - exp(-max(rimSum - 0.82, 0.0) / 0.18));
     float outA = clamp(a * (bodyA + (1.0 - bodyA) * rim), 0.0, a);
 

@@ -1,13 +1,13 @@
 package tf.monochrome.desktop.player
 
 import android.net.Uri
-import android.util.Base64
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import tf.monochrome.desktop.data.api.ApiService
 import tf.monochrome.desktop.data.api.QobuzIdRegistry
 import tf.monochrome.desktop.data.api.QobuzTrackMatch
 import tf.monochrome.desktop.data.cache.QobuzStreamUri
@@ -123,7 +123,7 @@ class StreamResolver @Inject constructor(
         // before the TIDAL lookup below — and before its Qobuz fallback, which
         // would fetch the ISRC of the TIDAL track that has this number.
         if (track.deezerId != null || qobuzIdRegistry.isDeezerTrack(track.id)) {
-            val uri = deezerStreamUri(track.deezerId ?: track.id, AudioQuality.LOSSLESS)
+            val uri = deezerStreamUri(track.deezerId ?: track.id, repository.streamQuality(ApiService.DEEZER))
                 ?: return Pair(null, null)
             return Pair(buildFileMediaItem(track, uri), null)
         }
@@ -133,7 +133,7 @@ class StreamResolver @Inject constructor(
 
         // For non-DASH streams the URL must be non-blank. For DASH, streamUrl
         // is the MPD document itself, which buildMediaItem puts on the item as
-        // an inline data: URI (see [inlineDashUri]).
+        // an inline data: URI (see [dashManifestUri]).
         if (trackStream != null && (trackStream.isDash || trackStream.streamUrl.isNotBlank())) {
             return Pair(buildMediaItem(track, trackStream.streamUrl, trackStream.isDash), trackStream)
         }
@@ -188,13 +188,13 @@ class StreamResolver @Inject constructor(
             // Kicks the download off and returns; it keeps filling the
             // cache on the manager's own scope, so by the time this track
             // is reached it is already there.
-            qobuzCache.openPartial(track.id, AudioQuality.LOSSLESS)
+            qobuzCache.openPartial(track.id, repository.streamQuality(ApiService.QOBUZ))
             return@runCatching true
         }
         // Same for Deezer — but only when the full file is really coming. The
         // preview fallback is a signed URL, which must not be pre-queued.
         if (track.deezerId != null || qobuzIdRegistry.isDeezerTrack(track.id)) {
-            val started = deezerCache.openPartial(track.deezerId ?: track.id, AudioQuality.LOSSLESS)
+            val started = deezerCache.openPartial(track.deezerId ?: track.id, repository.streamQuality(ApiService.DEEZER))
             return@runCatching started != null && started.failure == null
         }
         false
@@ -340,7 +340,7 @@ class StreamResolver @Inject constructor(
         track: UnifiedTrack,
         source: PlaybackSource.DeezerPreview,
     ): ResolvedMedia {
-        val uri = deezerStreamUri(source.deezerId, source.preferredQuality)
+        val uri = deezerStreamUri(source.deezerId, repository.streamQuality(ApiService.DEEZER))
 
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)
@@ -388,7 +388,8 @@ class StreamResolver @Inject constructor(
         // Starts the download and returns once the headers are in; the player
         // reads the cache file as it fills. Null still means "can't play this"
         // (Qobuz unconfigured, or the request failed outright).
-        val started = qobuzCache.openPartial(source.qobuzId, source.preferredQuality) != null
+        val quality = repository.streamQuality(ApiService.QOBUZ)
+        val started = qobuzCache.openPartial(source.qobuzId, quality) != null
 
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)
@@ -403,7 +404,7 @@ class StreamResolver @Inject constructor(
             .setMediaId(track.id)
             .apply {
                 if (started) {
-                    setUri(QobuzStreamUri.build(source.qobuzId, source.preferredQuality))
+                    setUri(QobuzStreamUri.build(source.qobuzId, quality))
                 }
             }
             .setMediaMetadata(metadata)
@@ -451,11 +452,12 @@ class StreamResolver @Inject constructor(
      * far better than quietly serving someone else's recording from TIDAL.
      */
     private suspend fun qobuzCachedMediaItem(track: Track): MediaItem? {
-        val started = runCatching { qobuzCache.openPartial(track.id, AudioQuality.LOSSLESS) }
+        val quality = repository.streamQuality(ApiService.QOBUZ)
+        val started = runCatching { qobuzCache.openPartial(track.id, quality) }
             .getOrNull() ?: return null
         return buildFileMediaItem(
             track,
-            QobuzStreamUri.build(track.id, AudioQuality.LOSSLESS).toUri(),
+            QobuzStreamUri.build(track.id, quality).toUri(),
         ).takeIf { started.failure == null }
     }
 
@@ -603,13 +605,12 @@ class StreamResolver @Inject constructor(
             .setMediaId(track.id)
             .setMediaMetadata(metadata)
             .apply {
-                if (trackStream != null && trackStream.streamUrl.isNotBlank()) {
-                    if (trackStream.isDash) {
-                        setUri(inlineDashUri(trackStream.streamUrl))
-                        setMimeType(MimeTypes.APPLICATION_MPD)
-                    } else {
-                        setUri(trackStream.streamUrl.toUri())
-                    }
+                // DASH carries its manifest inline, as in buildMediaItem.
+                when {
+                    trackStream == null || trackStream.streamUrl.isBlank() -> Unit
+                    trackStream.isDash ->
+                        setUri(dashManifestUri(trackStream.streamUrl)).setMimeType(MimeTypes.APPLICATION_MPD)
+                    else -> setUri(trackStream.streamUrl.toUri())
                 }
             }
             .build()
@@ -715,7 +716,8 @@ class StreamResolver @Inject constructor(
             qobuzIdRegistry.registerArtistAlias(tidalArtistId, qobuzArtistId)
         }
 
-        runCatching { qobuzCache.openPartial(match.trackId, AudioQuality.LOSSLESS) }
+        val quality = repository.streamQuality(ApiService.QOBUZ)
+        runCatching { qobuzCache.openPartial(match.trackId, quality) }
             .getOrNull() ?: return null
 
         val metadata = MediaMetadata.Builder()
@@ -730,7 +732,7 @@ class StreamResolver @Inject constructor(
 
         return MediaItem.Builder()
             .setMediaId(mediaId)
-            .setUri(QobuzStreamUri.build(match.trackId, AudioQuality.LOSSLESS).toUri())
+            .setUri(QobuzStreamUri.build(match.trackId, quality).toUri())
             .setMediaMetadata(metadata)
             .build()
     }
@@ -805,33 +807,20 @@ class StreamResolver @Inject constructor(
             .setMediaId(track.id.toString())
             .setMediaMetadata(metadata)
 
-        // DASH has no progressive URL: streamUrl is the MPD document, which
-        // rides on the item as an inline data: URI tagged with the DASH MIME
-        // type. For everything else, attach the URL.
+        // DASH has no single file to point at, so its manifest goes in the
+        // item itself (see [dashManifestUri]). Every path that hands an item
+        // to the player can then play it — not only PlaybackService's own
+        // DashMediaSource branch, but playTrack, the unified queue path and
+        // the session's playback resumption, which used to NPE on a URI-less
+        // item and skip the track.
         if (isDash && streamUrl.isNotBlank()) {
-            builder.setUri(inlineDashUri(streamUrl)).setMimeType(MimeTypes.APPLICATION_MPD)
+            builder.setUri(dashManifestUri(streamUrl)).setMimeType(MimeTypes.APPLICATION_MPD)
         } else if (streamUrl.isNotBlank()) {
             builder.setUri(streamUrl.toUri())
         }
 
         return builder.build()
     }
-
-    /**
-     * An inline DASH manifest as a MediaItem URI.
-     *
-     * Desktop: on Android the service rebuilt a DashMediaSource from the MPD
-     * at play time. Here the manifest travels on the item itself, in the same
-     * shape that code synthesised — `data:application/dash+xml;base64,…` with
-     * the DASH MIME type set on the item — so the engine can decode it back
-     * out and hand the document to libavformat's dash demuxer (TIDAL MPDs
-     * reference absolute segment URLs, so the document alone is enough). A
-     * data: URI is not a stable one, so [GaplessEligibility] keeps it out of
-     * the gapless pre-queue, as it did on Android.
-     */
-    private fun inlineDashUri(mpd: String): Uri =
-        ("data:${MimeTypes.APPLICATION_MPD};base64," +
-            Base64.encodeToString(mpd.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)).toUri()
 }
 
 /**
@@ -850,4 +839,26 @@ class StreamResolver @Inject constructor(
 internal fun pathLooksLikeAudioFile(path: String?): Boolean {
     val ext = (path ?: return false).substringAfterLast('.', "").lowercase()
     return ext in AudioFileCoverFetcher.AUDIO_EXTENSIONS
+}
+
+/**
+ * A DASH manifest (the MPD XML TIDAL sends) as a URI the player opens like any
+ * other: the manifest itself, inline, as a base64 data: URI. With
+ * MimeTypes.APPLICATION_MPD on the item, DefaultMediaSourceFactory builds a
+ * DashMediaSource for it, DefaultDataSource reads the data: URI, and the
+ * segments the manifest names come over HTTP.
+ *
+ * A server can also answer with a link to the manifest (an `.mpd` URL),
+ * which the client marks as DASH too. That is already a URI the player can
+ * open, so it is handed over as it is: encoded, the player would read the
+ * link's text as the manifest and fail.
+ *
+ * Top-level and String-based so it is a plain JVM unit test.
+ */
+internal fun dashManifestUri(mpd: String): String {
+    val text = mpd.trim()
+    if (text.startsWith("https://", ignoreCase = true) || text.startsWith("http://", ignoreCase = true)) {
+        return text
+    }
+    return "data:application/dash+xml;base64," + java.util.Base64.getEncoder().encodeToString(mpd.toByteArray())
 }

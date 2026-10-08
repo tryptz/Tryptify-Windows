@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import tf.monochrome.desktop.audio.eq.SpectrumAnalyzerTap
 import tf.monochrome.desktop.data.auth.AuthRepository
+import tf.monochrome.desktop.data.api.ApiService
+import tf.monochrome.desktop.data.api.ServiceQuality
 import tf.monochrome.desktop.data.preferences.PreferencesManager
 import tf.monochrome.desktop.data.auth.SupabaseAuthManager
 import tf.monochrome.desktop.data.sync.BackupManager
@@ -63,8 +65,16 @@ class SettingsViewModel @Inject constructor(
     private val downloadDao: tf.monochrome.desktop.data.db.dao.DownloadDao,
     private val updateChecker: tf.monochrome.desktop.data.update.UpdateChecker,
     private val audioOutputController: tf.monochrome.desktop.player.engine.AudioOutputController,
+    private val crashLogger: tf.monochrome.desktop.debug.CrashLogger,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    /** Whether crashes are written to Downloads; see [tf.monochrome.desktop.debug.CrashLogger]. */
+    val saveCrashReports: StateFlow<Boolean> = crashLogger.saveReports
+
+    fun setSaveCrashReports(enabled: Boolean) {
+        crashLogger.setSaveReports(enabled)
+    }
 
     /** True while any library scan is running — lets Settings disable the
      *  "Rescan Library Now" button and show progress. */
@@ -289,10 +299,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     // --- Audio ---
-    val wifiQuality: StateFlow<AudioQuality> = preferences.wifiQuality
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AudioQuality.HI_RES)
-    val cellularQuality: StateFlow<AudioQuality> = preferences.cellularQuality
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AudioQuality.HIGH)
+    /**
+     * Every service's quality, per setting (Wi-Fi, cellular, download). Each
+     * service streams and downloads in its own terms; see ServiceQuality.
+     */
+    val qualities: StateFlow<Map<Pair<ApiService, ServiceQuality.Setting>, AudioQuality>> =
+        combine(
+            ServiceQuality.services.flatMap { service ->
+                ServiceQuality.Setting.entries.map { setting ->
+                    preferences.quality(service, setting).map { (service to setting) to it }
+                }
+            }
+        ) { it.toMap() }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
     val normalizationEnabled: StateFlow<Boolean> = preferences.normalizationEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val systemWideAutoEqEnabled: StateFlow<Boolean> = preferences.systemWideAutoEqEnabled
@@ -309,6 +328,11 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     fun setHiResHalOutputEnabled(enabled: Boolean) { viewModelScope.launch {
         preferences.setHiResHalOutputEnabled(enabled)
+    } }
+    val ignoreAudioFocus: StateFlow<Boolean> = preferences.ignoreAudioFocus
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    fun setIgnoreAudioFocus(enabled: Boolean) { viewModelScope.launch {
+        preferences.setIgnoreAudioFocus(enabled)
     } }
     /** Human-readable name of the attached USB DAC, or null when nothing is plugged in. */
     val usbOutputDeviceName: StateFlow<String?> =
@@ -327,8 +351,6 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     // --- Downloads ---
-    val downloadQuality: StateFlow<AudioQuality> = preferences.downloadQuality
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AudioQuality.HI_RES)
     val downloadLyrics: StateFlow<Boolean> = preferences.downloadLyrics
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val downloadFolderUri: StateFlow<String?> = preferences.downloadFolderUri
@@ -621,8 +643,34 @@ class SettingsViewModel @Inject constructor(
     fun clearListenBrainzToken() { viewModelScope.launch { preferences.clearListenBrainzToken() } }
 
     // --- Audio actions ---
-    fun setWifiQuality(quality: AudioQuality) { viewModelScope.launch { preferences.setWifiQuality(quality) } }
-    fun setCellularQuality(quality: AudioQuality) { viewModelScope.launch { preferences.setCellularQuality(quality) } }
+    fun setQuality(service: ApiService, setting: ServiceQuality.Setting, quality: AudioQuality) {
+        viewModelScope.launch {
+            preferences.setQuality(service, setting, quality)
+            // A stereo tier picked for TIDAL downloads takes Dolby Atmos's place.
+            if (service == ApiService.TIDAL && setting == ServiceQuality.Setting.DOWNLOAD) {
+                preferences.setTidalDownloadAtmos(false)
+            }
+        }
+    }
+
+    /** TIDAL's download quality is Dolby Atmos (see PreferencesManager.tidalDownloadAtmos). */
+    val tidalDownloadAtmos: StateFlow<Boolean> = preferences.tidalDownloadAtmos
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Dolby Atmos as TIDAL's download quality; tracks without an Atmos mix download as Hi-Res FLAC. */
+    fun pickTidalDownloadAtmos() {
+        viewModelScope.launch {
+            preferences.setQuality(ApiService.TIDAL, ServiceQuality.Setting.DOWNLOAD, AudioQuality.HI_RES)
+            preferences.setTidalDownloadAtmos(true)
+        }
+    }
+
+    /** TIDAL Dolby Atmos: TIDAL tracks with an Atmos mix play it instead of stereo. */
+    val tidalAtmosPreferred: StateFlow<Boolean> = preferences.tidalAtmosPreferred
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    fun setTidalAtmosPreferred(enabled: Boolean) {
+        viewModelScope.launch { preferences.setTidalAtmosPreferred(enabled) }
+    }
     fun setNormalizationEnabled(enabled: Boolean) { viewModelScope.launch { preferences.setNormalizationEnabled(enabled) } }
     fun setSystemWideAutoEq(enabled: Boolean) { viewModelScope.launch { preferences.setSystemWideAutoEqEnabled(enabled) } }
     fun setDspBlockSize(value: Int) { viewModelScope.launch { preferences.setDspBlockSize(value) } }
@@ -649,7 +697,6 @@ class SettingsViewModel @Inject constructor(
     fun setPreservePitch(enabled: Boolean) { viewModelScope.launch { preferences.setPreservePitch(enabled) } }
 
     // --- Downloads actions ---
-    fun setDownloadQuality(quality: AudioQuality) { viewModelScope.launch { preferences.setDownloadQuality(quality) } }
     fun setDownloadLyrics(enabled: Boolean) { viewModelScope.launch { preferences.setDownloadLyrics(enabled) } }
     fun setDownloadFolderUri(uri: String?) { viewModelScope.launch { preferences.setDownloadFolderUri(uri) } }
 
@@ -859,18 +906,23 @@ class SettingsViewModel @Inject constructor(
     val localTitleFromFileName: StateFlow<Boolean> = preferences.localTitleFromFileName
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    /** Titles are written by the scanner, so the switch takes effect through a full scan. */
+    /**
+     * Titles are written by the scanner, so the switch takes effect through a
+     * full scan. The scan is the coordinator's, not this screen's: it re-reads
+     * every file, and leaving Settings must not cut it off halfway.
+     */
     fun setLocalTitleFromFileName(enabled: Boolean) {
         viewModelScope.launch {
             preferences.setLocalTitleFromFileName(enabled)
-            scanCoordinator.runFullScanAfterCurrent()
+            scanCoordinator.requestFullScanAfterCurrent()
         }
     }
 
     fun rescanLibrary() {
         // Route through the shared ScanCoordinator (the same guard the Library
-        // tab uses), so the button actually scans instead of no-op'ing.
-        viewModelScope.launch { scanCoordinator.runFullScan() }
+        // tab uses), so the button actually scans instead of no-op'ing, and
+        // keeps scanning after the user leaves Settings.
+        scanCoordinator.requestFullScan()
     }
 
     // The library_tab_order surface that used to live here is gone: the flat page
